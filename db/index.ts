@@ -1,12 +1,11 @@
-import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./schema";
 
 let initialization: Promise<void> | null = null;
 
 export function getD1() {
-  if (!env.DB) throw new Error("La base de datos no está disponible.");
-  return env.DB;
+  if (!globalThis.__NUTRIPLUS_DB__) throw new Error("La base de datos no está disponible.");
+  return globalThis.__NUTRIPLUS_DB__;
 }
 
 export function getDb() {
