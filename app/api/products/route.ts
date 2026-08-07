@@ -8,7 +8,7 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const code = url.searchParams.get("code")?.trim();
     const query = url.searchParams.get("q")?.trim() ?? "";
-    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 100));
+    const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit")) || 500));
     if (code) {
       const row = await getD1().prepare("SELECT * FROM products WHERE code=? LIMIT 1").bind(code).first();
       return Response.json({ product: row ? productFromRow(row) : null });
@@ -23,7 +23,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const product = parseProductInput((await request.json()) as Record<string, unknown>);
+    const product = parseProductInput((await request.json()) as Record<string, unknown>, { allowPending: true });
     await ensureDatabase();
     const row = await getD1().prepare("INSERT INTO products (name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb) VALUES (?,?,?,?,?) RETURNING *").bind(product.name, product.normalizedName, product.code, product.purchasePriceUsdCents, product.weightMilliLb).first();
     if (!row) throw new Error("No se pudo guardar el producto.");

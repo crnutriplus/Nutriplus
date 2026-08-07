@@ -13,8 +13,8 @@ export type ProductRecord = {
   id: number;
   name: string;
   code: string | null;
-  purchasePriceUsd: number;
-  weightLb: number;
+  purchasePriceUsd: number | null;
+  weightLb: number | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -52,6 +52,17 @@ export function calculatePrices(priceUsd: number, weightLb: number, settings: Pr
   };
 }
 
+export function hasCompletePricing<T extends Pick<ProductRecord, "purchasePriceUsd" | "weightLb">>(
+  product: T,
+): product is T & { purchasePriceUsd: number; weightLb: number } {
+  return product.purchasePriceUsd !== null
+    && Number.isFinite(product.purchasePriceUsd)
+    && product.purchasePriceUsd >= 0
+    && product.weightLb !== null
+    && Number.isFinite(product.weightLb)
+    && product.weightLb >= 0;
+}
+
 export const crc = (value: number) => new Intl.NumberFormat("es-CR", { style: "currency", currency: "CRC", maximumFractionDigits: 0 }).format(Math.round(value));
 export const usd = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 
@@ -73,8 +84,8 @@ export function productFromRow(row: Record<string, unknown>): ProductRecord {
     id: Number(row.id),
     name: String(row.name),
     code: row.code ? String(row.code) : null,
-    purchasePriceUsd: Number(row.purchase_price_usd_cents) / 100,
-    weightLb: Number(row.weight_milli_lb) / 1000,
+    purchasePriceUsd: row.purchase_price_usd_cents == null ? null : Number(row.purchase_price_usd_cents) / 100,
+    weightLb: row.weight_milli_lb == null ? null : Number(row.weight_milli_lb) / 1000,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };

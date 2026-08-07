@@ -8,6 +8,13 @@
       "when": 1786138318717,
       "tag": "0000_fluffy_shinobi_shaw",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786143223578,
+      "tag": "0001_fluffy_betty_brant",
+      "breakpoints": true
     }
   ]
 }

@@ -1,14 +1,28 @@
 import { normalizeName } from "./pricing";
 
-export function parseProductInput(payload: Record<string, unknown>) {
+function optionalNumber(value: unknown) {
+  if (value == null || (typeof value === "string" && !value.trim())) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+export function parseProductInput(payload: Record<string, unknown>, options: { allowPending?: boolean } = {}) {
   const name = typeof payload.name === "string" ? payload.name.trim().replace(/\s+/g, " ") : "";
   const code = typeof payload.code === "string" ? payload.code.trim() || null : null;
-  const purchasePriceUsd = Number(payload.purchasePriceUsd);
-  const weightLb = Number(payload.weightLb);
+  const purchasePriceUsd = optionalNumber(payload.purchasePriceUsd);
+  const weightLb = optionalNumber(payload.weightLb);
   if (!name) throw new Error("El nombre del producto es obligatorio.");
-  if (!Number.isFinite(purchasePriceUsd) || purchasePriceUsd < 0) throw new Error("Ingresá un precio de compra válido.");
-  if (!Number.isFinite(weightLb) || weightLb <= 0) throw new Error("Ingresá un peso mayor que cero.");
-  return { name, normalizedName: normalizeName(name), code, purchasePriceUsdCents: Math.round(purchasePriceUsd * 100), weightMilliLb: Math.round(weightLb * 1000) };
+  if (purchasePriceUsd !== null && (!Number.isFinite(purchasePriceUsd) || purchasePriceUsd < 0)) throw new Error("Ingresá un precio de compra válido.");
+  if (weightLb !== null && (!Number.isFinite(weightLb) || weightLb < 0)) throw new Error("Ingresá un peso válido.");
+  if (!options.allowPending && purchasePriceUsd === null) throw new Error("Ingresá el precio de compra.");
+  if (!options.allowPending && weightLb === null) throw new Error("Ingresá el peso.");
+  return {
+    name,
+    normalizedName: normalizeName(name),
+    code,
+    purchasePriceUsdCents: purchasePriceUsd === null ? null : Math.round(purchasePriceUsd * 100),
+    weightMilliLb: weightLb === null ? null : Math.round(weightLb * 1000),
+  };
 }
 
 export function errorResponse(error: unknown) {

@@ -19,8 +19,8 @@ export const products = sqliteTable("products", {
   name: text("name").notNull(),
   normalizedName: text("normalized_name").notNull(),
   code: text("code"),
-  purchasePriceUsdCents: integer("purchase_price_usd_cents").notNull(),
-  weightMilliLb: integer("weight_milli_lb").notNull(),
+  purchasePriceUsdCents: integer("purchase_price_usd_cents"),
+  weightMilliLb: integer("weight_milli_lb"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [

@@ -14,7 +14,7 @@ export async function POST(request: Request) {
     for (let index = 0; index < rows.length; index += 1) {
       const source = rows[index];
       try {
-        const product = parseProductInput(source);
+        const product = parseProductInput(source, { allowPending: true });
         const existing = await db.prepare("SELECT id FROM products WHERE normalized_name=? OR (? IS NOT NULL AND code=?) LIMIT 1").bind(product.normalizedName, product.code, product.code).first<{ id: number }>();
         if (existing && strategy === "skip") { skipped += 1; continue; }
         if (existing) {

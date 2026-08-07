@@ -34,8 +34,8 @@ export async function ensureDatabase() {
           name TEXT NOT NULL,
           normalized_name TEXT NOT NULL,
           code TEXT,
-          purchase_price_usd_cents INTEGER NOT NULL,
-          weight_milli_lb INTEGER NOT NULL,
+          purchase_price_usd_cents INTEGER,
+          weight_milli_lb INTEGER,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`),
