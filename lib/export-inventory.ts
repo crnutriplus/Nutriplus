@@ -157,7 +157,7 @@ async function createExcel(
         item.gamPriceCrc,
         item.puertoPriceCrc,
         product.quantityAvailable,
-        product.minimumStock,
+        product.minimumStockEnabled ? product.minimumStock : null,
         parseUpdatedAt(product.updatedAt),
       ];
       row.height = 27;
@@ -187,7 +187,7 @@ async function createExcel(
         rules: [{
           type: "expression",
           priority: 1,
-          formulae: ["AND($K5>0,$J5<=$K5)"],
+          formulae: ["AND(ISNUMBER($K5),$J5<=$K5)"],
           style: { fill: { type: "pattern", pattern: "solid", bgColor: { argb: RED_LIGHT }, fgColor: { argb: RED_LIGHT } } },
         }],
       });
@@ -311,7 +311,7 @@ async function createPdf(complete: InventoryRow[], incomplete: InventoryRow[], g
       money(item.gamPriceCrc),
       money(item.puertoPriceCrc),
       String(product.quantityAvailable),
-      String(product.minimumStock),
+      product.minimumStockEnabled ? String(product.minimumStock) : "-",
       dateText(parseUpdatedAt(product.updatedAt)),
     ];
   }
@@ -327,7 +327,7 @@ async function createPdf(complete: InventoryRow[], incomplete: InventoryRow[], g
       const lineSets = values.map((value, index) => wrap(value, widths[index] - 6, 6.4, index < 2 ? 2 : 1));
       const rowHeight = Math.max(19, Math.max(...lineSets.map((lines) => lines.length)) * 7.2 + 7);
       if (state.y - rowHeight < 34) state = addPage(section, incompleteSection, false);
-      const lowStock = item.product.minimumStock > 0 && item.product.quantityAvailable <= item.product.minimumStock;
+      const lowStock = item.product.minimumStockEnabled && item.product.quantityAvailable <= item.product.minimumStock;
       const fill = lowStock ? colors.redLight : incompleteSection ? colors.amberLight : rowIndex % 2 ? colors.greenLight : colors.white;
       let x = margin;
       values.forEach((_value, columnIndex) => {

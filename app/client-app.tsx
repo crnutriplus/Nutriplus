@@ -2,6 +2,9 @@
 
 import {
   AlertCircle,
+  ArchiveRestore,
+  Bell,
+  BellRing,
   Calculator,
   Camera,
   Check,
@@ -41,6 +44,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { ImportChangedProduct, ImportJobRecord } from "@/lib/import-jobs";
 import {
   calculatePrices,
   crc,
@@ -64,12 +68,29 @@ type Form = {
   weightLb: string;
   quantityAvailable: string;
   minimumStock: string;
+  minimumStockEnabled: boolean;
 };
-type Toast = { type: "success" | "error"; text: string } | null;
-type Mapping = { name: string; purchasePriceUsd: string; weightLb: string; code: string };
+type Toast = { type: "success" | "error"; text: string; sticky?: boolean } | null;
+type Mapping = {
+  name: string;
+  purchasePriceUsd: string;
+  weightLb: string;
+  code: string;
+  quantityAvailable: string;
+  minimumStock: string;
+};
 type BurstState = { text: string; startedAt: number; lastAt: number; valueBefore: string };
 
-const EMPTY: Form = { id: null, name: "", code: "", purchasePriceUsd: "", weightLb: "", quantityAvailable: "", minimumStock: "" };
+const EMPTY: Form = {
+  id: null,
+  name: "",
+  code: "",
+  purchasePriceUsd: "",
+  weightLb: "0",
+  quantityAvailable: "",
+  minimumStock: "",
+  minimumStockEnabled: false,
+};
 const EMPTY_BURST: BurstState = { text: "", startedAt: 0, lastAt: 0, valueBefore: "" };
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", ".", "backspace"] as const;
 
@@ -79,7 +100,7 @@ function preloadScanner() {
   return scannerModulePromise;
 }
 
-type BarcodeResult = { rawValue: string };
+type BarcodeResult = { rawValue: string; format?: string };
 type BarcodeDetectorInstance = { detect: (source: HTMLVideoElement) => Promise<BarcodeResult[]> };
 type BarcodeDetectorConstructor = {
   new (options?: { formats?: string[] }): BarcodeDetectorInstance;
@@ -102,6 +123,14 @@ const BARCODE_FORMATS = [
   "pdf417",
 ];
 
+function validDecodedCode(value: string) {
+  const clean = value.trim();
+  return clean.length >= 3
+    && clean.length <= 256
+    && !/[\u0000-\u001f\u007f]/.test(clean)
+    && /[A-Za-z0-9]/.test(clean);
+}
+
 async function json<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T & { error?: string };
   if (!response.ok) throw new Error(body.error || "Ocurrió un error inesperado.");
@@ -117,6 +146,7 @@ function productToForm(product: ProductRecord): Form {
     weightLb: product.weightLb === null ? "" : String(product.weightLb),
     quantityAvailable: String(product.quantityAvailable),
     minimumStock: String(product.minimumStock),
+    minimumStockEnabled: product.minimumStockEnabled,
   };
 }
 
@@ -159,10 +189,30 @@ function Scanner({ onClose, onCode }: { onClose: () => void; onCode: (value: str
   const torchOnRef = useRef(false);
   const autoTorchEnabledRef = useRef(true);
   const torchBusyRef = useRef(false);
+  const onCodeRef = useRef(onCode);
+  const lockedRef = useRef(false);
+  const candidateRef = useRef({ value: "", count: 0, lastSeen: 0 });
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(true);
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+
+  useEffect(() => { onCodeRef.current = onCode; }, [onCode]);
+
+  const confirmCandidate = useCallback((rawValue: string) => {
+    const value = rawValue.trim();
+    if (lockedRef.current || !validDecodedCode(value)) return;
+    const now = performance.now();
+    const previous = candidateRef.current;
+    if (previous.value === value && now - previous.lastSeen < 900) {
+      candidateRef.current = { value, count: previous.count + 1, lastSeen: now };
+    } else {
+      candidateRef.current = { value, count: 1, lastSeen: now };
+    }
+    if (candidateRef.current.count < 2) return;
+    lockedRef.current = true;
+    onCodeRef.current(value);
+  }, []);
 
   const applyTorch = useCallback(async (next: boolean, automatic = false) => {
     const track = stream.current?.getVideoTracks()[0];
@@ -267,8 +317,7 @@ function Scanner({ onClose, onCode }: { onClose: () => void; onCode: (value: str
           });
           controls = await reader.decodeFromStream(mediaStream, video.current, (result) => {
             if (result && !stopped) {
-              controls?.stop();
-              onCode(result.getText());
+              confirmCandidate(result.getText());
             }
           });
         };
@@ -282,11 +331,8 @@ function Scanner({ onClose, onCode }: { onClose: () => void; onCode: (value: str
             if (stopped || !video.current) return;
             try {
               const results = await detector.detect(video.current);
-              const value = results.find((result) => result.rawValue.trim())?.rawValue.trim();
-              if (value && !stopped) {
-                onCode(value);
-                return;
-              }
+              const result = results.find((candidate) => validDecodedCode(candidate.rawValue));
+              if (result && !stopped) confirmCandidate(result.rawValue);
             } catch {
               // A frame can fail while the camera adjusts focus; keep scanning.
             }
@@ -314,13 +360,13 @@ function Scanner({ onClose, onCode }: { onClose: () => void; onCode: (value: str
       stream.current?.getTracks().forEach((track) => track.stop());
       stream.current = null;
     };
-  }, [applyTorch, onCode]);
+  }, [applyTorch, confirmCandidate]);
 
-  return <div className="modal" role="dialog" aria-modal="true" aria-label="Escáner de producto"><div className="scanner-card">
+  return <div className="modal" role="dialog" aria-modal="true" aria-label="Escáner de producto" onPointerDown={onClose}><div className="scanner-card" onPointerDown={(event) => event.stopPropagation()}>
     <div className="modal-head"><div><span className="eyebrow">Cámara</span><h2>Escanear producto</h2></div><button className="icon-btn" onClick={onClose} aria-label="Cerrar"><X /></button></div>
-    <div className="camera"><video ref={video} muted playsInline /><canvas ref={canvas} hidden /><div className="scan-frame" />{starting && <div className="camera-state"><Loader2 className="spin" />Abriendo cámara…</div>}</div>
+    <div className="camera" onPointerDown={onClose}><video ref={video} muted playsInline /><canvas ref={canvas} hidden /><div className="scan-frame" />{starting && <div className="camera-state"><Loader2 className="spin" />Abriendo cámara…</div>}</div>
     {error ? <p className="alert error"><AlertCircle size={17} />{error}</p> : <div className="scanner-help"><p className="hint">Colocá el QR o código de barras dentro del recuadro.</p>{torchAvailable && <button className={`torch-btn ${torchOn ? "active" : ""}`} onClick={() => { autoTorchEnabledRef.current = false; void applyTorch(!torchOn); }}><Flashlight />{torchOn ? "Apagar linterna" : "Encender linterna"}</button>}</div>}
-    {torchAvailable && <p className="auto-light">La linterna se activa automáticamente si detecta poca luz.</p>}
+    {torchAvailable && <p className="auto-light">La linterna se activa automáticamente si detecta poca luz. Tocá la cámara o el fondo para cerrarla.</p>}
     <button className="btn secondary full" onClick={onClose}>Cancelar</button>
   </div></div>;
 }
@@ -400,7 +446,7 @@ function ProductForm({
   const validPrice = price === null || (Number.isFinite(price) && price >= 0);
   const validWeight = weight === null || (Number.isFinite(weight) && weight >= 0);
   const quantityAvailable = form.quantityAvailable.trim() ? Number(form.quantityAvailable) : 0;
-  const minimumStock = form.minimumStock.trim() ? Number(form.minimumStock) : 0;
+  const minimumStock = form.minimumStockEnabled && form.minimumStock.trim() ? Number(form.minimumStock) : 0;
   const validInventory = Number.isInteger(quantityAvailable) && quantityAvailable >= 0 && Number.isInteger(minimumStock) && minimumStock >= 0;
   const completePricing = price !== null && validPrice && weight !== null && validWeight;
   const validForm = Boolean(form.name.trim()) && validPrice && validWeight && validInventory;
@@ -421,9 +467,12 @@ function ProductForm({
     <label className="field name-field"><span>Nombre del producto <em>*</em></span><div className="input-icon"><Package /><input value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); setSuggestionsOpen(true); }} onKeyDown={(event) => detectScannerBurst(event, nameBurst, (code, before) => { setForm((current) => ({ ...current, name: before, code })); onExternalCode(code); })} onFocus={() => setSuggestionsOpen(true)} onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 160)} placeholder="Ej. Omega 3 Nordic encargo" required /></div>{showSuggestions && suggestionsOpen && form.name.trim() && suggestions.length > 0 && <div className="suggestions"><small>Productos encontrados</small>{suggestions.slice(0, 7).map((product) => <button type="button" onMouseDown={() => onPick(product)} key={product.id}><b>{product.name}</b><span>{product.purchasePriceUsd === null ? "Compra incompleta" : usd(product.purchasePriceUsd)} · {product.weightLb === null ? "peso incompleto" : `${product.weightLb.toFixed(2)} lb`}</span></button>)}</div>}<p className="hint">Podés buscar con varias palabras aunque no estén seguidas.</p></label>
     <label className="field"><span>Código QR o de barras <small>Opcional</small></span><div className="code-row"><div className="input-icon grow"><ScanLine /><input value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); const code = event.currentTarget.value.trim(); if (code) setForm((current) => ({ ...current, code })); } }} placeholder="Escaneá o escribí el código" autoComplete="off" /></div><button type="button" className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={onOpenScanner}><Camera /><span>Escanear</span></button></div></label>
     <div className="two"><label className="field"><span>Precio de compra</span><div className={`number-box tappable ${activeNumeric === "purchasePriceUsd" ? "active" : ""}`}><i>$</i><input type="text" inputMode="none" readOnly value={form.purchasePriceUsd} onFocus={() => setActiveNumeric("purchasePriceUsd")} onClick={() => setActiveNumeric("purchasePriceUsd")} placeholder="Incompleto" /></div><p className="hint">En dólares</p></label><label className="field"><span>Peso</span><div className={`number-box tappable ${activeNumeric === "weightLb" ? "active" : ""}`}><input type="text" inputMode="none" readOnly value={form.weightLb} onFocus={() => setActiveNumeric("weightLb")} onClick={() => setActiveNumeric("weightLb")} placeholder="Incompleto" /><small>lb</small></div><p className="hint">Se suman {settings.extraWeightLb.toFixed(2)} lb.</p></label></div>
-    <div className="two inventory-fields"><label className="field"><span>Cantidad disponible</span><div className="stock-stepper"><button type="button" onClick={() => setForm((current) => ({ ...current, quantityAvailable: String(Math.max(0, Number(current.quantityAvailable || 0) - 1)) }))} aria-label="Restar una unidad"><Minus /></button><input type="text" inputMode="numeric" value={form.quantityAvailable} onChange={(event) => setForm({ ...form, quantityAvailable: event.target.value.replace(/\D/g, "").slice(0, 7) })} placeholder="0" aria-label="Cantidad disponible" /><button type="button" onClick={() => setForm((current) => ({ ...current, quantityAvailable: String(Number(current.quantityAvailable || 0) + 1) }))} aria-label="Sumar una unidad"><Plus /></button></div></label><label className="field"><span>Stock mínimo</span><div className="stock-stepper"><button type="button" onClick={() => setForm((current) => ({ ...current, minimumStock: String(Math.max(0, Number(current.minimumStock || 0) - 1)) }))} aria-label="Restar una unidad al stock mínimo"><Minus /></button><input type="text" inputMode="numeric" value={form.minimumStock} onChange={(event) => setForm({ ...form, minimumStock: event.target.value.replace(/\D/g, "").slice(0, 7) })} placeholder="0" aria-label="Stock mínimo" /><button type="button" onClick={() => setForm((current) => ({ ...current, minimumStock: String(Number(current.minimumStock || 0) + 1) }))} aria-label="Sumar una unidad al stock mínimo"><Plus /></button></div></label></div>
+    <div className="inventory-fields"><label className="field"><span>Cantidad disponible</span><div className="stock-stepper"><button type="button" onClick={() => setForm((current) => ({ ...current, quantityAvailable: String(Math.max(0, Number(current.quantityAvailable || 0) - 1)) }))} aria-label="Restar una unidad"><Minus /></button><input type="text" inputMode="numeric" value={form.quantityAvailable} onChange={(event) => setForm({ ...form, quantityAvailable: event.target.value.replace(/\D/g, "").slice(0, 7) })} placeholder="0" aria-label="Cantidad disponible" /><button type="button" onClick={() => setForm((current) => ({ ...current, quantityAvailable: String(Number(current.quantityAvailable || 0) + 1) }))} aria-label="Sumar una unidad"><Plus /></button></div></label>
+      <label className={`stock-toggle ${form.minimumStockEnabled ? "enabled" : ""}`}><input type="checkbox" checked={form.minimumStockEnabled} onChange={(event) => setForm((current) => ({ ...current, minimumStockEnabled: event.target.checked, minimumStock: event.target.checked ? (current.minimumStock || "0") : "" }))} /><span><b>Controlar stock mínimo</b><small>Activá esta alerta solo para los productos más vendidos.</small></span></label>
+      {form.minimumStockEnabled && <label className="field minimum-stock-field"><span>Cantidad para activar la alerta</span><div className="stock-stepper"><button type="button" onClick={() => setForm((current) => ({ ...current, minimumStock: String(Math.max(0, Number(current.minimumStock || 0) - 1)) }))} aria-label="Restar una unidad al stock mínimo"><Minus /></button><input type="text" inputMode="numeric" value={form.minimumStock} onChange={(event) => setForm({ ...form, minimumStock: event.target.value.replace(/\D/g, "").slice(0, 7) })} placeholder="0" aria-label="Stock mínimo" /><button type="button" onClick={() => setForm((current) => ({ ...current, minimumStock: String(Number(current.minimumStock || 0) + 1) }))} aria-label="Sumar una unidad al stock mínimo"><Plus /></button></div><p className="hint">Se avisará cuando la cantidad llegue o baje de este número.</p></label>}
+    </div>
     {activeNumeric && <NumericKeypad active={activeNumeric} onKey={keypad} onClose={() => setActiveNumeric(null)} />}
-    {!form.name.trim() && (form.purchasePriceUsd || form.weightLb) && <p className="alert warning"><AlertCircle />Agregá el nombre para guardar.</p>}{form.name.trim() && !completePricing && <p className="alert warning"><AlertCircle />Podés guardarlo como incompleto y completar los datos después.</p>}
+    {!form.name.trim() && (form.purchasePriceUsd || (form.weightLb && form.weightLb !== "0")) && <p className="alert warning"><AlertCircle />Agregá el nombre para guardar.</p>}{form.name.trim() && !completePricing && <p className="alert warning"><AlertCircle />Podés guardarlo como incompleto y completar los datos después.</p>}
     <div className={`form-actions ${onCancel ? "split" : ""}`}>{onCancel && <button type="button" className="btn secondary" onClick={onCancel}>Cancelar</button>}<button className="btn primary" disabled={!validForm || saving}>{saving ? <Loader2 className="spin" /> : <Save />}{completePricing ? (form.id ? "Guardar cambios" : "Guardar cotización") : "Guardar incompleto"}</button></div>
   </form>;
 }
@@ -442,29 +491,59 @@ function parseNumber(value: unknown) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function ImportView({ settings, afterImport }: { settings: PricingSettings; afterImport: () => void }) {
+type ImportViewProps = {
+  settings: PricingSettings;
+  job: ImportJobRecord | null;
+  history: ImportJobRecord[];
+  summary: ImportChangedProduct[];
+  restoringId: number | null;
+  onStart: (payload: { rows: Array<Record<string, unknown>>; strategy: "update" | "skip"; fileName: string; sheetName: string }) => Promise<void>;
+  onRestore: (job: ImportJobRecord) => Promise<void>;
+};
+
+function importDate(value: string) {
+  const normalized = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+  return new Intl.DateTimeFormat("es-CR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(normalized));
+}
+
+function ImportView({ settings, job, history, summary, restoringId, onStart, onRestore }: ImportViewProps) {
   const input = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState("");
   const [sheetName, setSheetName] = useState("");
   const [firstDataRow, setFirstDataRow] = useState(2);
   const [headers, setHeaders] = useState<string[]>([]);
   const [rows, setRows] = useState<unknown[][]>([]);
-  const [mapping, setMapping] = useState<Mapping>({ name: "", purchasePriceUsd: "", weightLb: "", code: "" });
+  const [mapping, setMapping] = useState<Mapping>({ name: "", purchasePriceUsd: "", weightLb: "", code: "", quantityAvailable: "", minimumStock: "" });
   const [strategy, setStrategy] = useState<"update" | "skip">("update");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Toast>(null);
-  const mapped = useMemo(() => rows.map((row, i) => ({
-    rowNumber: i + firstDataRow,
-    name: mapping.name === "" ? "" : String(row[Number(mapping.name)] ?? "").trim(),
-    purchasePriceUsd: mapping.purchasePriceUsd === "" ? null : parseNumber(row[Number(mapping.purchasePriceUsd)]),
-    weightLb: mapping.weightLb === "" ? null : parseNumber(row[Number(mapping.weightLb)]),
-    code: mapping.code === "" ? "" : String(row[Number(mapping.code)] ?? "").trim(),
-  })), [firstDataRow, mapping, rows]);
+  const [restoreTarget, setRestoreTarget] = useState<ImportJobRecord | null>(null);
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
+  const mapped = useMemo(() => rows.map((row, index) => {
+    const codeCell = mapping.code === "" ? null : row[Number(mapping.code)];
+    const quantityCell = mapping.quantityAvailable === "" ? null : row[Number(mapping.quantityAvailable)];
+    const minimumCell = mapping.minimumStock === "" ? null : row[Number(mapping.minimumStock)];
+    return {
+      rowNumber: index + firstDataRow,
+      name: mapping.name === "" ? "" : String(row[Number(mapping.name)] ?? "").trim(),
+      purchasePriceUsd: mapping.purchasePriceUsd === "" ? null : parseNumber(row[Number(mapping.purchasePriceUsd)]),
+      weightLb: mapping.weightLb === "" ? null : parseNumber(row[Number(mapping.weightLb)]),
+      code: String(codeCell ?? "").trim(),
+      quantityAvailable: parseNumber(quantityCell),
+      minimumStock: parseNumber(minimumCell),
+      hasCode: mapping.code !== "" && String(codeCell ?? "").trim() !== "",
+      hasPurchasePrice: mapping.purchasePriceUsd !== "",
+      hasWeight: mapping.weightLb !== "",
+      hasQuantity: mapping.quantityAvailable !== "" && String(quantityCell ?? "").trim() !== "",
+      hasMinimumStock: mapping.minimumStock !== "" && String(minimumCell ?? "").trim() !== "",
+    };
+  }), [firstDataRow, mapping, rows]);
   const named = mapped.filter((row) => row.name);
   const ready = [...new Map(named.map((row) => [normalizeName(row.name), row])).values()];
   const duplicates = named.length - ready.length;
-  const incomplete = ready.filter((row) => row.purchasePriceUsd === null || row.weightLb === null);
-  const complete = mapping.name !== "" && mapping.purchasePriceUsd !== "" && mapping.weightLb !== "";
+  const incomplete = ready.filter((row) => !row.hasPurchasePrice || row.purchasePriceUsd === null || !row.hasWeight || row.weightLb === null);
+  const running = job?.status === "queued" || job?.status === "running";
+  const percentage = job ? Math.min(100, Math.round((job.processedRows / Math.max(1, job.totalRows)) * 100)) : 0;
 
   useEffect(() => {
     if (!notice) return;
@@ -483,22 +562,32 @@ function ImportView({ settings, afterImport }: { settings: PricingSettings; afte
     setBusy(true);
     setNotice(null);
     try {
-      const XLSX = await import("xlsx");
-      const book = XLSX.read(await file.arrayBuffer(), { type: "array" });
-      const selectedSheet = book.SheetNames.find((name) => normalizeName(name) === "compu") || book.SheetNames[0];
-      const data = XLSX.utils.sheet_to_json<unknown[]>(book.Sheets[selectedSheet], { header: 1, defval: "", raw: true });
-      if (data.length < 2) throw new Error("El archivo no contiene productos.");
-      const headerIndex = data.findIndex((row) => row.some((cell) => normalizeName(String(cell)) === "producto"));
-      if (headerIndex < 0) throw new Error("No se encontró la columna Producto.");
-      const nextHeaders = data[headerIndex].map((cell, i) => String(cell || `Columna ${i + 1}`).trim());
-      const normalized = nextHeaders.map(normalizeName);
-      const find = (...tests: RegExp[]) => { const i = normalized.findIndex((head) => tests.some((test) => test.test(head))); return i < 0 ? "" : String(i); };
+      const buffer = await file.arrayBuffer();
+      const parsed = await new Promise<{ sheetName: string; headers: string[]; rows: unknown[][]; firstDataRow: number }>((resolve, reject) => {
+        const parser = new Worker(new URL("../lib/import-worker.ts", import.meta.url), { type: "module" });
+        parser.onmessage = (message: MessageEvent<{ ok: boolean; error?: string; sheetName: string; headers: string[]; rows: unknown[][]; firstDataRow: number }>) => {
+          parser.terminate();
+          if (message.data.ok) resolve(message.data);
+          else reject(new Error(message.data.error || "No se pudo leer el archivo."));
+        };
+        parser.onerror = () => { parser.terminate(); reject(new Error("No se pudo leer el archivo.")); };
+        parser.postMessage({ buffer }, [buffer]);
+      });
+      const normalized = parsed.headers.map(normalizeName);
+      const find = (...tests: RegExp[]) => { const index = normalized.findIndex((head) => tests.some((test) => test.test(head))); return index < 0 ? "" : String(index); };
       setFileName(file.name);
-      setSheetName(selectedSheet);
-      setFirstDataRow(headerIndex + 2);
-      setHeaders(nextHeaders);
-      setRows(data.slice(headerIndex + 1).filter((row) => row.some((cell) => String(cell).trim())));
-      setMapping({ name: find(/nombre/, /producto/, /descripcion/), purchasePriceUsd: find(/precio.*compra/, /precio.*producto/, /costo.*usd/, /^precio$/), weightLb: find(/peso/, /libras/, /^lb$/), code: find(/codigo/, /barra/, /barcode/, /^qr$/) });
+      setSheetName(parsed.sheetName);
+      setFirstDataRow(parsed.firstDataRow);
+      setHeaders(parsed.headers);
+      setRows(parsed.rows);
+      setMapping({
+        name: find(/^producto$/, /nombre/, /descripcion/),
+        purchasePriceUsd: find(/precio.*compra/, /precio.*producto/, /costo.*usd/, /^precio$/),
+        weightLb: find(/^libras$/, /peso.*lb/, /^peso$/, /^lb$/),
+        code: find(/codigo/, /barra/, /barcode/, /^qr$/),
+        quantityAvailable: find(/^cant$/, /cantidad.*disponible/, /existencia/, /stock.*actual/),
+        minimumStock: find(/stock.*minimo/, /cantidad.*minima/, /^minimo$/),
+      });
     } catch (error) {
       setNotice({ type: "error", text: error instanceof Error ? error.message : "No se pudo leer el archivo." });
     } finally {
@@ -507,32 +596,36 @@ function ImportView({ settings, afterImport }: { settings: PricingSettings; afte
     }
   }
 
-  async function importRows() {
+  const reset = () => { setHeaders([]); setRows([]); setFileName(""); setSheetName(""); setNotice(null); };
+
+  async function beginImport() {
     setBusy(true);
     setNotice(null);
+    setSummaryExpanded(false);
     try {
-      const result = await json<{ imported: number; updated: number; skipped: number; errors: unknown[] }>(await fetch("/api/products/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows: ready, strategy }) }));
-      setNotice({ type: result.errors.length ? "error" : "success", text: `${result.imported} nuevos, ${result.updated} actualizados y ${result.skipped} omitidos.${result.errors.length ? ` ${result.errors.length} filas necesitan revisión.` : ""}` });
-      afterImport();
+      await onStart({ rows: ready, strategy, fileName, sheetName });
+      reset();
     } catch (error) {
-      setNotice({ type: "error", text: error instanceof Error ? error.message : "No se pudo importar." });
+      setNotice({ type: "error", text: error instanceof Error ? error.message : "No se pudo iniciar la importación." });
     } finally {
       setBusy(false);
     }
   }
 
-  const reset = () => { setHeaders([]); setRows([]); setFileName(""); setSheetName(""); setNotice(null); };
-  return <div className="view"><header className="view-head"><span className="eyebrow">Carga masiva</span><h1>Importar Excel</h1><p>Cargá tus productos y revisalos antes de guardar.</p></header>
-    {!headers.length ? <section className="surface upload" onClick={() => input.current?.click()}><div className="upload-icon"><FileSpreadsheet /></div><h2>{busy ? "Leyendo archivo…" : "Seleccioná tu archivo"}</h2><p>.xlsx, .xlsm, .xls o .csv</p><button className="btn primary" disabled={busy}><Upload />Elegir archivo</button><input ref={input} type="file" accept=".xlsx,.xlsm,.xls,.csv" onChange={pick} hidden /></section> : <>
+  return <div className="view"><header className="view-head"><span className="eyebrow">Carga masiva segura</span><h1>Importar Excel</h1><p>La importación continúa aunque cambiés de sección y crea un respaldo antes de empezar.</p></header>
+    {job && <section className={`surface import-progress ${job.status}`}><div className="progress-head"><div><span className="eyebrow">{running ? "Importando en segundo plano" : job.status === "completed" ? "Importación completada" : "La importación encontró un problema"}</span><h2>{job.fileName}</h2><p>{job.sheetName ? `Hoja ${job.sheetName} · ` : ""}{job.processedRows} de {job.totalRows} productos procesados</p></div><strong>{job.status === "completed" ? "100%" : `${percentage}%`}</strong></div><div className="progress-track" aria-label={`${percentage}% importado`}><span style={{ width: `${job.status === "completed" ? 100 : percentage}%` }} /></div><div className="progress-stats"><span><b>{job.importedCount}</b>Nuevos</span><span><b>{job.updatedCount}</b>Actualizados</span><span><b>{job.skippedCount}</b>Omitidos</span><span><b>{job.conflictCount + job.errorCount}</b>Sin cambiar</span></div>{running && <p className="background-note"><Loader2 className="spin" />Podés seguir usando Calcular, Productos o Ajustes. Guardar un producto manualmente no detiene ni sobrescribe tu cambio.</p>}</section>}
+
+    {!running && (!headers.length ? <section className="surface upload"><div className="upload-icon"><FileSpreadsheet /></div><h2>{busy ? "Leyendo archivo en segundo plano…" : "Seleccioná tu archivo"}</h2><p>.xlsx, .xlsm, .xls o .csv</p><label className={`btn primary ${busy ? "disabled" : ""}`} htmlFor="nutriplus-import-file">{busy ? <Loader2 className="spin" /> : <Upload />}Elegir archivo</label><input id="nutriplus-import-file" className="native-file-input" ref={input} type="file" accept=".xlsx,.xlsm,.xls,.csv" onChange={pick} disabled={busy} /></section> : <>
       <section className="surface file-row"><div><FileSpreadsheet /><span><b>{fileName}</b><small>Hoja {sheetName} · {named.length} filas con producto</small></span></div><button className="btn ghost small" onClick={reset}><RotateCcw />Cambiar</button></section>
-      <section className="surface section"><Step n="1" title="Relacioná las columnas" text="Elegí qué columna corresponde a cada dato." /><div className="mapping">{([["name", "Nombre del producto", true], ["purchasePriceUsd", "Precio de compra USD", true], ["weightLb", "Peso en libras", true], ["code", "Código QR / barras", false]] as const).map(([key, label, required]) => <label className="field" key={key}><span>{label}{required && <em>*</em>}</span><select value={mapping[key]} onChange={(event) => setMapping({ ...mapping, [key]: event.target.value })}><option value="">Seleccionar columna</option>{headers.map((header, i) => <option value={i} key={`${header}-${i}`}>{header}</option>)}</select></label>)}</div></section>
-      <section className="surface section"><Step n="2" title="Vista previa" text={complete ? `${ready.length} productos: ${incomplete.length} incompletos${duplicates ? ` · ${duplicates} repetidos resueltos con la última aparición` : ""}` : "Completá las columnas obligatorias."} /><div className="table-wrap"><table><thead><tr><th>Producto</th><th>Compra</th><th>Peso</th><th>GAM</th><th>Puerto</th><th>Estado</th></tr></thead><tbody>{ready.slice(0, 6).map((row) => {
-        const ok = row.purchasePriceUsd !== null && row.purchasePriceUsd >= 0 && row.weightLb !== null && row.weightLb >= 0;
-        const prices = ok ? calculatePrices(row.purchasePriceUsd!, row.weightLb!, settings) : null;
-        return <tr key={row.rowNumber}><td><b>{row.name}</b>{row.code && <small>{row.code}</small>}</td><td>{row.purchasePriceUsd !== null ? usd(row.purchasePriceUsd) : "—"}</td><td>{row.weightLb !== null ? `${row.weightLb.toFixed(2)} lb` : "—"}</td><td>{prices ? crc(prices.gamPriceCrc) : "—"}</td><td>{prices ? crc(prices.puertoPriceCrc) : "—"}</td><td><span className={`pill ${ok ? "ok" : "bad"}`}>{ok ? <Check /> : <AlertCircle />}{ok ? "Lista" : "Incompleto"}</span></td></tr>;
-      })}</tbody></table></div></section>
-      <section className="surface section"><Step n="3" title="Productos ya guardados" text="Elegí qué hacer si el nombre o código ya existe en la app." /><div className="strategies"><label className={strategy === "update" ? "chosen" : ""}><input type="radio" checked={strategy === "update"} onChange={() => setStrategy("update")} /><span><b>Actualizar existentes</b><small>Reemplaza precio y peso.</small></span></label><label className={strategy === "skip" ? "chosen" : ""}><input type="radio" checked={strategy === "skip"} onChange={() => setStrategy("skip")} /><span><b>Omitir existentes</b><small>Conserva los datos guardados.</small></span></label></div><button className="btn primary full" disabled={!complete || !ready.length || busy} onClick={importRows}>{busy ? <Loader2 className="spin" /> : <Upload />}Importar {ready.length || ""} productos</button></section>
-    </>}{notice && <p className={`alert ${notice.type}`}><AlertCircle />{notice.text}</p>}
+      <section className="surface section"><Step n="1" title="Relacioná las columnas" text="Solo Producto es obligatorio. Las demás columnas se importan si están disponibles." /><div className="mapping">{([["name", "Nombre del producto", true], ["code", "Código QR / barras", false], ["purchasePriceUsd", "Precio de compra USD", false], ["weightLb", "Peso en libras", false], ["quantityAvailable", "Cantidad disponible", false], ["minimumStock", "Stock mínimo", false]] as const).map(([key, label, required]) => <label className="field" key={key}><span>{label}{required && <em>*</em>}</span><select value={mapping[key]} onChange={(event) => setMapping({ ...mapping, [key]: event.target.value })}><option value="">No importar esta columna</option>{headers.map((header, index) => <option value={index} key={`${header}-${index}`}>{header}</option>)}</select></label>)}</div></section>
+      <section className="surface section"><Step n="2" title="Cómo tratar los productos existentes" text={`${ready.length} productos listos · ${incomplete.length} incompletos${duplicates ? ` · ${duplicates} repetidos: se conservará la última aparición` : ""}. No se mostrará vista previa.`} /><div className="strategies"><label className={strategy === "update" ? "chosen" : ""}><input type="radio" checked={strategy === "update"} onChange={() => setStrategy("update")} /><span><b>Actualizar existentes</b><small>Solo reemplaza las columnas incluidas. Los cambios manuales posteriores se conservan.</small></span></label><label className={strategy === "skip" ? "chosen" : ""}><input type="radio" checked={strategy === "skip"} onChange={() => setStrategy("skip")} /><span><b>Omitir existentes</b><small>Agrega únicamente productos nuevos.</small></span></label></div><button className="btn primary full" disabled={mapping.name === "" || !ready.length || busy} onClick={() => void beginImport()}>{busy ? <Loader2 className="spin" /> : <Upload />}Importar {ready.length || ""} productos</button></section>
+    </>)}
+
+    {job?.status === "completed" && <section className="surface section import-summary"><Step n="✓" title="Resumen de la última importación" text={`${job.importedCount} nuevos · ${job.updatedCount} actualizados · ${job.incompleteCount} incompletos`} />{summary.length ? <><div className="summary-list">{summary.slice(0, summaryExpanded ? summary.length : 20).map(({ outcome, product }) => { const prices = hasCompletePricing(product) ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; return <article key={`${outcome}-${product.id}`}><div><b>{product.name}</b><small>{outcome === "imported" ? "Nuevo" : "Actualizado"}{product.code ? ` · ${product.code}` : ""}</small></div><span><small>Stock</small><b>{product.quantityAvailable}{product.minimumStockEnabled ? ` / mín. ${product.minimumStock}` : ""}</b></span><span><small>GAM</small><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></span><span><small>Puerto</small><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></span></article>; })}</div>{summary.length > 20 && <button className="btn secondary summary-toggle" onClick={() => setSummaryExpanded((current) => !current)}>{summaryExpanded ? "Mostrar solo los primeros 20" : `Mostrar los ${summary.length} productos`}</button>}</> : <p className="empty-summary">No hubo productos nuevos ni actualizados en esta importación.</p>}</section>}
+
+    <section className="surface section import-history"><Step n="↶" title="Historial y respaldos" text="Cada importación conserva una copia completa del inventario anterior." />{history.length ? <div className="history-list">{history.map((item) => <article key={item.id}><div><b>{item.fileName}</b><small>{importDate(item.createdAt)}{item.restoredAt ? " · Restaurado" : ""}</small></div><span>{item.strategy === "backup" ? "Respaldo automático" : `${item.importedCount} nuevos · ${item.updatedCount} actualizados`}</span><button className="btn ghost small" onClick={() => setRestoreTarget(item)} disabled={restoringId !== null || item.status !== "completed"}><ArchiveRestore />Volver a este respaldo</button></article>)}</div> : <p className="empty-summary">El historial aparecerá después de la primera importación.</p>}</section>
+    {notice && <p className={`alert ${notice.type}`}><AlertCircle />{notice.text}</p>}
+    {restoreTarget && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar restauración"><div className="confirm-card"><div className="download-symbol"><ArchiveRestore /></div><h2>¿Volver a este respaldo?</h2><p>Se restaurará el inventario que existía antes de <b>{restoreTarget.fileName}</b>. Primero se guardará otra copia del inventario actual para que también puedas recuperarlo.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setRestoreTarget(null)} disabled={restoringId !== null}>No, cancelar</button><button className="btn primary" onClick={() => { const target = restoreTarget; setRestoreTarget(null); void onRestore(target); }} disabled={restoringId !== null}><ArchiveRestore />Sí, restaurar</button></div></div></div>}
   </div>;
 }
 
@@ -573,18 +666,26 @@ export function NutriPlusApp() {
   const [exportConfirm, setExportConfirm] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [visibleCount, setVisibleCount] = useState(36);
+  const [stockOnly, setStockOnly] = useState(false);
+  const [phoneNotificationsEnabled, setPhoneNotificationsEnabled] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">("default");
+  const [importJob, setImportJob] = useState<ImportJobRecord | null>(null);
+  const [importHistory, setImportHistory] = useState<ImportJobRecord[]>([]);
+  const [importSummary, setImportSummary] = useState<ImportChangedProduct[]>([]);
+  const [restoringImportId, setRestoringImportId] = useState<number | null>(null);
   const deferredQuery = useDeferredValue(query);
   const searchBurst = useRef<BurstState>({ ...EMPTY_BURST });
   const toastTimer = useRef<number | null>(null);
+  const importRunner = useRef<number | null>(null);
 
   const notify = useCallback((next: NonNullable<Toast>) => {
     setToast(next);
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 3800);
+    if (!next.sticky) toastTimer.current = window.setTimeout(() => setToast(null), 3800);
   }, []);
 
   useEffect(() => {
-    if (!toast) return;
+    if (!toast || toast.sticky) return;
     const dismiss = () => setToast(null);
     document.addEventListener("pointerdown", dismiss, true);
     return () => document.removeEventListener("pointerdown", dismiss, true);
@@ -602,15 +703,86 @@ export function NutriPlusApp() {
     setProducts(result.products);
   }, []);
 
+  const refreshImportHistory = useCallback(async () => {
+    const result = await json<{ jobs: ImportJobRecord[] }>(await fetch("/api/imports"));
+    setImportHistory(result.jobs);
+    return result.jobs;
+  }, []);
+
+  const runImport = useCallback(async (id: number) => {
+    if (importRunner.current === id) return;
+    importRunner.current = id;
+    try {
+      while (true) {
+        const data = await json<{ job: ImportJobRecord }>(await fetch(`/api/imports/${id}/process`, { method: "POST" }));
+        setImportJob(data.job);
+        if (data.job.status === "completed") {
+          const detail = await json<{ job: ImportJobRecord; changedProducts: ImportChangedProduct[] }>(await fetch(`/api/imports/${id}`));
+          setImportJob(detail.job);
+          setImportSummary(detail.changedProducts);
+          await Promise.all([refreshProducts(), refreshImportHistory()]);
+          notify({ type: "success", text: `Importación completada: ${detail.job.importedCount} nuevos y ${detail.job.updatedCount} actualizados.`, sticky: true });
+          break;
+        }
+        if (data.job.status === "failed") {
+          await refreshImportHistory();
+          notify({ type: "error", text: "La importación se detuvo sin borrar el inventario anterior. Podés revisar el respaldo en Importar.", sticky: true });
+          break;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 35));
+      }
+    } catch (error) {
+      notify({ type: "error", text: error instanceof Error ? `${error.message} La importación quedó guardada para poder reanudarla.` : "La importación quedó guardada para poder reanudarla.", sticky: true });
+    } finally {
+      if (importRunner.current === id) importRunner.current = null;
+    }
+  }, [notify, refreshImportHistory, refreshProducts]);
+
+  const startImport = useCallback(async (payload: { rows: Array<Record<string, unknown>>; strategy: "update" | "skip"; fileName: string; sheetName: string }) => {
+    const data = await json<{ job: ImportJobRecord }>(await fetch("/api/imports", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }));
+    setImportJob(data.job);
+    setImportSummary([]);
+    setImportHistory((current) => [data.job, ...current.filter((item) => item.id !== data.job.id)]);
+    notify({ type: "success", text: "La importación empezó en segundo plano. Podés seguir usando la app." });
+    void runImport(data.job.id);
+  }, [notify, runImport]);
+
+  const restoreImport = useCallback(async (target: ImportJobRecord) => {
+    setRestoringImportId(target.id);
+    try {
+      const result = await json<{ restored: boolean; products: number }>(await fetch(`/api/imports/${target.id}/restore`, { method: "POST" }));
+      await Promise.all([refreshProducts(), refreshImportHistory()]);
+      setImportSummary([]);
+      notify({ type: "success", text: `Respaldo restaurado: ${result.products} productos recuperados. También se guardó una copia del inventario que tenías antes de restaurar.`, sticky: true });
+    } catch (error) {
+      notify({ type: "error", text: error instanceof Error ? error.message : "No se pudo restaurar el respaldo.", sticky: true });
+    } finally {
+      setRestoringImportId(null);
+    }
+  }, [notify, refreshImportHistory, refreshProducts]);
+
   useEffect(() => {
     const preloadTimer = window.setTimeout(() => { void preloadScanner().catch(() => undefined); }, 700);
     (async () => {
       try {
-        const [settingsResponse, productsResponse] = await Promise.all([fetch("/api/settings"), fetch("/api/products?limit=1000")]);
+        const [settingsResponse, productsResponse, importsResponse] = await Promise.all([fetch("/api/settings"), fetch("/api/products?limit=1000"), fetch("/api/imports")]);
         const settingsData = await json<{ settings: PricingSettings }>(settingsResponse);
         const productsData = await json<{ products: ProductRecord[] }>(productsResponse);
+        const importsData = await json<{ jobs: ImportJobRecord[] }>(importsResponse);
         setSettings(settingsData.settings);
         setProducts(productsData.products);
+        setImportHistory(importsData.jobs);
+        const active = importsData.jobs.find((item) => item.status === "queued" || item.status === "running");
+        const latest = active || importsData.jobs[0] || null;
+        setImportJob(latest);
+        if (active) void runImport(active.id);
+        else if (latest?.status === "completed" && latest.strategy !== "backup") {
+          void json<{ job: ImportJobRecord; changedProducts: ImportChangedProduct[] }>(await fetch(`/api/imports/${latest.id}`)).then((detail) => setImportSummary(detail.changedProducts)).catch(() => undefined);
+        }
       } catch (error) {
         notify({ type: "error", text: error instanceof Error ? error.message : "No se pudo iniciar la app." });
       } finally {
@@ -618,10 +790,76 @@ export function NutriPlusApp() {
       }
     })();
     return () => window.clearTimeout(preloadTimer);
-  }, [notify]);
+  }, [notify, runImport]);
 
   const suggestions = useMemo(() => searchProducts(products, form.name).filter((product) => product.id !== form.id).slice(0, 8), [form.id, form.name, products]);
-  const filteredProducts = useMemo(() => searchProducts(products, deferredQuery), [deferredQuery, products]);
+  const lowStockProducts = useMemo(() => products.filter((product) => product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock), [products]);
+  const filteredProducts = useMemo(() => {
+    const matches = searchProducts(products, deferredQuery);
+    return stockOnly ? matches.filter((product) => product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock) : matches;
+  }, [deferredQuery, products, stockOnly]);
+
+  const sendDailyStockNotification = useCallback(async (force = false) => {
+    if (!phoneNotificationsEnabled || notificationPermission !== "granted" || !lowStockProducts.length || !("serviceWorker" in navigator)) return;
+    const now = new Date();
+    const dayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const storageKey = "nutriplus-last-low-stock-notification";
+    if (!force && window.localStorage.getItem(storageKey) === dayKey) return;
+    const registration = await navigator.serviceWorker.ready;
+    const names = lowStockProducts.slice(0, 3).map((product) => product.name).join(", ");
+    await registration.showNotification("Stock bajo en NutriPlus", {
+      body: `${lowStockProducts.length} producto${lowStockProducts.length === 1 ? " llegó" : "s llegaron"} al mínimo: ${names}${lowStockProducts.length > 3 ? "…" : ""}`,
+      icon: "/nutriplus-logo.jpg",
+      badge: "/nutriplus-logo.jpg",
+      tag: "nutriplus-low-stock-daily",
+      data: { url: "/?tab=products&stock=low" },
+    });
+    window.localStorage.setItem(storageKey, dayKey);
+  }, [lowStockProducts, notificationPermission, phoneNotificationsEnabled]);
+
+  const enableStockNotifications = useCallback(async () => {
+    if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+      setNotificationPermission("unsupported");
+      notify({ type: "error", text: "Este navegador no admite notificaciones de la app. Las alertas seguirán visibles dentro de Productos." });
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+    if (permission !== "granted") {
+      notify({ type: "error", text: "No se activaron las notificaciones del celular. Podés permitirlas después desde los ajustes del navegador." });
+      return;
+    }
+    window.localStorage.setItem("nutriplus-stock-notifications", "enabled");
+    setPhoneNotificationsEnabled(true);
+    const registration = await navigator.serviceWorker.ready;
+    const periodic = (registration as ServiceWorkerRegistration & { periodicSync?: { register: (tag: string, options: { minInterval: number }) => Promise<void> } }).periodicSync;
+    if (periodic) await periodic.register("nutriplus-low-stock", { minInterval: 24 * 60 * 60 * 1000 }).catch(() => undefined);
+    notify({ type: "success", text: "Notificaciones de stock activadas en este celular." });
+  }, [notify]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+        setNotificationPermission("unsupported");
+        return;
+      }
+      setNotificationPermission(Notification.permission);
+      const enabled = window.localStorage.getItem("nutriplus-stock-notifications") === "enabled";
+      setPhoneNotificationsEnabled(enabled && Notification.permission === "granted");
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("tab") === "products") setTab("products");
+      if (params.get("stock") === "low") setStockOnly(true);
+    }, 0);
+    if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!lowStockProducts.length) window.localStorage.removeItem("nutriplus-last-low-stock-notification");
+    void sendDailyStockNotification();
+    const timer = window.setInterval(() => { void sendDailyStockNotification(); }, 30 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [lowStockProducts.length, sendDailyStockNotification]);
 
   const fillCalculator = useCallback((product: ProductRecord) => {
     setForm(productToForm(product));
@@ -663,6 +901,7 @@ export function NutriPlusApp() {
       if (product) {
         if (destination === "products") {
           clearForm();
+          setStockOnly(false);
           setQuery(cleanCode);
           setVisibleCount(36);
           setTab("products");
@@ -673,6 +912,7 @@ export function NutriPlusApp() {
         notify({ type: "success", text: `Encontramos ${product.name}.` });
       } else if (destination === "products") {
         clearForm();
+        setStockOnly(false);
         setQuery(cleanCode);
         setVisibleCount(36);
         setTab("products");
@@ -738,7 +978,7 @@ export function NutriPlusApp() {
     event.preventDefault();
     if (!form.name.trim()) return notify({ type: "error", text: "El nombre del producto es obligatorio." });
     const quantityAvailable = form.quantityAvailable.trim() ? Number(form.quantityAvailable) : 0;
-    const minimumStock = form.minimumStock.trim() ? Number(form.minimumStock) : 0;
+    const minimumStock = form.minimumStockEnabled && form.minimumStock.trim() ? Number(form.minimumStock) : 0;
     if (!Number.isInteger(quantityAvailable) || quantityAvailable < 0 || !Number.isInteger(minimumStock) || minimumStock < 0) {
       return notify({ type: "error", text: "La cantidad y el stock mínimo deben ser números enteros iguales o mayores que cero." });
     }
@@ -753,6 +993,7 @@ export function NutriPlusApp() {
       weightLb: weight,
       quantityAvailable,
       minimumStock,
+      minimumStockEnabled: submittedForm.minimumStockEnabled,
       updatedAt: new Date().toISOString(),
     } : null;
 
@@ -766,7 +1007,7 @@ export function NutriPlusApp() {
       const data = await json<{ product: ProductRecord }>(await fetch(submittedForm.id ? `/api/products/${submittedForm.id}` : "/api/products", {
         method: submittedForm.id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...submittedForm, purchasePriceUsd: price, weightLb: weight, quantityAvailable, minimumStock }),
+        body: JSON.stringify({ ...submittedForm, purchasePriceUsd: price, weightLb: weight, quantityAvailable, minimumStock, minimumStockEnabled: submittedForm.minimumStockEnabled }),
       }));
       setProducts((current) => [data.product, ...current.filter((product) => product.id !== data.product.id)]);
       if (!editing) clearForm();
@@ -839,18 +1080,19 @@ export function NutriPlusApp() {
       {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{form.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearForm}><RotateCcw />Limpiar</button></header><ProductForm form={form} setForm={setForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onExternalCode={assignCode} onOpenScanner={() => openScanner("assign")} onSubmit={save} saving={saving} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
 
       {tab === "products" && <div className="view"><header className="view-head products-head"><div><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá, editá existencias o descargá el inventario.</p></div><button className="btn primary export-btn" onClick={() => setExportConfirm(true)} disabled={!products.length}><Download />Descargar inventario</button></header>
+        <section className={`surface stock-alert-panel ${lowStockProducts.length ? "has-alerts" : ""}`}><div className="stock-alert-heading"><span className="stock-alert-icon">{lowStockProducts.length ? <BellRing /> : <Bell />}</span><div><h2>{lowStockProducts.length ? `${lowStockProducts.length} producto${lowStockProducts.length === 1 ? " con" : "s con"} stock bajo` : "Stock mínimo al día"}</h2><p>La alerta aparece al llegar o bajar del mínimo y se repite diariamente en este celular.</p></div></div>{lowStockProducts.length > 0 && <div className="low-stock-chips">{lowStockProducts.slice(0, 6).map((product) => <span key={product.id}><b>{product.name}</b>{product.quantityAvailable} / mín. {product.minimumStock}</span>)}{lowStockProducts.length > 6 && <span>+{lowStockProducts.length - 6} más</span>}</div>}<div className="stock-alert-actions"><button className={`btn ${stockOnly ? "primary" : "ghost"} small`} onClick={() => { setStockOnly((current) => !current); setVisibleCount(36); }}>{stockOnly ? "Ver todos" : "Ver solo stock bajo"}</button><button className="btn secondary small" onClick={() => void enableStockNotifications()} disabled={phoneNotificationsEnabled}>{phoneNotificationsEnabled ? <Check /> : <Bell />}{phoneNotificationsEnabled ? "Notificaciones activadas" : notificationPermission === "denied" ? "Permiso bloqueado" : "Activar en el celular"}</button></div></section>
         {editingProductId !== null && <section className="editor-wrap"><div className="editor-heading"><div><span className="eyebrow">Edición en Productos</span><h2>{form.name}</h2></div><button className="icon-btn" onClick={clearForm} aria-label="Cerrar edición"><X /></button></div><ProductForm form={form} setForm={setForm} settings={settings} suggestions={[]} suggestionsOpen={false} setSuggestionsOpen={() => undefined} onPick={() => undefined} onExternalCode={assignCode} onOpenScanner={() => openScanner("assign")} onSubmit={save} onCancel={clearForm} saving={saving} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} showSuggestions={false} /></section>}
         <section className="surface search-card"><div className="input-icon grow"><Search /><input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(36); }} onKeyDown={(event) => detectScannerBurst(event, searchBurst, (code, before) => { setQuery(before); setVisibleCount(36); void lookupCode(code, "products"); })} placeholder="Ej. omega encargo o omega nordic" /></div><button className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={() => openScanner("lookup-products")}><Camera /><span>Escanear</span></button></section>
-        {!filteredProducts.length ? <Empty icon={<PackageSearch />} title={query ? "No hay coincidencias" : "Todavía no hay productos"} text={query ? "Probá con otras palabras o escaneá el código." : "Las cotizaciones guardadas aparecerán aquí."} /> : <><div className="results-count">{query ? `${filteredProducts.length} coincidencias` : `${products.length} productos guardados`}</div><div className="product-grid">{filteredProducts.slice(0, visibleCount).map((product) => { const complete = hasCompletePricing(product); const prices = complete ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; const lowStock = product.minimumStock > 0 && product.quantityAvailable <= product.minimumStock; return <article className={`product-card ${complete ? "" : "pending-product"} ${lowStock ? "low-stock" : ""}`} key={product.id}><div className="product-title"><span className="avatar">{product.name[0].toUpperCase()}</span><div><h2>{product.name}</h2>{product.code && <small><ScanLine />{product.code}</small>}{!complete && <small className="pending-label"><AlertCircle />Incompleto</small>}{lowStock && <small className="stock-label"><AlertCircle />Stock bajo</small>}</div><div className="card-actions"><button className="icon-btn" onClick={() => editInProducts(product)} aria-label={`Editar ${product.name}`}><Pencil /></button><button className="icon-btn danger" onClick={() => setDeleteTarget(product)} aria-label={`Eliminar ${product.name}`}><Trash2 /></button></div></div><div className="facts"><div><span>Compra</span><b>{product.purchasePriceUsd === null ? "—" : usd(product.purchasePriceUsd)}</b></div><div><span>Peso</span><b>{product.weightLb === null ? "—" : `${product.weightLb.toFixed(2)} lb`}</b></div><div className="green"><span>Venta GAM</span><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></div><div className="brown"><span>Venta Puerto</span><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></div><div className="stock"><span>Cantidad disponible</span><b>{product.quantityAvailable}</b></div><div className="stock"><span>Stock mínimo</span><b>{product.minimumStock}</b></div></div></article>; })}</div>{visibleCount < filteredProducts.length && <button className="btn secondary load-more" onClick={() => setVisibleCount((current) => current + 36)}>Mostrar más productos</button>}</>}
+        {!filteredProducts.length ? <Empty icon={<PackageSearch />} title={query || stockOnly ? "No hay coincidencias" : "Todavía no hay productos"} text={stockOnly ? "No hay productos en alerta de stock mínimo." : query ? "Probá con otras palabras o escaneá el código." : "Las cotizaciones guardadas aparecerán aquí."} /> : <><div className="results-count">{stockOnly ? `${filteredProducts.length} con stock bajo` : query ? `${filteredProducts.length} coincidencias` : `${products.length} productos guardados`}</div><div className="product-grid">{filteredProducts.slice(0, visibleCount).map((product) => { const complete = hasCompletePricing(product); const prices = complete ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; const lowStock = product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock; return <article className={`product-card ${complete ? "" : "pending-product"} ${lowStock ? "low-stock" : ""}`} key={product.id}><div className="product-title"><span className="avatar">{product.name[0].toUpperCase()}</span><div><h2>{product.name}</h2>{product.code && <small><ScanLine />{product.code}</small>}{!complete && <small className="pending-label"><AlertCircle />Incompleto</small>}{lowStock && <small className="stock-label"><AlertCircle />Stock bajo</small>}</div><div className="card-actions"><button className="icon-btn" onClick={() => editInProducts(product)} aria-label={`Editar ${product.name}`}><Pencil /></button><button className="icon-btn danger" onClick={() => setDeleteTarget(product)} aria-label={`Eliminar ${product.name}`}><Trash2 /></button></div></div><div className="facts"><div><span>Compra</span><b>{product.purchasePriceUsd === null ? "—" : usd(product.purchasePriceUsd)}</b></div><div><span>Peso</span><b>{product.weightLb === null ? "—" : `${product.weightLb.toFixed(2)} lb`}</b></div><div className="green"><span>Venta GAM</span><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></div><div className="brown"><span>Venta Puerto</span><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></div><div className="stock"><span>Cantidad disponible</span><b>{product.quantityAvailable}</b></div><div className="stock"><span>Stock mínimo</span><b>{product.minimumStockEnabled ? product.minimumStock : "No configurado"}</b></div></div></article>; })}</div>{visibleCount < filteredProducts.length && <button className="btn secondary load-more" onClick={() => setVisibleCount((current) => current + 36)}>Mostrar más productos</button>}</>}
       </div>}
 
-      {tab === "import" && <ImportView settings={settings} afterImport={() => void refreshProducts()} />}
+      {tab === "import" && <ImportView settings={settings} job={importJob} history={importHistory} summary={importSummary} restoringId={restoringImportId} onStart={startImport} onRestore={restoreImport} />}
       {tab === "settings" && <SettingsView key={JSON.stringify(settings)} current={settings} onSave={saveSettings} />}
     </div></div>
     <nav className="bottom">{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}</nav><button className="float-scan" onPointerDown={() => void preloadScanner()} onClick={() => openScanner(tab === "products" ? (editingProductId !== null ? "assign" : "lookup-products") : "lookup-calculator")} aria-label="Escanear"><ScanLine /></button>
     {scannerIntent && <Scanner onClose={() => setScannerIntent(null)} onCode={handleScannerCode} />}
     {exportConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar descarga del inventario"><div className="confirm-card"><div className="download-symbol"><Download /></div><h2>¿Descargar inventario?</h2><p>Se descargarán <b>dos archivos separados</b>: un Excel y un PDF. Ambos incluirán {products.length} productos, con los incompletos en otra hoja o sección.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setExportConfirm(false)} disabled={exporting}>No, cancelar</button><button className="btn primary" onClick={() => void downloadInventory()} disabled={exporting}>{exporting ? <Loader2 className="spin" /> : <Download />}Sí, descargar ambos</button></div></div></div>}
     {deleteTarget && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar producto?</h2><p>Vas a eliminar <b>{deleteTarget.name}</b>. Esta acción no se puede deshacer.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setDeleteTarget(null)} disabled={deleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeProduct()} disabled={deleting}>{deleting ? <Loader2 className="spin" /> : <Trash2 />}Sí, eliminar</button></div></div></div>}
-    {toast && <div className={`toast ${toast.type}`}>{toast.type === "success" ? <Check /> : <AlertCircle />}<span>{toast.text}</span><button onClick={() => setToast(null)}><X /></button></div>}
+    {toast && <div className={`toast ${toast.type} ${toast.sticky ? "sticky" : ""}`} role="status" aria-live="polite">{toast.type === "success" ? <Check /> : <AlertCircle />}<span>{toast.text}</span><button onClick={() => setToast(null)} aria-label="Cerrar notificación"><X /></button></div>}
   </main>;
 }

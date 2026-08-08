@@ -38,6 +38,7 @@ export async function ensureDatabase() {
           weight_milli_lb INTEGER,
           quantity_available INTEGER NOT NULL DEFAULT 0,
           minimum_stock INTEGER NOT NULL DEFAULT 0,
+          minimum_stock_enabled INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`),
@@ -54,7 +55,73 @@ export async function ensureDatabase() {
       const additions = [];
       if (!columnNames.has("quantity_available")) additions.push(db.prepare("ALTER TABLE products ADD COLUMN quantity_available INTEGER NOT NULL DEFAULT 0"));
       if (!columnNames.has("minimum_stock")) additions.push(db.prepare("ALTER TABLE products ADD COLUMN minimum_stock INTEGER NOT NULL DEFAULT 0"));
+      if (!columnNames.has("minimum_stock_enabled")) additions.push(db.prepare("ALTER TABLE products ADD COLUMN minimum_stock_enabled INTEGER NOT NULL DEFAULT 0"));
       if (additions.length) await db.batch(additions);
+
+      await db.batch([
+        db.prepare(`CREATE TABLE IF NOT EXISTS import_jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          file_name TEXT NOT NULL,
+          sheet_name TEXT,
+          strategy TEXT NOT NULL DEFAULT 'update',
+          status TEXT NOT NULL DEFAULT 'queued',
+          total_rows INTEGER NOT NULL DEFAULT 0,
+          processed_rows INTEGER NOT NULL DEFAULT 0,
+          imported_count INTEGER NOT NULL DEFAULT 0,
+          updated_count INTEGER NOT NULL DEFAULT 0,
+          skipped_count INTEGER NOT NULL DEFAULT 0,
+          conflict_count INTEGER NOT NULL DEFAULT 0,
+          error_count INTEGER NOT NULL DEFAULT 0,
+          incomplete_count INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          completed_at TEXT,
+          restored_at TEXT
+        )`),
+        db.prepare(`CREATE TABLE IF NOT EXISTS import_job_rows (
+          id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          import_id INTEGER NOT NULL,
+          row_number INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          normalized_name TEXT NOT NULL,
+          code TEXT,
+          purchase_price_usd_cents INTEGER,
+          weight_milli_lb INTEGER,
+          quantity_available INTEGER,
+          minimum_stock INTEGER,
+          minimum_stock_enabled INTEGER,
+          has_code INTEGER NOT NULL DEFAULT 0,
+          has_purchase_price INTEGER NOT NULL DEFAULT 0,
+          has_weight INTEGER NOT NULL DEFAULT 0,
+          has_quantity INTEGER NOT NULL DEFAULT 0,
+          has_minimum_stock INTEGER NOT NULL DEFAULT 0,
+          processed INTEGER NOT NULL DEFAULT 0,
+          outcome TEXT,
+          message TEXT
+        )`),
+        db.prepare("CREATE INDEX IF NOT EXISTS import_job_rows_pending_idx ON import_job_rows (import_id, processed, id)"),
+        db.prepare(`CREATE TABLE IF NOT EXISTS import_backups (
+          id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          import_id INTEGER NOT NULL,
+          product_count INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`),
+        db.prepare(`CREATE TABLE IF NOT EXISTS import_backup_products (
+          id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          backup_id INTEGER NOT NULL,
+          original_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          normalized_name TEXT NOT NULL,
+          code TEXT,
+          purchase_price_usd_cents INTEGER,
+          weight_milli_lb INTEGER,
+          quantity_available INTEGER NOT NULL DEFAULT 0,
+          minimum_stock INTEGER NOT NULL DEFAULT 0,
+          minimum_stock_enabled INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )`),
+        db.prepare("CREATE INDEX IF NOT EXISTS import_backup_products_backup_idx ON import_backup_products (backup_id, original_id)"),
+      ]);
     })().catch((error) => { initialization = null; throw error; });
   }
   await initialization;

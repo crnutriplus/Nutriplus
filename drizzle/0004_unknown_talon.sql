@@ -1,0 +1,2 @@
+CREATE INDEX `import_backup_products_backup_idx` ON `import_backup_products` (`backup_id`,`original_id`);--> statement-breakpoint
+CREATE INDEX `import_job_rows_pending_idx` ON `import_job_rows` (`import_id`,`processed`,`id`);

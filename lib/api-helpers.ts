@@ -19,7 +19,8 @@ export function parseProductInput(payload: Record<string, unknown>, options: { a
   const purchasePriceUsd = optionalNumber(payload.purchasePriceUsd);
   const weightLb = optionalNumber(payload.weightLb);
   const quantityAvailable = inventoryNumber(payload.quantityAvailable, "La cantidad disponible");
-  const minimumStock = inventoryNumber(payload.minimumStock, "El stock mínimo");
+  const minimumStockEnabled = payload.minimumStockEnabled === true || payload.minimumStockEnabled === 1 || payload.minimumStockEnabled === "1" || payload.minimumStockEnabled === "true";
+  const minimumStock = minimumStockEnabled ? inventoryNumber(payload.minimumStock, "El stock mínimo") : 0;
   if (!name) throw new Error("El nombre del producto es obligatorio.");
   if (purchasePriceUsd !== null && (!Number.isFinite(purchasePriceUsd) || purchasePriceUsd < 0)) throw new Error("Ingresá un precio de compra válido.");
   if (weightLb !== null && (!Number.isFinite(weightLb) || weightLb < 0)) throw new Error("Ingresá un peso válido.");
@@ -33,6 +34,7 @@ export function parseProductInput(payload: Record<string, unknown>, options: { a
     weightMilliLb: weightLb === null ? null : Math.round(weightLb * 1000),
     quantityAvailable,
     minimumStock,
+    minimumStockEnabled,
   };
 }
 

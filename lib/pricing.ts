@@ -17,6 +17,7 @@ export type ProductRecord = {
   weightLb: number | null;
   quantityAvailable: number;
   minimumStock: number;
+  minimumStockEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -126,6 +127,7 @@ export function productFromRow(row: Record<string, unknown>): ProductRecord {
     weightLb: row.weight_milli_lb == null ? null : Number(row.weight_milli_lb) / 1000,
     quantityAvailable: Number(row.quantity_available ?? 0),
     minimumStock: Number(row.minimum_stock ?? 0),
+    minimumStockEnabled: Boolean(Number(row.minimum_stock_enabled ?? 0)),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };

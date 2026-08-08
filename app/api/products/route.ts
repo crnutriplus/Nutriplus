@@ -8,10 +8,15 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const code = url.searchParams.get("code")?.trim();
     const query = url.searchParams.get("q")?.trim() ?? "";
+    const lowStock = url.searchParams.get("lowStock") === "1";
     const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit")) || 1000));
     if (code) {
       const row = await getD1().prepare("SELECT * FROM products WHERE code=? LIMIT 1").bind(code).first();
       return Response.json({ product: row ? productFromRow(row) : null });
+    }
+    if (lowStock) {
+      const result = await getD1().prepare("SELECT * FROM products WHERE minimum_stock_enabled=1 AND quantity_available<=minimum_stock ORDER BY quantity_available ASC,name COLLATE NOCASE LIMIT ?").bind(limit).all();
+      return Response.json({ products: result.results.map(productFromRow) });
     }
     const normalized = normalizeName(query);
     const tokens = searchTokens(query);
@@ -36,7 +41,7 @@ export async function POST(request: Request) {
   try {
     const product = parseProductInput((await request.json()) as Record<string, unknown>, { allowPending: true });
     await ensureDatabase();
-    const row = await getD1().prepare("INSERT INTO products (name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,quantity_available,minimum_stock) VALUES (?,?,?,?,?,?,?) RETURNING *").bind(product.name, product.normalizedName, product.code, product.purchasePriceUsdCents, product.weightMilliLb, product.quantityAvailable, product.minimumStock).first();
+    const row = await getD1().prepare("INSERT INTO products (name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,quantity_available,minimum_stock,minimum_stock_enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now')) RETURNING *").bind(product.name, product.normalizedName, product.code, product.purchasePriceUsdCents, product.weightMilliLb, product.quantityAvailable, product.minimumStock, product.minimumStockEnabled ? 1 : 0).first();
     if (!row) throw new Error("No se pudo guardar el producto.");
     return Response.json({ product: productFromRow(row) }, { status: 201 });
   } catch (error) { return errorResponse(error); }
