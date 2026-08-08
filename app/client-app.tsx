@@ -52,6 +52,7 @@ import {
 
 type Tab = "calculator" | "products" | "import" | "settings";
 type NumericField = "purchasePriceUsd" | "weightLb";
+type ScannerIntent = "assign" | "lookup-products" | "lookup-calculator";
 type Form = { id: number | null; name: string; code: string; purchasePriceUsd: string; weightLb: string };
 type Toast = { type: "success" | "error"; text: string } | null;
 type Mapping = { name: string; purchasePriceUsd: string; weightLb: string; code: string };
@@ -67,6 +68,29 @@ function preloadScanner() {
   return scannerModulePromise;
 }
 
+type BarcodeResult = { rawValue: string };
+type BarcodeDetectorInstance = { detect: (source: HTMLVideoElement) => Promise<BarcodeResult[]> };
+type BarcodeDetectorConstructor = {
+  new (options?: { formats?: string[] }): BarcodeDetectorInstance;
+  getSupportedFormats?: () => Promise<string[]>;
+};
+
+const BARCODE_FORMATS = [
+  "qr_code",
+  "ean_13",
+  "ean_8",
+  "upc_a",
+  "upc_e",
+  "code_128",
+  "code_39",
+  "code_93",
+  "codabar",
+  "itf",
+  "data_matrix",
+  "aztec",
+  "pdf417",
+];
+
 async function json<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T & { error?: string };
   if (!response.ok) throw new Error(body.error || "Ocurrió un error inesperado.");
@@ -81,6 +105,10 @@ function productToForm(product: ProductRecord): Form {
     purchasePriceUsd: product.purchasePriceUsd === null ? "" : String(product.purchasePriceUsd),
     weightLb: product.weightLb === null ? "" : String(product.weightLb),
   };
+}
+
+function normalizeCode(value: string | null | undefined) {
+  return (value || "").trim().toLowerCase().replace(/\s+/g, "");
 }
 
 function detectScannerBurst(
@@ -143,22 +171,21 @@ function Scanner({ onClose, onCode }: { onClose: () => void; onCode: (value: str
     let stopped = false;
     let controls: { stop: () => void } | undefined;
     let lightTimer: number | undefined;
-    let darkReadings = 0;
+    let nativeScanTimer: number | undefined;
+    let fallbackTimer: number | undefined;
 
     (async () => {
       try {
         if (!navigator.mediaDevices?.getUserMedia) throw new Error("camera-unavailable");
-        const [scannerModule, mediaStream] = await Promise.all([
-          preloadScanner(),
-          navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: {
-              facingMode: { ideal: "environment" },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-            },
-          }),
-        ]);
+        const mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30, max: 60 },
+          },
+        });
         if (stopped || !video.current) {
           mediaStream.getTracks().forEach((track) => track.stop());
           return;
@@ -171,39 +198,92 @@ function Scanner({ onClose, onCode }: { onClose: () => void; onCode: (value: str
         setStarting(false);
 
         const track = mediaStream.getVideoTracks()[0];
-        const capabilities = track?.getCapabilities?.() as MediaTrackCapabilities & { torch?: boolean };
+        const capabilities = track?.getCapabilities?.() as MediaTrackCapabilities & {
+          torch?: boolean;
+          focusMode?: string[];
+          exposureMode?: string[];
+          whiteBalanceMode?: string[];
+        };
         const supportsTorch = Boolean(capabilities?.torch);
         setTorchAvailable(supportsTorch);
 
+        const cameraTuning: MediaTrackConstraintSet & Record<string, unknown> = {};
+        if (capabilities?.focusMode?.includes("continuous")) cameraTuning.focusMode = "continuous";
+        if (capabilities?.exposureMode?.includes("continuous")) cameraTuning.exposureMode = "continuous";
+        if (capabilities?.whiteBalanceMode?.includes("continuous")) cameraTuning.whiteBalanceMode = "continuous";
+        if (Object.keys(cameraTuning).length) void track.applyConstraints({ advanced: [cameraTuning] }).catch(() => undefined);
+
         if (supportsTorch) {
-          lightTimer = window.setInterval(() => {
+          const checkLight = () => {
             const source = video.current;
             const target = canvas.current;
             if (!source || !target || source.readyState < 2) return;
             const context = target.getContext("2d", { willReadFrequently: true });
             if (!context) return;
-            target.width = 24;
-            target.height = 18;
-            context.drawImage(source, 0, 0, 24, 18);
-            const pixels = context.getImageData(0, 0, 24, 18).data;
+            target.width = 40;
+            target.height = 30;
+            context.drawImage(source, 0, 0, 40, 30);
+            const pixels = context.getImageData(0, 0, 40, 30).data;
             let brightness = 0;
-            for (let i = 0; i < pixels.length; i += 16) brightness += pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114;
-            const average = brightness / (pixels.length / 16);
-            darkReadings = average < 62 ? darkReadings + 1 : 0;
-            if (darkReadings >= 2 && !torchOnRef.current && autoTorchEnabledRef.current) void applyTorch(true, true);
-          }, 500);
+            let samples = 0;
+            let veryDark = 0;
+            for (let i = 0; i < pixels.length; i += 16) {
+              const luminance = pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114;
+              brightness += luminance;
+              if (luminance < 48) veryDark += 1;
+              samples += 1;
+            }
+            const average = brightness / Math.max(1, samples);
+            const darkRatio = veryDark / Math.max(1, samples);
+            if ((average < 70 || darkRatio > 0.72) && !torchOnRef.current && autoTorchEnabledRef.current) {
+              void applyTorch(true, true);
+            }
+          };
+          window.setTimeout(checkLight, 45);
+          window.setTimeout(checkLight, 120);
+          lightTimer = window.setInterval(checkLight, 180);
         }
 
-        const reader = new scannerModule.BrowserMultiFormatReader(undefined, {
-          delayBetweenScanAttempts: 70,
-          delayBetweenScanSuccess: 250,
-        });
-        controls = await reader.decodeFromStream(mediaStream, video.current, (result) => {
-          if (result && !stopped) {
-            controls?.stop();
-            onCode(result.getText());
-          }
-        });
+        const startZxing = async () => {
+          if (stopped || controls || !video.current) return;
+          const scannerModule = await preloadScanner();
+          if (stopped || controls || !video.current) return;
+          const reader = new scannerModule.BrowserMultiFormatReader(undefined, {
+            delayBetweenScanAttempts: 25,
+            delayBetweenScanSuccess: 120,
+          });
+          controls = await reader.decodeFromStream(mediaStream, video.current, (result) => {
+            if (result && !stopped) {
+              controls?.stop();
+              onCode(result.getText());
+            }
+          });
+        };
+
+        const Detector = (globalThis as typeof globalThis & { BarcodeDetector?: BarcodeDetectorConstructor }).BarcodeDetector;
+        if (Detector) {
+          const supported = Detector.getSupportedFormats ? await Detector.getSupportedFormats().catch(() => BARCODE_FORMATS) : BARCODE_FORMATS;
+          const formats = BARCODE_FORMATS.filter((format) => supported.includes(format));
+          const detector = new Detector(formats.length ? { formats } : undefined);
+          const scanNative = async () => {
+            if (stopped || !video.current) return;
+            try {
+              const results = await detector.detect(video.current);
+              const value = results.find((result) => result.rawValue.trim())?.rawValue.trim();
+              if (value && !stopped) {
+                onCode(value);
+                return;
+              }
+            } catch {
+              // A frame can fail while the camera adjusts focus; keep scanning.
+            }
+            if (!stopped) nativeScanTimer = window.setTimeout(() => void scanNative(), 35);
+          };
+          void scanNative();
+          fallbackTimer = window.setTimeout(() => { void startZxing().catch(() => undefined); }, 700);
+        } else {
+          await startZxing();
+        }
       } catch {
         if (!stopped) {
           setStarting(false);
@@ -215,6 +295,8 @@ function Scanner({ onClose, onCode }: { onClose: () => void; onCode: (value: str
     return () => {
       stopped = true;
       if (lightTimer) window.clearInterval(lightTimer);
+      if (nativeScanTimer) window.clearTimeout(nativeScanTimer);
+      if (fallbackTimer) window.clearTimeout(fallbackTimer);
       controls?.stop();
       stream.current?.getTracks().forEach((track) => track.stop());
       stream.current = null;
@@ -231,12 +313,23 @@ function Scanner({ onClose, onCode }: { onClose: () => void; onCode: (value: str
 }
 
 function StickyPrices({ price, weight, settings }: { price: number | null; weight: number | null; settings: PricingSettings }) {
+  const [open, setOpen] = useState(false);
   const complete = price !== null && Number.isFinite(price) && price >= 0 && weight !== null && Number.isFinite(weight) && weight >= 0;
   const result = complete ? calculatePrices(price, weight, settings) : null;
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    document.addEventListener("pointerdown", close);
+    window.addEventListener("scroll", close, { passive: true });
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      window.removeEventListener("scroll", close);
+    };
+  }, [open]);
   return <header className="price-bar"><div className="price-bar-inner">
     <div className="sticky-price gam"><MapPin /><span>GAM</span><strong>{result ? crc(result.gamPriceCrc) : "—"}</strong></div>
     <div className="sticky-price port"><Truck /><span>Puerto</span><strong>{result ? crc(result.puertoPriceCrc) : "—"}</strong></div>
-    <details className="sticky-details"><summary>Ver desglose <ChevronDown /></summary><div className="sticky-breakdown">
+    <details className="sticky-details" open={open}><summary onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); setOpen((current) => !current); }}>Ver desglose <ChevronDown /></summary><div className="sticky-breakdown">
       {result ? <div className="breakdown">
         <div><span>Peso ingresado</span><b>{weight?.toFixed(2)} lb</b></div><div><span>Peso cobrado (+{settings.extraWeightLb.toFixed(2)})</span><b>{result.chargedWeightLb.toFixed(2)} lb</b></div>
         <div><span>Courier</span><b>{usd(result.courierUsd)}</b></div><div><span>Compra + courier</span><b>{usd(result.merchandiseAndCourierUsd)}</b></div>
@@ -260,7 +353,8 @@ type ProductFormProps = {
   suggestionsOpen: boolean;
   setSuggestionsOpen: (open: boolean) => void;
   onPick: (product: ProductRecord) => void;
-  onScan: (code: string) => void;
+  onExternalCode: (code: string) => void;
+  onOpenScanner: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onCancel?: () => void;
   saving: boolean;
@@ -277,7 +371,8 @@ function ProductForm({
   suggestionsOpen,
   setSuggestionsOpen,
   onPick,
-  onScan,
+  onExternalCode,
+  onOpenScanner,
   onSubmit,
   onCancel,
   saving,
@@ -306,8 +401,8 @@ function ProductForm({
   }
 
   return <form className="surface form-card" onSubmit={onSubmit}>{form.id && <div className="edit-banner"><Pencil />Editando producto guardado</div>}
-    <label className="field name-field"><span>Nombre del producto <em>*</em></span><div className="input-icon"><Package /><input value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); setSuggestionsOpen(true); }} onKeyDown={(event) => detectScannerBurst(event, nameBurst, (code, before) => { setForm((current) => ({ ...current, name: before })); onScan(code); })} onFocus={() => setSuggestionsOpen(true)} onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 160)} placeholder="Ej. Omega 3 Nordic encargo" required /></div>{showSuggestions && suggestionsOpen && form.name.trim() && suggestions.length > 0 && <div className="suggestions"><small>Productos encontrados</small>{suggestions.slice(0, 7).map((product) => <button type="button" onMouseDown={() => onPick(product)} key={product.id}><b>{product.name}</b><span>{product.purchasePriceUsd === null ? "Compra pendiente" : usd(product.purchasePriceUsd)} · {product.weightLb === null ? "peso pendiente" : `${product.weightLb.toFixed(2)} lb`}</span></button>)}</div>}<p className="hint">Podés buscar con varias palabras aunque no estén seguidas.</p></label>
-    <label className="field"><span>Código QR o de barras <small>Opcional</small></span><div className="code-row"><div className="input-icon grow"><ScanLine /><input value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === "Tab") && form.code.trim()) { event.preventDefault(); onScan(form.code.trim()); } }} placeholder="Escaneá o escribí el código" autoComplete="off" /></div><button type="button" className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={() => onScan("__OPEN_CAMERA__")}><Camera /><span>Escanear</span></button></div></label>
+    <label className="field name-field"><span>Nombre del producto <em>*</em></span><div className="input-icon"><Package /><input value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); setSuggestionsOpen(true); }} onKeyDown={(event) => detectScannerBurst(event, nameBurst, (code, before) => { setForm((current) => ({ ...current, name: before, code })); onExternalCode(code); })} onFocus={() => setSuggestionsOpen(true)} onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 160)} placeholder="Ej. Omega 3 Nordic encargo" required /></div>{showSuggestions && suggestionsOpen && form.name.trim() && suggestions.length > 0 && <div className="suggestions"><small>Productos encontrados</small>{suggestions.slice(0, 7).map((product) => <button type="button" onMouseDown={() => onPick(product)} key={product.id}><b>{product.name}</b><span>{product.purchasePriceUsd === null ? "Compra pendiente" : usd(product.purchasePriceUsd)} · {product.weightLb === null ? "peso pendiente" : `${product.weightLb.toFixed(2)} lb`}</span></button>)}</div>}<p className="hint">Podés buscar con varias palabras aunque no estén seguidas.</p></label>
+    <label className="field"><span>Código QR o de barras <small>Opcional</small></span><div className="code-row"><div className="input-icon grow"><ScanLine /><input value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); const code = event.currentTarget.value.trim(); if (code) setForm((current) => ({ ...current, code })); } }} placeholder="Escaneá o escribí el código" autoComplete="off" /></div><button type="button" className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={onOpenScanner}><Camera /><span>Escanear</span></button></div></label>
     <div className="two"><label className="field"><span>Precio de compra</span><div className={`number-box tappable ${activeNumeric === "purchasePriceUsd" ? "active" : ""}`}><i>$</i><input type="text" inputMode="none" readOnly value={form.purchasePriceUsd} onFocus={() => setActiveNumeric("purchasePriceUsd")} onClick={() => setActiveNumeric("purchasePriceUsd")} placeholder="Pendiente" /></div><p className="hint">En dólares</p></label><label className="field"><span>Peso</span><div className={`number-box tappable ${activeNumeric === "weightLb" ? "active" : ""}`}><input type="text" inputMode="none" readOnly value={form.weightLb} onFocus={() => setActiveNumeric("weightLb")} onClick={() => setActiveNumeric("weightLb")} placeholder="Pendiente" /><small>lb</small></div><p className="hint">Se suman {settings.extraWeightLb.toFixed(2)} lb.</p></label></div>
     {activeNumeric && <NumericKeypad active={activeNumeric} onKey={keypad} onClose={() => setActiveNumeric(null)} />}
     {!form.name.trim() && (form.purchasePriceUsd || form.weightLb) && <p className="alert warning"><AlertCircle />Agregá el nombre para guardar.</p>}{form.name.trim() && !completePricing && <p className="alert warning"><AlertCircle />Podés guardarlo como pendiente y completar los datos después.</p>}
@@ -440,7 +535,7 @@ export function NutriPlusApp() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [scanner, setScanner] = useState(false);
+  const [scannerIntent, setScannerIntent] = useState<ScannerIntent | null>(null);
   const [toast, setToast] = useState<Toast>(null);
   const [activeNumeric, setActiveNumeric] = useState<NumericField | null>(null);
   const [editingProductId, setEditingProductId] = useState<number | null>(null);
@@ -507,20 +602,43 @@ export function NutriPlusApp() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
-  const scanned = useCallback(async (code: string) => {
-    if (code === "__OPEN_CAMERA__") {
-      setScanner(true);
-      return;
-    }
+  const assignCode = useCallback((code: string) => {
     const cleanCode = code.trim();
     if (!cleanCode) return;
-    setScanner(false);
+    setScannerIntent(null);
+    setForm((current) => ({ ...current, code: cleanCode }));
+    setSuggestionsOpen(false);
+    notify({ type: "success", text: "Código agregado. Podés guardar los cambios sin salir de esta pantalla." });
+  }, [notify]);
+
+  const lookupCode = useCallback(async (code: string, destination: "products" | "calculator") => {
+    const cleanCode = code.trim();
+    if (!cleanCode) return;
+    setScannerIntent(null);
     try {
-      const data = await json<{ product: ProductRecord | null }>(await fetch(`/api/products?code=${encodeURIComponent(cleanCode)}`));
-      if (data.product) {
-        if (tab === "products") editInProducts(data.product);
-        else fillCalculator(data.product);
-        notify({ type: "success", text: `Encontramos ${data.product.name}.` });
+      let product = products.find((candidate) => normalizeCode(candidate.code) === normalizeCode(cleanCode)) || null;
+      if (!product) {
+        const data = await json<{ product: ProductRecord | null }>(await fetch(`/api/products?code=${encodeURIComponent(cleanCode)}`));
+        product = data.product;
+        if (product) setProducts((current) => current.some((candidate) => candidate.id === product!.id) ? current : [product!, ...current]);
+      }
+      if (product) {
+        if (destination === "products") {
+          clearForm();
+          setQuery(cleanCode);
+          setVisibleCount(36);
+          setTab("products");
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        } else {
+          fillCalculator(product);
+        }
+        notify({ type: "success", text: `Encontramos ${product.name}.` });
+      } else if (destination === "products") {
+        clearForm();
+        setQuery(cleanCode);
+        setVisibleCount(36);
+        setTab("products");
+        notify({ type: "error", text: "No encontramos un producto guardado con ese código." });
       } else {
         setForm({ ...EMPTY, code: cleanCode });
         setEditingProductId(null);
@@ -531,7 +649,17 @@ export function NutriPlusApp() {
     } catch (error) {
       notify({ type: "error", text: error instanceof Error ? error.message : "No se pudo buscar el código." });
     }
-  }, [editInProducts, fillCalculator, notify, tab]);
+  }, [clearForm, fillCalculator, notify, products]);
+
+  const openScanner = useCallback((intent: ScannerIntent) => {
+    setScannerIntent(intent);
+  }, []);
+
+  const handleScannerCode = useCallback((code: string) => {
+    if (scannerIntent === "assign") assignCode(code);
+    else if (scannerIntent === "lookup-products") void lookupCode(code, "products");
+    else if (scannerIntent === "lookup-calculator") void lookupCode(code, "calculator");
+  }, [assignCode, lookupCode, scannerIntent]);
 
   useEffect(() => {
     let buffer = "";
@@ -547,7 +675,8 @@ export function NutriPlusApp() {
         const duration = lastAt - startedAt;
         if (buffer.length >= 4 && now - lastAt < 180 && duration <= Math.max(650, buffer.length * 75)) {
           event.preventDefault();
-          void scanned(buffer);
+          if (tab === "calculator" || (tab === "products" && editingProductId !== null)) assignCode(buffer);
+          else void lookupCode(buffer, tab === "products" ? "products" : "calculator");
         }
         buffer = "";
         return;
@@ -558,7 +687,7 @@ export function NutriPlusApp() {
     };
     window.addEventListener("keydown", receive, true);
     return () => window.removeEventListener("keydown", receive, true);
-  }, [scanned]);
+  }, [assignCode, editingProductId, lookupCode, tab]);
 
   const price = form.purchasePriceUsd.trim() ? Number(form.purchasePriceUsd) : null;
   const weight = form.weightLb.trim() ? Number(form.weightLb) : null;
@@ -570,18 +699,39 @@ export function NutriPlusApp() {
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!form.name.trim()) return notify({ type: "error", text: "El nombre del producto es obligatorio." });
+    const submittedForm = { ...form, name: form.name.trim(), code: form.code.trim() };
+    const editing = Boolean(submittedForm.id);
+    const existing = submittedForm.id === null ? null : products.find((product) => product.id === submittedForm.id) || null;
+    const optimistic = existing ? {
+      ...existing,
+      name: submittedForm.name,
+      code: submittedForm.code || null,
+      purchasePriceUsd: price,
+      weightLb: weight,
+      updatedAt: new Date().toISOString(),
+    } : null;
+
+    if (optimistic) {
+      setProducts((current) => [optimistic, ...current.filter((product) => product.id !== optimistic.id)]);
+      clearForm();
+      notify({ type: "success", text: "Cambios aplicados. Terminando de guardarlos…" });
+    }
     setSaving(true);
     try {
-      const editing = Boolean(form.id);
-      const data = await json<{ product: ProductRecord }>(await fetch(form.id ? `/api/products/${form.id}` : "/api/products", {
-        method: form.id ? "PUT" : "POST",
+      const data = await json<{ product: ProductRecord }>(await fetch(submittedForm.id ? `/api/products/${submittedForm.id}` : "/api/products", {
+        method: submittedForm.id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, purchasePriceUsd: price, weightLb: weight }),
+        body: JSON.stringify({ ...submittedForm, purchasePriceUsd: price, weightLb: weight }),
       }));
       setProducts((current) => [data.product, ...current.filter((product) => product.id !== data.product.id)]);
-      clearForm();
-      notify({ type: "success", text: editing ? "Producto actualizado. Las casillas quedaron limpias." : completePricing ? "Cotización guardada. Las casillas quedaron limpias." : "Producto pendiente guardado. Las casillas quedaron limpias." });
+      if (!editing) clearForm();
+      notify({ type: "success", text: editing ? "Producto actualizado y guardado." : completePricing ? "Cotización guardada. Las casillas quedaron limpias." : "Producto pendiente guardado. Las casillas quedaron limpias." });
     } catch (error) {
+      if (existing) {
+        setProducts((current) => [existing, ...current.filter((product) => product.id !== existing.id)]);
+        setForm(submittedForm);
+        setEditingProductId(tab === "products" ? existing.id : null);
+      }
       notify({ type: "error", text: error instanceof Error ? error.message : "No se pudo guardar." });
     } finally {
       setSaving(false);
@@ -621,19 +771,19 @@ export function NutriPlusApp() {
   return <main className="app-shell">
     {showPriceBar && <StickyPrices price={validPrice ? price : null} weight={validWeight ? weight : null} settings={settings} />}
     <div className="body"><aside className={`side ${showPriceBar ? "under-price" : ""}`}><span>Menú</span>{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}<div className="weight-note"><Weight /><span><b>+{settings.extraWeightLb.toFixed(2)} lb</b><small>en cada cálculo</small></span></div></aside><div className="content">
-      {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{form.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearForm}><RotateCcw />Limpiar</button></header><ProductForm form={form} setForm={setForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onScan={(code) => void scanned(code)} onSubmit={save} saving={saving} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
+      {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{form.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearForm}><RotateCcw />Limpiar</button></header><ProductForm form={form} setForm={setForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onExternalCode={assignCode} onOpenScanner={() => openScanner("assign")} onSubmit={save} saving={saving} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
 
       {tab === "products" && <div className="view"><header className="view-head"><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá con palabras separadas, QR o código de barras.</p></header>
-        {editingProductId !== null && <section className="editor-wrap"><div className="editor-heading"><div><span className="eyebrow">Edición en Productos</span><h2>{form.name}</h2></div><button className="icon-btn" onClick={clearForm} aria-label="Cerrar edición"><X /></button></div><ProductForm form={form} setForm={setForm} settings={settings} suggestions={[]} suggestionsOpen={false} setSuggestionsOpen={() => undefined} onPick={() => undefined} onScan={(code) => void scanned(code)} onSubmit={save} onCancel={clearForm} saving={saving} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} showSuggestions={false} /></section>}
-        <section className="surface search-card"><div className="input-icon grow"><Search /><input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(36); }} onKeyDown={(event) => detectScannerBurst(event, searchBurst, (code, before) => { setQuery(before); setVisibleCount(36); void scanned(code); })} placeholder="Ej. omega encargo o omega nordic" /></div><button className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={() => setScanner(true)}><Camera /><span>Escanear</span></button></section>
+        {editingProductId !== null && <section className="editor-wrap"><div className="editor-heading"><div><span className="eyebrow">Edición en Productos</span><h2>{form.name}</h2></div><button className="icon-btn" onClick={clearForm} aria-label="Cerrar edición"><X /></button></div><ProductForm form={form} setForm={setForm} settings={settings} suggestions={[]} suggestionsOpen={false} setSuggestionsOpen={() => undefined} onPick={() => undefined} onExternalCode={assignCode} onOpenScanner={() => openScanner("assign")} onSubmit={save} onCancel={clearForm} saving={saving} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} showSuggestions={false} /></section>}
+        <section className="surface search-card"><div className="input-icon grow"><Search /><input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(36); }} onKeyDown={(event) => detectScannerBurst(event, searchBurst, (code, before) => { setQuery(before); setVisibleCount(36); void lookupCode(code, "products"); })} placeholder="Ej. omega encargo o omega nordic" /></div><button className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={() => openScanner("lookup-products")}><Camera /><span>Escanear</span></button></section>
         {!filteredProducts.length ? <Empty icon={<PackageSearch />} title={query ? "No hay coincidencias" : "Todavía no hay productos"} text={query ? "Probá con otras palabras o escaneá el código." : "Las cotizaciones guardadas aparecerán aquí."} /> : <><div className="results-count">{query ? `${filteredProducts.length} coincidencias` : `${products.length} productos guardados`}</div><div className="product-grid">{filteredProducts.slice(0, visibleCount).map((product) => { const complete = hasCompletePricing(product); const prices = complete ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; return <article className={`product-card ${complete ? "" : "pending-product"}`} key={product.id}><div className="product-title"><span className="avatar">{product.name[0].toUpperCase()}</span><div><h2>{product.name}</h2>{product.code ? <small><ScanLine />{product.code}</small> : !complete && <small className="pending-label"><AlertCircle />Pendiente</small>}</div><div className="card-actions"><button className="icon-btn" onClick={() => editInProducts(product)} aria-label={`Editar ${product.name}`}><Pencil /></button><button className="icon-btn danger" onClick={() => setDeleteTarget(product)} aria-label={`Eliminar ${product.name}`}><Trash2 /></button></div></div><div className="facts"><div><span>Compra</span><b>{product.purchasePriceUsd === null ? "—" : usd(product.purchasePriceUsd)}</b></div><div><span>Peso</span><b>{product.weightLb === null ? "—" : `${product.weightLb.toFixed(2)} lb`}</b></div><div className="green"><span>Venta GAM</span><b>{prices ? crc(prices.gamPriceCrc) : "Pendiente"}</b></div><div className="brown"><span>Venta Puerto</span><b>{prices ? crc(prices.puertoPriceCrc) : "Pendiente"}</b></div></div></article>; })}</div>{visibleCount < filteredProducts.length && <button className="btn secondary load-more" onClick={() => setVisibleCount((current) => current + 36)}>Mostrar más productos</button>}</>}
       </div>}
 
       {tab === "import" && <ImportView settings={settings} afterImport={() => void refreshProducts()} />}
       {tab === "settings" && <SettingsView key={JSON.stringify(settings)} current={settings} onSave={saveSettings} />}
     </div></div>
-    <nav className="bottom">{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}</nav><button className="float-scan" onPointerDown={() => void preloadScanner()} onClick={() => setScanner(true)} aria-label="Escanear"><ScanLine /></button>
-    {scanner && <Scanner onClose={() => setScanner(false)} onCode={(code) => void scanned(code)} />}
+    <nav className="bottom">{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}</nav><button className="float-scan" onPointerDown={() => void preloadScanner()} onClick={() => openScanner(tab === "products" ? (editingProductId !== null ? "assign" : "lookup-products") : "lookup-calculator")} aria-label="Escanear"><ScanLine /></button>
+    {scannerIntent && <Scanner onClose={() => setScannerIntent(null)} onCode={handleScannerCode} />}
     {deleteTarget && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar producto?</h2><p>Vas a eliminar <b>{deleteTarget.name}</b>. Esta acción no se puede deshacer.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setDeleteTarget(null)} disabled={deleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeProduct()} disabled={deleting}>{deleting ? <Loader2 className="spin" /> : <Trash2 />}Sí, eliminar</button></div></div></div>}
     {toast && <div className={`toast ${toast.type}`}>{toast.type === "success" ? <Check /> : <AlertCircle />}<span>{toast.text}</span><button onClick={() => setToast(null)}><X /></button></div>}
   </main>;

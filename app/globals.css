@@ -112,8 +112,8 @@ input::placeholder { color: #a1aaa1; }
 .keypad-head { min-height: 25px; padding: 0 2px 7px; display: flex; align-items: center; justify-content: space-between; color: var(--g700); font-size: 9px; font-weight: 900; text-transform: uppercase; }
 .keypad-head button { width: 26px; height: 24px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 7px; background: #e2ece0; color: var(--g800); }
 .keypad-head svg { width: 15px; }
-.keypad-grid { display: flex; gap: 7px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; scroll-snap-type: x proximity; }
-.keypad-grid button { min-width: 48px; height: 46px; padding: 0; display: grid; place-items: center; flex: 1 0 48px; border: 1px solid #cad7c7; border-radius: 10px; background: #fff; color: var(--g950); box-shadow: 0 2px 4px rgba(30, 65, 42, .06); font-size: 17px; font-weight: 900; scroll-snap-align: start; touch-action: manipulation; }
+.keypad-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 6px; overflow: visible; }
+.keypad-grid button { min-width: 0; width: 100%; height: 46px; padding: 0; display: grid; place-items: center; border: 1px solid #cad7c7; border-radius: 10px; background: #fff; color: var(--g950); box-shadow: 0 2px 4px rgba(30, 65, 42, .06); font-size: clamp(13px, 2.3vw, 17px); font-weight: 900; touch-action: manipulation; }
 .keypad-grid button:active { transform: translateY(1px); background: var(--g100); }
 .keypad-grid button svg { width: 21px; }
 .form-actions { display: flex; }
@@ -213,7 +213,7 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .modal-head h2 { margin: 4px 0 0; color: var(--g950); font-size: 19px; }
 .camera { position: relative; aspect-ratio: 4 / 3; overflow: hidden; border-radius: 17px; background: #14221a; }
 .camera video { width: 100%; height: 100%; object-fit: cover; }
-.scan-frame { position: absolute; top: 50%; left: 50%; width: 72%; height: 48%; border: 2px solid var(--lime); border-radius: 17px; transform: translate(-50%, -50%); box-shadow: 0 0 0 999px rgba(12, 31, 18, .28); }
+.scan-frame { position: absolute; top: 50%; left: 50%; width: 84%; height: 56%; border: 2px solid var(--lime); border-radius: 17px; transform: translate(-50%, -50%); box-shadow: 0 0 0 999px rgba(12, 31, 18, .24); }
 .camera-state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; background: #1c3325; color: #fff; font-size: 11px; }
 .scanner-help { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .torch-btn { min-height: 34px; padding: 0 9px; display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; border: 1px solid #cedccb; border-radius: 9px; background: #f2f7f0; color: var(--g800); font-size: 9px; font-weight: 850; }
@@ -276,8 +276,10 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
   .field input, .field select { height: 46px; font-size: 16px; }
   .scan-btn { min-width: 47px; }
   .scan-btn span { display: none; }
-  .keypad-grid { gap: 6px; padding-bottom: 2px; }
-  .keypad-grid button { height: 45px; }
+  .numeric-keypad { width: calc(100vw - 16px); margin-left: calc(50% - 50vw + 8px); padding: 7px; }
+  .keypad-grid { gap: 2px; }
+  .keypad-grid button { height: 44px; border-radius: 7px; font-size: 13px; }
+  .keypad-grid button svg { width: 16px; }
   .product-grid, .mapping { grid-template-columns: 1fr; }
   .strategies { grid-template-columns: 1fr; }
   .section, .settings-form { padding: 17px; }
@@ -297,8 +299,8 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
   .sticky-price strong { font-size: 17px; }
   .two { grid-template-columns: 1fr; }
   .breakdown { grid-template-columns: 1fr; }
-  .keypad-grid { gap: 5px; }
-  .keypad-grid button { height: 43px; font-size: 16px; }
+  .keypad-grid { gap: 1px; }
+  .keypad-grid button { height: 43px; border-radius: 6px; font-size: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
