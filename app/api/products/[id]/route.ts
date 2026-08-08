@@ -13,3 +13,15 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
     return Response.json({ product: productFromRow(row) });
   } catch (error) { return errorResponse(error); }
 }
+
+export async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
+  try {
+    const id = Number((await context.params).id);
+    if (!Number.isInteger(id) || id < 1) return Response.json({ error: "Producto inválido." }, { status: 400 });
+    await ensureDatabase();
+    const existing = await getD1().prepare("SELECT name FROM products WHERE id=? LIMIT 1").bind(id).first<{ name: string }>();
+    if (!existing) return Response.json({ error: "No se encontró el producto." }, { status: 404 });
+    await getD1().prepare("DELETE FROM products WHERE id=?").bind(id).run();
+    return Response.json({ deleted: true, name: existing.name });
+  } catch (error) { return errorResponse(error); }
+}

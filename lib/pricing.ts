@@ -34,6 +34,42 @@ export function normalizeName(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+export function searchTokens(value: string) {
+  return normalizeName(value)
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+export function searchProducts<T extends Pick<ProductRecord, "name" | "code">>(products: T[], query: string) {
+  const normalizedQuery = normalizeName(query);
+  const tokens = searchTokens(query);
+  const codeQuery = query.trim().toLowerCase().replace(/\s+/g, "");
+  if (!normalizedQuery) return products;
+
+  return products
+    .map((product, order) => {
+      const name = normalizeName(product.name);
+      const code = (product.code || "").toLowerCase().replace(/\s+/g, "");
+      const nameMatches = tokens.length > 0 && tokens.every((token) => name.includes(token));
+      const codeMatches = Boolean(codeQuery) && code.includes(codeQuery);
+      if (!nameMatches && !codeMatches) return null;
+
+      let score = 50;
+      if (code === codeQuery) score = 0;
+      else if (name === normalizedQuery) score = 1;
+      else if (name.startsWith(`${normalizedQuery} `) || name.startsWith(normalizedQuery)) score = 3;
+      else if (tokens.every((token) => name.split(/[^a-z0-9]+/).some((word) => word.startsWith(token)))) score = 8;
+      else if (codeMatches) score = 12;
+      else score = 20 + name.indexOf(tokens[0] || normalizedQuery);
+
+      return { product, score, order };
+    })
+    .filter((match): match is { product: T; score: number; order: number } => match !== null)
+    .sort((a, b) => a.score - b.score || a.product.name.localeCompare(b.product.name, "es") || a.order - b.order)
+    .map((match) => match.product);
+}
+
 export function calculatePrices(priceUsd: number, weightLb: number, settings: PricingSettings) {
   const purchasePriceUsd = Number.isFinite(priceUsd) ? Math.max(0, priceUsd) : 0;
   const productWeightLb = Number.isFinite(weightLb) ? Math.max(0, weightLb) : 0;

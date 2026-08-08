@@ -1,6 +1,6 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { errorResponse, parseProductInput } from "@/lib/api-helpers";
-import { normalizeName, productFromRow } from "@/lib/pricing";
+import { normalizeName, productFromRow, searchTokens } from "@/lib/pricing";
 
 export async function GET(request: Request) {
   try {
@@ -8,14 +8,25 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const code = url.searchParams.get("code")?.trim();
     const query = url.searchParams.get("q")?.trim() ?? "";
-    const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit")) || 500));
+    const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit")) || 1000));
     if (code) {
       const row = await getD1().prepare("SELECT * FROM products WHERE code=? LIMIT 1").bind(code).first();
       return Response.json({ product: row ? productFromRow(row) : null });
     }
     const normalized = normalizeName(query);
+    const tokens = searchTokens(query);
+    const nameClause = tokens.length ? `(${tokens.map(() => "normalized_name LIKE ?").join(" AND ")}) OR ` : "";
     const result = normalized
-      ? await getD1().prepare("SELECT * FROM products WHERE normalized_name LIKE ? OR code LIKE ? ORDER BY name COLLATE NOCASE LIMIT ?").bind(`%${normalized}%`, `%${query}%`, limit).all()
+      ? await getD1().prepare(`SELECT * FROM products
+          WHERE ${nameClause}code LIKE ?
+          ORDER BY CASE
+            WHEN normalized_name = ? THEN 0
+            WHEN normalized_name LIKE ? THEN 1
+            ELSE 2
+          END, name COLLATE NOCASE
+          LIMIT ?`)
+        .bind(...tokens.map((token) => `%${token}%`), `%${query}%`, normalized, `${normalized}%`, limit)
+        .all()
       : await getD1().prepare("SELECT * FROM products ORDER BY updated_at DESC, name COLLATE NOCASE LIMIT ?").bind(limit).all();
     return Response.json({ products: result.results.map(productFromRow) });
   } catch (error) { return errorResponse(error); }
