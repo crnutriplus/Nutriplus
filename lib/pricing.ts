@@ -15,6 +15,8 @@ export type ProductRecord = {
   code: string | null;
   purchasePriceUsd: number | null;
   weightLb: number | null;
+  quantityAvailable: number;
+  minimumStock: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -122,6 +124,8 @@ export function productFromRow(row: Record<string, unknown>): ProductRecord {
     code: row.code ? String(row.code) : null,
     purchasePriceUsd: row.purchase_price_usd_cents == null ? null : Number(row.purchase_price_usd_cents) / 100,
     weightLb: row.weight_milli_lb == null ? null : Number(row.weight_milli_lb) / 1000,
+    quantityAvailable: Number(row.quantity_available ?? 0),
+    minimumStock: Number(row.minimum_stock ?? 0),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };

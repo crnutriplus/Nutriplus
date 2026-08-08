@@ -36,7 +36,7 @@ export async function POST(request: Request) {
   try {
     const product = parseProductInput((await request.json()) as Record<string, unknown>, { allowPending: true });
     await ensureDatabase();
-    const row = await getD1().prepare("INSERT INTO products (name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb) VALUES (?,?,?,?,?) RETURNING *").bind(product.name, product.normalizedName, product.code, product.purchasePriceUsdCents, product.weightMilliLb).first();
+    const row = await getD1().prepare("INSERT INTO products (name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,quantity_available,minimum_stock) VALUES (?,?,?,?,?,?,?) RETURNING *").bind(product.name, product.normalizedName, product.code, product.purchasePriceUsdCents, product.weightMilliLb, product.quantityAvailable, product.minimumStock).first();
     if (!row) throw new Error("No se pudo guardar el producto.");
     return Response.json({ product: productFromRow(row) }, { status: 201 });
   } catch (error) { return errorResponse(error); }

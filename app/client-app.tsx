@@ -8,13 +8,16 @@ import {
   ChevronDown,
   CircleDollarSign,
   Delete as DeleteKey,
+  Download,
   FileSpreadsheet,
   Flashlight,
   Loader2,
   MapPin,
+  Minus,
   Package,
   PackageSearch,
   Pencil,
+  Plus,
   RotateCcw,
   Save,
   ScanLine,
@@ -53,12 +56,20 @@ import {
 type Tab = "calculator" | "products" | "import" | "settings";
 type NumericField = "purchasePriceUsd" | "weightLb";
 type ScannerIntent = "assign" | "lookup-products" | "lookup-calculator";
-type Form = { id: number | null; name: string; code: string; purchasePriceUsd: string; weightLb: string };
+type Form = {
+  id: number | null;
+  name: string;
+  code: string;
+  purchasePriceUsd: string;
+  weightLb: string;
+  quantityAvailable: string;
+  minimumStock: string;
+};
 type Toast = { type: "success" | "error"; text: string } | null;
 type Mapping = { name: string; purchasePriceUsd: string; weightLb: string; code: string };
 type BurstState = { text: string; startedAt: number; lastAt: number; valueBefore: string };
 
-const EMPTY: Form = { id: null, name: "", code: "", purchasePriceUsd: "", weightLb: "" };
+const EMPTY: Form = { id: null, name: "", code: "", purchasePriceUsd: "", weightLb: "", quantityAvailable: "", minimumStock: "" };
 const EMPTY_BURST: BurstState = { text: "", startedAt: 0, lastAt: 0, valueBefore: "" };
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", ".", "backspace"] as const;
 
@@ -104,6 +115,8 @@ function productToForm(product: ProductRecord): Form {
     code: product.code || "",
     purchasePriceUsd: product.purchasePriceUsd === null ? "" : String(product.purchasePriceUsd),
     weightLb: product.weightLb === null ? "" : String(product.weightLb),
+    quantityAvailable: String(product.quantityAvailable),
+    minimumStock: String(product.minimumStock),
   };
 }
 
@@ -340,7 +353,8 @@ function StickyPrices({ price, weight, settings }: { price: number | null; weigh
 }
 
 function NumericKeypad({ active, onKey, onClose }: { active: NumericField; onKey: (key: typeof KEYS[number]) => void; onClose: () => void }) {
-  return <div className="numeric-keypad" aria-label="Teclado numérico"><div className="keypad-head"><span>Ingresando {active === "purchasePriceUsd" ? "precio" : "peso"}</span><button type="button" onClick={onClose} aria-label="Ocultar teclado"><X /></button></div><div className="keypad-grid">
+  const label = active === "purchasePriceUsd" ? "precio" : "peso";
+  return <div className="numeric-keypad" aria-label="Teclado numérico"><div className="keypad-head"><span>Ingresando {label}</span><button type="button" onClick={onClose} aria-label="Ocultar teclado"><X /></button></div><div className="keypad-grid">
     {KEYS.map((key) => <button type="button" key={key} onPointerDown={(event) => event.preventDefault()} onClick={() => onKey(key)} aria-label={key === "backspace" ? "Borrar último número" : key}>{key === "backspace" ? <DeleteKey /> : key}</button>)}
   </div></div>;
 }
@@ -385,8 +399,11 @@ function ProductForm({
   const weight = form.weightLb.trim() ? Number(form.weightLb) : null;
   const validPrice = price === null || (Number.isFinite(price) && price >= 0);
   const validWeight = weight === null || (Number.isFinite(weight) && weight >= 0);
+  const quantityAvailable = form.quantityAvailable.trim() ? Number(form.quantityAvailable) : 0;
+  const minimumStock = form.minimumStock.trim() ? Number(form.minimumStock) : 0;
+  const validInventory = Number.isInteger(quantityAvailable) && quantityAvailable >= 0 && Number.isInteger(minimumStock) && minimumStock >= 0;
   const completePricing = price !== null && validPrice && weight !== null && validWeight;
-  const validForm = Boolean(form.name.trim()) && validPrice && validWeight;
+  const validForm = Boolean(form.name.trim()) && validPrice && validWeight && validInventory;
 
   function keypad(key: typeof KEYS[number]) {
     if (!activeNumeric) return;
@@ -401,12 +418,13 @@ function ProductForm({
   }
 
   return <form className="surface form-card" onSubmit={onSubmit}>{form.id && <div className="edit-banner"><Pencil />Editando producto guardado</div>}
-    <label className="field name-field"><span>Nombre del producto <em>*</em></span><div className="input-icon"><Package /><input value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); setSuggestionsOpen(true); }} onKeyDown={(event) => detectScannerBurst(event, nameBurst, (code, before) => { setForm((current) => ({ ...current, name: before, code })); onExternalCode(code); })} onFocus={() => setSuggestionsOpen(true)} onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 160)} placeholder="Ej. Omega 3 Nordic encargo" required /></div>{showSuggestions && suggestionsOpen && form.name.trim() && suggestions.length > 0 && <div className="suggestions"><small>Productos encontrados</small>{suggestions.slice(0, 7).map((product) => <button type="button" onMouseDown={() => onPick(product)} key={product.id}><b>{product.name}</b><span>{product.purchasePriceUsd === null ? "Compra pendiente" : usd(product.purchasePriceUsd)} · {product.weightLb === null ? "peso pendiente" : `${product.weightLb.toFixed(2)} lb`}</span></button>)}</div>}<p className="hint">Podés buscar con varias palabras aunque no estén seguidas.</p></label>
+    <label className="field name-field"><span>Nombre del producto <em>*</em></span><div className="input-icon"><Package /><input value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); setSuggestionsOpen(true); }} onKeyDown={(event) => detectScannerBurst(event, nameBurst, (code, before) => { setForm((current) => ({ ...current, name: before, code })); onExternalCode(code); })} onFocus={() => setSuggestionsOpen(true)} onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 160)} placeholder="Ej. Omega 3 Nordic encargo" required /></div>{showSuggestions && suggestionsOpen && form.name.trim() && suggestions.length > 0 && <div className="suggestions"><small>Productos encontrados</small>{suggestions.slice(0, 7).map((product) => <button type="button" onMouseDown={() => onPick(product)} key={product.id}><b>{product.name}</b><span>{product.purchasePriceUsd === null ? "Compra incompleta" : usd(product.purchasePriceUsd)} · {product.weightLb === null ? "peso incompleto" : `${product.weightLb.toFixed(2)} lb`}</span></button>)}</div>}<p className="hint">Podés buscar con varias palabras aunque no estén seguidas.</p></label>
     <label className="field"><span>Código QR o de barras <small>Opcional</small></span><div className="code-row"><div className="input-icon grow"><ScanLine /><input value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); const code = event.currentTarget.value.trim(); if (code) setForm((current) => ({ ...current, code })); } }} placeholder="Escaneá o escribí el código" autoComplete="off" /></div><button type="button" className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={onOpenScanner}><Camera /><span>Escanear</span></button></div></label>
-    <div className="two"><label className="field"><span>Precio de compra</span><div className={`number-box tappable ${activeNumeric === "purchasePriceUsd" ? "active" : ""}`}><i>$</i><input type="text" inputMode="none" readOnly value={form.purchasePriceUsd} onFocus={() => setActiveNumeric("purchasePriceUsd")} onClick={() => setActiveNumeric("purchasePriceUsd")} placeholder="Pendiente" /></div><p className="hint">En dólares</p></label><label className="field"><span>Peso</span><div className={`number-box tappable ${activeNumeric === "weightLb" ? "active" : ""}`}><input type="text" inputMode="none" readOnly value={form.weightLb} onFocus={() => setActiveNumeric("weightLb")} onClick={() => setActiveNumeric("weightLb")} placeholder="Pendiente" /><small>lb</small></div><p className="hint">Se suman {settings.extraWeightLb.toFixed(2)} lb.</p></label></div>
+    <div className="two"><label className="field"><span>Precio de compra</span><div className={`number-box tappable ${activeNumeric === "purchasePriceUsd" ? "active" : ""}`}><i>$</i><input type="text" inputMode="none" readOnly value={form.purchasePriceUsd} onFocus={() => setActiveNumeric("purchasePriceUsd")} onClick={() => setActiveNumeric("purchasePriceUsd")} placeholder="Incompleto" /></div><p className="hint">En dólares</p></label><label className="field"><span>Peso</span><div className={`number-box tappable ${activeNumeric === "weightLb" ? "active" : ""}`}><input type="text" inputMode="none" readOnly value={form.weightLb} onFocus={() => setActiveNumeric("weightLb")} onClick={() => setActiveNumeric("weightLb")} placeholder="Incompleto" /><small>lb</small></div><p className="hint">Se suman {settings.extraWeightLb.toFixed(2)} lb.</p></label></div>
+    <div className="two inventory-fields"><label className="field"><span>Cantidad disponible</span><div className="stock-stepper"><button type="button" onClick={() => setForm((current) => ({ ...current, quantityAvailable: String(Math.max(0, Number(current.quantityAvailable || 0) - 1)) }))} aria-label="Restar una unidad"><Minus /></button><input type="text" inputMode="numeric" value={form.quantityAvailable} onChange={(event) => setForm({ ...form, quantityAvailable: event.target.value.replace(/\D/g, "").slice(0, 7) })} placeholder="0" aria-label="Cantidad disponible" /><button type="button" onClick={() => setForm((current) => ({ ...current, quantityAvailable: String(Number(current.quantityAvailable || 0) + 1) }))} aria-label="Sumar una unidad"><Plus /></button></div></label><label className="field"><span>Stock mínimo</span><div className="stock-stepper"><button type="button" onClick={() => setForm((current) => ({ ...current, minimumStock: String(Math.max(0, Number(current.minimumStock || 0) - 1)) }))} aria-label="Restar una unidad al stock mínimo"><Minus /></button><input type="text" inputMode="numeric" value={form.minimumStock} onChange={(event) => setForm({ ...form, minimumStock: event.target.value.replace(/\D/g, "").slice(0, 7) })} placeholder="0" aria-label="Stock mínimo" /><button type="button" onClick={() => setForm((current) => ({ ...current, minimumStock: String(Number(current.minimumStock || 0) + 1) }))} aria-label="Sumar una unidad al stock mínimo"><Plus /></button></div></label></div>
     {activeNumeric && <NumericKeypad active={activeNumeric} onKey={keypad} onClose={() => setActiveNumeric(null)} />}
-    {!form.name.trim() && (form.purchasePriceUsd || form.weightLb) && <p className="alert warning"><AlertCircle />Agregá el nombre para guardar.</p>}{form.name.trim() && !completePricing && <p className="alert warning"><AlertCircle />Podés guardarlo como pendiente y completar los datos después.</p>}
-    <div className={`form-actions ${onCancel ? "split" : ""}`}>{onCancel && <button type="button" className="btn secondary" onClick={onCancel}>Cancelar</button>}<button className="btn primary" disabled={!validForm || saving}>{saving ? <Loader2 className="spin" /> : <Save />}{completePricing ? (form.id ? "Guardar cambios" : "Guardar cotización") : "Guardar pendiente"}</button></div>
+    {!form.name.trim() && (form.purchasePriceUsd || form.weightLb) && <p className="alert warning"><AlertCircle />Agregá el nombre para guardar.</p>}{form.name.trim() && !completePricing && <p className="alert warning"><AlertCircle />Podés guardarlo como incompleto y completar los datos después.</p>}
+    <div className={`form-actions ${onCancel ? "split" : ""}`}>{onCancel && <button type="button" className="btn secondary" onClick={onCancel}>Cancelar</button>}<button className="btn primary" disabled={!validForm || saving}>{saving ? <Loader2 className="spin" /> : <Save />}{completePricing ? (form.id ? "Guardar cambios" : "Guardar cotización") : "Guardar incompleto"}</button></div>
   </form>;
 }
 
@@ -445,8 +463,19 @@ function ImportView({ settings, afterImport }: { settings: PricingSettings; afte
   const named = mapped.filter((row) => row.name);
   const ready = [...new Map(named.map((row) => [normalizeName(row.name), row])).values()];
   const duplicates = named.length - ready.length;
-  const pending = ready.filter((row) => row.purchasePriceUsd === null || row.weightLb === null);
+  const incomplete = ready.filter((row) => row.purchasePriceUsd === null || row.weightLb === null);
   const complete = mapping.name !== "" && mapping.purchasePriceUsd !== "" && mapping.weightLb !== "";
+
+  useEffect(() => {
+    if (!notice) return;
+    const dismiss = () => setNotice(null);
+    const timer = window.setTimeout(dismiss, 3800);
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("pointerdown", dismiss, true);
+    };
+  }, [notice]);
 
   async function pick(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -497,10 +526,10 @@ function ImportView({ settings, afterImport }: { settings: PricingSettings; afte
     {!headers.length ? <section className="surface upload" onClick={() => input.current?.click()}><div className="upload-icon"><FileSpreadsheet /></div><h2>{busy ? "Leyendo archivo…" : "Seleccioná tu archivo"}</h2><p>.xlsx, .xlsm, .xls o .csv</p><button className="btn primary" disabled={busy}><Upload />Elegir archivo</button><input ref={input} type="file" accept=".xlsx,.xlsm,.xls,.csv" onChange={pick} hidden /></section> : <>
       <section className="surface file-row"><div><FileSpreadsheet /><span><b>{fileName}</b><small>Hoja {sheetName} · {named.length} filas con producto</small></span></div><button className="btn ghost small" onClick={reset}><RotateCcw />Cambiar</button></section>
       <section className="surface section"><Step n="1" title="Relacioná las columnas" text="Elegí qué columna corresponde a cada dato." /><div className="mapping">{([["name", "Nombre del producto", true], ["purchasePriceUsd", "Precio de compra USD", true], ["weightLb", "Peso en libras", true], ["code", "Código QR / barras", false]] as const).map(([key, label, required]) => <label className="field" key={key}><span>{label}{required && <em>*</em>}</span><select value={mapping[key]} onChange={(event) => setMapping({ ...mapping, [key]: event.target.value })}><option value="">Seleccionar columna</option>{headers.map((header, i) => <option value={i} key={`${header}-${i}`}>{header}</option>)}</select></label>)}</div></section>
-      <section className="surface section"><Step n="2" title="Vista previa" text={complete ? `${ready.length} productos: ${pending.length} pendientes${duplicates ? ` · ${duplicates} repetidos resueltos con la última aparición` : ""}` : "Completá las columnas obligatorias."} /><div className="table-wrap"><table><thead><tr><th>Producto</th><th>Compra</th><th>Peso</th><th>GAM</th><th>Puerto</th><th>Estado</th></tr></thead><tbody>{ready.slice(0, 6).map((row) => {
+      <section className="surface section"><Step n="2" title="Vista previa" text={complete ? `${ready.length} productos: ${incomplete.length} incompletos${duplicates ? ` · ${duplicates} repetidos resueltos con la última aparición` : ""}` : "Completá las columnas obligatorias."} /><div className="table-wrap"><table><thead><tr><th>Producto</th><th>Compra</th><th>Peso</th><th>GAM</th><th>Puerto</th><th>Estado</th></tr></thead><tbody>{ready.slice(0, 6).map((row) => {
         const ok = row.purchasePriceUsd !== null && row.purchasePriceUsd >= 0 && row.weightLb !== null && row.weightLb >= 0;
         const prices = ok ? calculatePrices(row.purchasePriceUsd!, row.weightLb!, settings) : null;
-        return <tr key={row.rowNumber}><td><b>{row.name}</b>{row.code && <small>{row.code}</small>}</td><td>{row.purchasePriceUsd !== null ? usd(row.purchasePriceUsd) : "—"}</td><td>{row.weightLb !== null ? `${row.weightLb.toFixed(2)} lb` : "—"}</td><td>{prices ? crc(prices.gamPriceCrc) : "—"}</td><td>{prices ? crc(prices.puertoPriceCrc) : "—"}</td><td><span className={`pill ${ok ? "ok" : "bad"}`}>{ok ? <Check /> : <AlertCircle />}{ok ? "Lista" : "Pendiente"}</span></td></tr>;
+        return <tr key={row.rowNumber}><td><b>{row.name}</b>{row.code && <small>{row.code}</small>}</td><td>{row.purchasePriceUsd !== null ? usd(row.purchasePriceUsd) : "—"}</td><td>{row.weightLb !== null ? `${row.weightLb.toFixed(2)} lb` : "—"}</td><td>{prices ? crc(prices.gamPriceCrc) : "—"}</td><td>{prices ? crc(prices.puertoPriceCrc) : "—"}</td><td><span className={`pill ${ok ? "ok" : "bad"}`}>{ok ? <Check /> : <AlertCircle />}{ok ? "Lista" : "Incompleto"}</span></td></tr>;
       })}</tbody></table></div></section>
       <section className="surface section"><Step n="3" title="Productos ya guardados" text="Elegí qué hacer si el nombre o código ya existe en la app." /><div className="strategies"><label className={strategy === "update" ? "chosen" : ""}><input type="radio" checked={strategy === "update"} onChange={() => setStrategy("update")} /><span><b>Actualizar existentes</b><small>Reemplaza precio y peso.</small></span></label><label className={strategy === "skip" ? "chosen" : ""}><input type="radio" checked={strategy === "skip"} onChange={() => setStrategy("skip")} /><span><b>Omitir existentes</b><small>Conserva los datos guardados.</small></span></label></div><button className="btn primary full" disabled={!complete || !ready.length || busy} onClick={importRows}>{busy ? <Loader2 className="spin" /> : <Upload />}Importar {ready.length || ""} productos</button></section>
     </>}{notice && <p className={`alert ${notice.type}`}><AlertCircle />{notice.text}</p>}
@@ -541,6 +570,8 @@ export function NutriPlusApp() {
   const [editingProductId, setEditingProductId] = useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProductRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [exportConfirm, setExportConfirm] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [visibleCount, setVisibleCount] = useState(36);
   const deferredQuery = useDeferredValue(query);
   const searchBurst = useRef<BurstState>({ ...EMPTY_BURST });
@@ -551,6 +582,13 @@ export function NutriPlusApp() {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 3800);
   }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const dismiss = () => setToast(null);
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => document.removeEventListener("pointerdown", dismiss, true);
+  }, [toast]);
 
   const clearForm = useCallback(() => {
     setForm(EMPTY);
@@ -699,6 +737,11 @@ export function NutriPlusApp() {
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!form.name.trim()) return notify({ type: "error", text: "El nombre del producto es obligatorio." });
+    const quantityAvailable = form.quantityAvailable.trim() ? Number(form.quantityAvailable) : 0;
+    const minimumStock = form.minimumStock.trim() ? Number(form.minimumStock) : 0;
+    if (!Number.isInteger(quantityAvailable) || quantityAvailable < 0 || !Number.isInteger(minimumStock) || minimumStock < 0) {
+      return notify({ type: "error", text: "La cantidad y el stock mínimo deben ser números enteros iguales o mayores que cero." });
+    }
     const submittedForm = { ...form, name: form.name.trim(), code: form.code.trim() };
     const editing = Boolean(submittedForm.id);
     const existing = submittedForm.id === null ? null : products.find((product) => product.id === submittedForm.id) || null;
@@ -708,6 +751,8 @@ export function NutriPlusApp() {
       code: submittedForm.code || null,
       purchasePriceUsd: price,
       weightLb: weight,
+      quantityAvailable,
+      minimumStock,
       updatedAt: new Date().toISOString(),
     } : null;
 
@@ -721,11 +766,11 @@ export function NutriPlusApp() {
       const data = await json<{ product: ProductRecord }>(await fetch(submittedForm.id ? `/api/products/${submittedForm.id}` : "/api/products", {
         method: submittedForm.id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...submittedForm, purchasePriceUsd: price, weightLb: weight }),
+        body: JSON.stringify({ ...submittedForm, purchasePriceUsd: price, weightLb: weight, quantityAvailable, minimumStock }),
       }));
       setProducts((current) => [data.product, ...current.filter((product) => product.id !== data.product.id)]);
       if (!editing) clearForm();
-      notify({ type: "success", text: editing ? "Producto actualizado y guardado." : completePricing ? "Cotización guardada. Las casillas quedaron limpias." : "Producto pendiente guardado. Las casillas quedaron limpias." });
+      notify({ type: "success", text: editing ? "Producto actualizado y guardado." : completePricing ? "Cotización guardada. Las casillas quedaron limpias." : "Producto incompleto guardado. Las casillas quedaron limpias." });
     } catch (error) {
       if (existing) {
         setProducts((current) => [existing, ...current.filter((product) => product.id !== existing.id)]);
@@ -754,6 +799,26 @@ export function NutriPlusApp() {
     }
   }
 
+  async function downloadInventory() {
+    if (!products.length) {
+      setExportConfirm(false);
+      notify({ type: "error", text: "Todavía no hay productos para descargar." });
+      return;
+    }
+    setExporting(true);
+    try {
+      const { exportInventoryFiles } = await import("@/lib/export-inventory");
+      const result = await exportInventoryFiles(products, settings);
+      setExportConfirm(false);
+      notify({ type: "success", text: `Excel y PDF descargados por separado: ${result.complete} completos y ${result.incomplete} incompletos.` });
+    } catch (error) {
+      setExportConfirm(false);
+      notify({ type: "error", text: error instanceof Error ? error.message : "No se pudieron generar las descargas." });
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function saveSettings(next: PricingSettings) {
     try {
       const data = await json<{ settings: PricingSettings }>(await fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) }));
@@ -773,10 +838,10 @@ export function NutriPlusApp() {
     <div className="body"><aside className={`side ${showPriceBar ? "under-price" : ""}`}><span>Menú</span>{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}<div className="weight-note"><Weight /><span><b>+{settings.extraWeightLb.toFixed(2)} lb</b><small>en cada cálculo</small></span></div></aside><div className="content">
       {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{form.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearForm}><RotateCcw />Limpiar</button></header><ProductForm form={form} setForm={setForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onExternalCode={assignCode} onOpenScanner={() => openScanner("assign")} onSubmit={save} saving={saving} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
 
-      {tab === "products" && <div className="view"><header className="view-head"><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá con palabras separadas, QR o código de barras.</p></header>
+      {tab === "products" && <div className="view"><header className="view-head products-head"><div><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá, editá existencias o descargá el inventario.</p></div><button className="btn primary export-btn" onClick={() => setExportConfirm(true)} disabled={!products.length}><Download />Descargar inventario</button></header>
         {editingProductId !== null && <section className="editor-wrap"><div className="editor-heading"><div><span className="eyebrow">Edición en Productos</span><h2>{form.name}</h2></div><button className="icon-btn" onClick={clearForm} aria-label="Cerrar edición"><X /></button></div><ProductForm form={form} setForm={setForm} settings={settings} suggestions={[]} suggestionsOpen={false} setSuggestionsOpen={() => undefined} onPick={() => undefined} onExternalCode={assignCode} onOpenScanner={() => openScanner("assign")} onSubmit={save} onCancel={clearForm} saving={saving} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} showSuggestions={false} /></section>}
         <section className="surface search-card"><div className="input-icon grow"><Search /><input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(36); }} onKeyDown={(event) => detectScannerBurst(event, searchBurst, (code, before) => { setQuery(before); setVisibleCount(36); void lookupCode(code, "products"); })} placeholder="Ej. omega encargo o omega nordic" /></div><button className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={() => openScanner("lookup-products")}><Camera /><span>Escanear</span></button></section>
-        {!filteredProducts.length ? <Empty icon={<PackageSearch />} title={query ? "No hay coincidencias" : "Todavía no hay productos"} text={query ? "Probá con otras palabras o escaneá el código." : "Las cotizaciones guardadas aparecerán aquí."} /> : <><div className="results-count">{query ? `${filteredProducts.length} coincidencias` : `${products.length} productos guardados`}</div><div className="product-grid">{filteredProducts.slice(0, visibleCount).map((product) => { const complete = hasCompletePricing(product); const prices = complete ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; return <article className={`product-card ${complete ? "" : "pending-product"}`} key={product.id}><div className="product-title"><span className="avatar">{product.name[0].toUpperCase()}</span><div><h2>{product.name}</h2>{product.code ? <small><ScanLine />{product.code}</small> : !complete && <small className="pending-label"><AlertCircle />Pendiente</small>}</div><div className="card-actions"><button className="icon-btn" onClick={() => editInProducts(product)} aria-label={`Editar ${product.name}`}><Pencil /></button><button className="icon-btn danger" onClick={() => setDeleteTarget(product)} aria-label={`Eliminar ${product.name}`}><Trash2 /></button></div></div><div className="facts"><div><span>Compra</span><b>{product.purchasePriceUsd === null ? "—" : usd(product.purchasePriceUsd)}</b></div><div><span>Peso</span><b>{product.weightLb === null ? "—" : `${product.weightLb.toFixed(2)} lb`}</b></div><div className="green"><span>Venta GAM</span><b>{prices ? crc(prices.gamPriceCrc) : "Pendiente"}</b></div><div className="brown"><span>Venta Puerto</span><b>{prices ? crc(prices.puertoPriceCrc) : "Pendiente"}</b></div></div></article>; })}</div>{visibleCount < filteredProducts.length && <button className="btn secondary load-more" onClick={() => setVisibleCount((current) => current + 36)}>Mostrar más productos</button>}</>}
+        {!filteredProducts.length ? <Empty icon={<PackageSearch />} title={query ? "No hay coincidencias" : "Todavía no hay productos"} text={query ? "Probá con otras palabras o escaneá el código." : "Las cotizaciones guardadas aparecerán aquí."} /> : <><div className="results-count">{query ? `${filteredProducts.length} coincidencias` : `${products.length} productos guardados`}</div><div className="product-grid">{filteredProducts.slice(0, visibleCount).map((product) => { const complete = hasCompletePricing(product); const prices = complete ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; const lowStock = product.minimumStock > 0 && product.quantityAvailable <= product.minimumStock; return <article className={`product-card ${complete ? "" : "pending-product"} ${lowStock ? "low-stock" : ""}`} key={product.id}><div className="product-title"><span className="avatar">{product.name[0].toUpperCase()}</span><div><h2>{product.name}</h2>{product.code && <small><ScanLine />{product.code}</small>}{!complete && <small className="pending-label"><AlertCircle />Incompleto</small>}{lowStock && <small className="stock-label"><AlertCircle />Stock bajo</small>}</div><div className="card-actions"><button className="icon-btn" onClick={() => editInProducts(product)} aria-label={`Editar ${product.name}`}><Pencil /></button><button className="icon-btn danger" onClick={() => setDeleteTarget(product)} aria-label={`Eliminar ${product.name}`}><Trash2 /></button></div></div><div className="facts"><div><span>Compra</span><b>{product.purchasePriceUsd === null ? "—" : usd(product.purchasePriceUsd)}</b></div><div><span>Peso</span><b>{product.weightLb === null ? "—" : `${product.weightLb.toFixed(2)} lb`}</b></div><div className="green"><span>Venta GAM</span><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></div><div className="brown"><span>Venta Puerto</span><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></div><div className="stock"><span>Cantidad disponible</span><b>{product.quantityAvailable}</b></div><div className="stock"><span>Stock mínimo</span><b>{product.minimumStock}</b></div></div></article>; })}</div>{visibleCount < filteredProducts.length && <button className="btn secondary load-more" onClick={() => setVisibleCount((current) => current + 36)}>Mostrar más productos</button>}</>}
       </div>}
 
       {tab === "import" && <ImportView settings={settings} afterImport={() => void refreshProducts()} />}
@@ -784,6 +849,7 @@ export function NutriPlusApp() {
     </div></div>
     <nav className="bottom">{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}</nav><button className="float-scan" onPointerDown={() => void preloadScanner()} onClick={() => openScanner(tab === "products" ? (editingProductId !== null ? "assign" : "lookup-products") : "lookup-calculator")} aria-label="Escanear"><ScanLine /></button>
     {scannerIntent && <Scanner onClose={() => setScannerIntent(null)} onCode={handleScannerCode} />}
+    {exportConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar descarga del inventario"><div className="confirm-card"><div className="download-symbol"><Download /></div><h2>¿Descargar inventario?</h2><p>Se descargarán <b>dos archivos separados</b>: un Excel y un PDF. Ambos incluirán {products.length} productos, con los incompletos en otra hoja o sección.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setExportConfirm(false)} disabled={exporting}>No, cancelar</button><button className="btn primary" onClick={() => void downloadInventory()} disabled={exporting}>{exporting ? <Loader2 className="spin" /> : <Download />}Sí, descargar ambos</button></div></div></div>}
     {deleteTarget && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar producto?</h2><p>Vas a eliminar <b>{deleteTarget.name}</b>. Esta acción no se puede deshacer.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setDeleteTarget(null)} disabled={deleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeProduct()} disabled={deleting}>{deleting ? <Loader2 className="spin" /> : <Trash2 />}Sí, eliminar</button></div></div></div>}
     {toast && <div className={`toast ${toast.type}`}>{toast.type === "success" ? <Check /> : <AlertCircle />}<span>{toast.text}</span><button onClick={() => setToast(null)}><X /></button></div>}
   </main>;

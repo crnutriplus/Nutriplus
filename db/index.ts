@@ -36,6 +36,8 @@ export async function ensureDatabase() {
           code TEXT,
           purchase_price_usd_cents INTEGER,
           weight_milli_lb INTEGER,
+          quantity_available INTEGER NOT NULL DEFAULT 0,
+          minimum_stock INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`),
@@ -46,6 +48,13 @@ export async function ensureDatabase() {
           delivery_crc, correos_crc, gam_profit_crc, puerto_profit_crc, rounding_crc
         ) VALUES (1, 520, 550, 100, 1000, 500, 5000, 4000, 100)`),
       ]);
+
+      const productColumns = await db.prepare("PRAGMA table_info(products)").all<{ name: string }>();
+      const columnNames = new Set(productColumns.results.map((column) => column.name));
+      const additions = [];
+      if (!columnNames.has("quantity_available")) additions.push(db.prepare("ALTER TABLE products ADD COLUMN quantity_available INTEGER NOT NULL DEFAULT 0"));
+      if (!columnNames.has("minimum_stock")) additions.push(db.prepare("ALTER TABLE products ADD COLUMN minimum_stock INTEGER NOT NULL DEFAULT 0"));
+      if (additions.length) await db.batch(additions);
     })().catch((error) => { initialization = null; throw error; });
   }
   await initialization;
