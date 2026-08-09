@@ -1,6 +1,7 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { errorResponse } from "@/lib/api-helpers";
 import { importJobFromRow } from "@/lib/import-jobs";
+import { createBackupForImport } from "@/lib/inventory-backups";
 
 type ImportRow = {
   id: number;
@@ -34,6 +35,12 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
     const job = await db.prepare("SELECT * FROM import_jobs WHERE id=? LIMIT 1").bind(id).first<Record<string, unknown>>();
     if (!job) return Response.json({ error: "No se encontró la importación." }, { status: 404 });
     if (job.status === "completed" || job.status === "failed") return Response.json({ job: importJobFromRow(job) });
+
+    const activeDeletion = await db.prepare("SELECT id FROM product_deletion_jobs WHERE status IN ('queued','running') ORDER BY id LIMIT 1")
+      .first<{ id: number }>();
+    if (activeDeletion) return Response.json({ job: importJobFromRow(job), waitingForDeletion: true });
+
+    await createBackupForImport(db, id);
 
     const pending = await db.prepare("SELECT * FROM import_job_rows WHERE import_id=? AND processed=0 ORDER BY id LIMIT 45").bind(id).all<ImportRow>();
     const rows = pending.results;

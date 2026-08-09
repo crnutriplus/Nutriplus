@@ -121,6 +121,25 @@ export async function ensureDatabase() {
           updated_at TEXT NOT NULL
         )`),
         db.prepare("CREATE INDEX IF NOT EXISTS import_backup_products_backup_idx ON import_backup_products (backup_id, original_id)"),
+        db.prepare(`CREATE TABLE IF NOT EXISTS product_deletion_jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'queued',
+          total_products INTEGER NOT NULL DEFAULT 0,
+          processed_products INTEGER NOT NULL DEFAULT 0,
+          deleted_products INTEGER NOT NULL DEFAULT 0,
+          preserved_products INTEGER NOT NULL DEFAULT 0,
+          backup_import_id INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          completed_at TEXT
+        )`),
+        db.prepare(`CREATE TABLE IF NOT EXISTS product_deletion_rows (
+          id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          deletion_id INTEGER NOT NULL,
+          product_id INTEGER NOT NULL,
+          processed INTEGER NOT NULL DEFAULT 0,
+          outcome TEXT
+        )`),
+        db.prepare("CREATE INDEX IF NOT EXISTS product_deletion_rows_pending_idx ON product_deletion_rows (deletion_id, processed, id)"),
       ]);
     })().catch((error) => { initialization = null; throw error; });
   }

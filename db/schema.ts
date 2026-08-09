@@ -94,3 +94,25 @@ export const importBackupProducts = sqliteTable("import_backup_products", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [index("import_backup_products_backup_idx").on(table.backupId, table.originalId)]);
+
+export const productDeletionJobs = sqliteTable("product_deletion_jobs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  status: text("status").notNull().default("queued"),
+  totalProducts: integer("total_products").notNull().default(0),
+  processedProducts: integer("processed_products").notNull().default(0),
+  deletedProducts: integer("deleted_products").notNull().default(0),
+  preservedProducts: integer("preserved_products").notNull().default(0),
+  backupImportId: integer("backup_import_id"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  completedAt: text("completed_at"),
+});
+
+export const productDeletionRows = sqliteTable("product_deletion_rows", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  deletionId: integer("deletion_id").notNull(),
+  productId: integer("product_id").notNull(),
+  processed: integer("processed", { mode: "boolean" }).notNull().default(false),
+  outcome: text("outcome"),
+}, (table) => [
+  index("product_deletion_rows_pending_idx").on(table.deletionId, table.processed, table.id),
+]);

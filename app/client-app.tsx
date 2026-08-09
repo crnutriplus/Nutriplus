@@ -45,6 +45,7 @@ import {
   useState,
 } from "react";
 import type { ImportChangedProduct, ImportJobRecord } from "@/lib/import-jobs";
+import type { ProductDeletionJobRecord } from "@/lib/deletion-jobs";
 import {
   calculatePrices,
   crc,
@@ -465,7 +466,7 @@ function ProductForm({
 
   return <form className="surface form-card" onSubmit={onSubmit}>{form.id && <div className="edit-banner"><Pencil />Editando producto guardado</div>}
     <label className="field name-field"><span>Nombre del producto <em>*</em></span><div className="input-icon"><Package /><input value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); setSuggestionsOpen(true); }} onKeyDown={(event) => detectScannerBurst(event, nameBurst, (code, before) => { setForm((current) => ({ ...current, name: before, code })); onExternalCode(code); })} onFocus={() => setSuggestionsOpen(true)} onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 160)} placeholder="Ej. Omega 3 Nordic encargo" required /></div>{showSuggestions && suggestionsOpen && form.name.trim() && suggestions.length > 0 && <div className="suggestions"><small>Productos encontrados</small>{suggestions.slice(0, 7).map((product) => <button type="button" onMouseDown={() => onPick(product)} key={product.id}><b>{product.name}</b><span>{product.purchasePriceUsd === null ? "Compra incompleta" : usd(product.purchasePriceUsd)} · {product.weightLb === null ? "peso incompleto" : `${product.weightLb.toFixed(2)} lb`}</span></button>)}</div>}<p className="hint">Podés buscar con varias palabras aunque no estén seguidas.</p></label>
-    <label className="field"><span>Código QR o de barras <small>Opcional</small></span><div className="code-row"><div className="input-icon grow"><ScanLine /><input value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); const code = event.currentTarget.value.trim(); if (code) setForm((current) => ({ ...current, code })); } }} placeholder="Escaneá o escribí el código" autoComplete="off" /></div><button type="button" className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={onOpenScanner}><Camera /><span>Escanear</span></button></div></label>
+    <label className="field"><span>Código QR o de barras <small>Opcional</small></span><div className="code-row"><div className="input-icon grow"><ScanLine /><input value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); const code = event.currentTarget.value.trim(); if (code) onExternalCode(code); } }} placeholder="Escaneá o escribí el código" autoComplete="off" /></div><button type="button" className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={onOpenScanner}><Camera /><span>Escanear</span></button></div></label>
     <div className="two"><label className="field"><span>Precio de compra</span><div className={`number-box tappable ${activeNumeric === "purchasePriceUsd" ? "active" : ""}`}><i>$</i><input type="text" inputMode="none" readOnly value={form.purchasePriceUsd} onFocus={() => setActiveNumeric("purchasePriceUsd")} onClick={() => setActiveNumeric("purchasePriceUsd")} placeholder="Incompleto" /></div><p className="hint">En dólares</p></label><label className="field"><span>Peso</span><div className={`number-box tappable ${activeNumeric === "weightLb" ? "active" : ""}`}><input type="text" inputMode="none" readOnly value={form.weightLb} onFocus={() => setActiveNumeric("weightLb")} onClick={() => setActiveNumeric("weightLb")} placeholder="Incompleto" /><small>lb</small></div><p className="hint">Se suman {settings.extraWeightLb.toFixed(2)} lb.</p></label></div>
     <div className="inventory-fields"><label className="field"><span>Cantidad disponible</span><div className="stock-stepper"><button type="button" onClick={() => setForm((current) => ({ ...current, quantityAvailable: String(Math.max(0, Number(current.quantityAvailable || 0) - 1)) }))} aria-label="Restar una unidad"><Minus /></button><input type="text" inputMode="numeric" value={form.quantityAvailable} onChange={(event) => setForm({ ...form, quantityAvailable: event.target.value.replace(/\D/g, "").slice(0, 7) })} placeholder="0" aria-label="Cantidad disponible" /><button type="button" onClick={() => setForm((current) => ({ ...current, quantityAvailable: String(Number(current.quantityAvailable || 0) + 1) }))} aria-label="Sumar una unidad"><Plus /></button></div></label>
       <label className={`stock-toggle ${form.minimumStockEnabled ? "enabled" : ""}`}><input type="checkbox" checked={form.minimumStockEnabled} onChange={(event) => setForm((current) => ({ ...current, minimumStockEnabled: event.target.checked, minimumStock: event.target.checked ? (current.minimumStock || "0") : "" }))} /><span><b>Controlar stock mínimo</b><small>Activá esta alerta solo para los productos más vendidos.</small></span></label>
@@ -494,11 +495,14 @@ function parseNumber(value: unknown) {
 type ImportViewProps = {
   settings: PricingSettings;
   job: ImportJobRecord | null;
+  deletionJob: ProductDeletionJobRecord | null;
+  productCount: number;
   history: ImportJobRecord[];
   summary: ImportChangedProduct[];
   restoringId: number | null;
   onStart: (payload: { rows: Array<Record<string, unknown>>; strategy: "update" | "skip"; fileName: string; sheetName: string }) => Promise<void>;
   onRestore: (job: ImportJobRecord) => Promise<void>;
+  onDeleteAll: () => Promise<void>;
 };
 
 function importDate(value: string) {
@@ -506,7 +510,7 @@ function importDate(value: string) {
   return new Intl.DateTimeFormat("es-CR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(normalized));
 }
 
-function ImportView({ settings, job, history, summary, restoringId, onStart, onRestore }: ImportViewProps) {
+function ImportView({ settings, job, deletionJob, productCount, history, summary, restoringId, onStart, onRestore, onDeleteAll }: ImportViewProps) {
   const input = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState("");
   const [sheetName, setSheetName] = useState("");
@@ -518,6 +522,7 @@ function ImportView({ settings, job, history, summary, restoringId, onStart, onR
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Toast>(null);
   const [restoreTarget, setRestoreTarget] = useState<ImportJobRecord | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [summaryExpanded, setSummaryExpanded] = useState(false);
   const mapped = useMemo(() => rows.map((row, index) => {
     const codeCell = mapping.code === "" ? null : row[Number(mapping.code)];
@@ -544,6 +549,10 @@ function ImportView({ settings, job, history, summary, restoringId, onStart, onR
   const incomplete = ready.filter((row) => !row.hasPurchasePrice || row.purchasePriceUsd === null || !row.hasWeight || row.weightLb === null);
   const running = job?.status === "queued" || job?.status === "running";
   const percentage = job ? Math.min(100, Math.round((job.processedRows / Math.max(1, job.totalRows)) * 100)) : 0;
+  const deleting = deletionJob?.status === "queued" || deletionJob?.status === "running";
+  const deletionPercentage = deletionJob
+    ? Math.min(100, Math.round((deletionJob.processedProducts / Math.max(1, deletionJob.totalProducts)) * 100))
+    : 0;
 
   useEffect(() => {
     if (!notice) return;
@@ -612,8 +621,11 @@ function ImportView({ settings, job, history, summary, restoringId, onStart, onR
     }
   }
 
-  return <div className="view"><header className="view-head"><span className="eyebrow">Carga masiva segura</span><h1>Importar Excel</h1><p>La importación continúa aunque cambiés de sección y crea un respaldo antes de empezar.</p></header>
-    {job && <section className={`surface import-progress ${job.status}`}><div className="progress-head"><div><span className="eyebrow">{running ? "Importando en segundo plano" : job.status === "completed" ? "Importación completada" : "La importación encontró un problema"}</span><h2>{job.fileName}</h2><p>{job.sheetName ? `Hoja ${job.sheetName} · ` : ""}{job.processedRows} de {job.totalRows} productos procesados</p></div><strong>{job.status === "completed" ? "100%" : `${percentage}%`}</strong></div><div className="progress-track" aria-label={`${percentage}% importado`}><span style={{ width: `${job.status === "completed" ? 100 : percentage}%` }} /></div><div className="progress-stats"><span><b>{job.importedCount}</b>Nuevos</span><span><b>{job.updatedCount}</b>Actualizados</span><span><b>{job.skippedCount}</b>Omitidos</span><span><b>{job.conflictCount + job.errorCount}</b>Sin cambiar</span></div>{running && <p className="background-note"><Loader2 className="spin" />Podés seguir usando Calcular, Productos o Ajustes. Guardar un producto manualmente no detiene ni sobrescribe tu cambio.</p>}</section>}
+  return <div className="view"><header className="view-head"><span className="eyebrow">Carga masiva segura</span><h1>Importar Excel</h1><p>Las importaciones y eliminaciones continúan aunque cambiés de sección. Cada operación crea un respaldo antes de modificar productos.</p></header>
+
+    {deletionJob && <section className={`surface import-progress deletion-progress ${deletionJob.status}`}><div className="progress-head"><div><span className="eyebrow">{deleting ? "Eliminando en segundo plano" : deletionJob.status === "completed" ? "Eliminación completada" : "La eliminación encontró un problema"}</span><h2>Productos guardados</h2><p>{deletionJob.processedProducts} de {deletionJob.totalProducts} productos revisados{deletionJob.preservedProducts ? ` · ${deletionJob.preservedProducts} cambios recientes conservados` : ""}</p></div><strong>{deletionJob.status === "completed" ? "100%" : `${deletionPercentage}%`}</strong></div><div className="progress-track danger-track" aria-label={`${deletionPercentage}% eliminado`}><span style={{ width: `${deletionJob.status === "completed" ? 100 : deletionPercentage}%` }} /></div>{deleting && <p className="background-note"><Loader2 className="spin" />Podés preparar e iniciar otro Excel. La importación quedará en espera y empezará automáticamente cuando termine esta eliminación.</p>}</section>}
+
+    {job && <section className={`surface import-progress ${job.status}`}><div className="progress-head"><div><span className="eyebrow">{running ? deleting && job.status === "queued" ? "Importación en espera segura" : "Importando en segundo plano" : job.status === "completed" ? "Importación completada" : "La importación encontró un problema"}</span><h2>{job.fileName}</h2><p>{job.sheetName ? `Hoja ${job.sheetName} · ` : ""}{job.processedRows} de {job.totalRows} productos procesados</p></div><strong>{job.status === "completed" ? "100%" : `${percentage}%`}</strong></div><div className="progress-track" aria-label={`${percentage}% importado`}><span style={{ width: `${job.status === "completed" ? 100 : percentage}%` }} /></div><div className="progress-stats"><span><b>{job.importedCount}</b>Nuevos</span><span><b>{job.updatedCount}</b>Actualizados</span><span><b>{job.skippedCount}</b>Omitidos</span><span><b>{job.conflictCount + job.errorCount}</b>Sin cambiar</span></div>{running && <p className="background-note"><Loader2 className="spin" />{deleting && job.status === "queued" ? "El archivo ya quedó guardado. Empezará automáticamente cuando el inventario anterior termine de eliminarse." : "Podés seguir usando Calcular, Productos o Ajustes. Guardar un producto manualmente no detiene ni sobrescribe tu cambio."}</p>}</section>}
 
     {!running && (!headers.length ? <section className="surface upload"><div className="upload-icon"><FileSpreadsheet /></div><h2>{busy ? "Leyendo archivo en segundo plano…" : "Seleccioná tu archivo"}</h2><p>.xlsx, .xlsm, .xls o .csv</p><label className={`btn primary ${busy ? "disabled" : ""}`} htmlFor="nutriplus-import-file">{busy ? <Loader2 className="spin" /> : <Upload />}Elegir archivo</label><input id="nutriplus-import-file" className="native-file-input" ref={input} type="file" accept=".xlsx,.xlsm,.xls,.csv" onChange={pick} disabled={busy} /></section> : <>
       <section className="surface file-row"><div><FileSpreadsheet /><span><b>{fileName}</b><small>Hoja {sheetName} · {named.length} filas con producto</small></span></div><button className="btn ghost small" onClick={reset}><RotateCcw />Cambiar</button></section>
@@ -623,8 +635,11 @@ function ImportView({ settings, job, history, summary, restoringId, onStart, onR
 
     {job?.status === "completed" && <section className="surface section import-summary"><Step n="✓" title="Resumen de la última importación" text={`${job.importedCount} nuevos · ${job.updatedCount} actualizados · ${job.incompleteCount} incompletos`} />{summary.length ? <><div className="summary-list">{summary.slice(0, summaryExpanded ? summary.length : 20).map(({ outcome, product }) => { const prices = hasCompletePricing(product) ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; return <article key={`${outcome}-${product.id}`}><div><b>{product.name}</b><small>{outcome === "imported" ? "Nuevo" : "Actualizado"}{product.code ? ` · ${product.code}` : ""}</small></div><span><small>Stock</small><b>{product.quantityAvailable}{product.minimumStockEnabled ? ` / mín. ${product.minimumStock}` : ""}</b></span><span><small>GAM</small><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></span><span><small>Puerto</small><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></span></article>; })}</div>{summary.length > 20 && <button className="btn secondary summary-toggle" onClick={() => setSummaryExpanded((current) => !current)}>{summaryExpanded ? "Mostrar solo los primeros 20" : `Mostrar los ${summary.length} productos`}</button>}</> : <p className="empty-summary">No hubo productos nuevos ni actualizados en esta importación.</p>}</section>}
 
+    <section className="surface section delete-catalog"><Step n="!" title="Borrar productos actuales" text="Vacía únicamente el catálogo de productos. Los ajustes y el historial permanecen, y se crea un respaldo restaurable antes de comenzar." /><button className="btn danger-outline full" onClick={() => setDeleteConfirm(true)} disabled={!productCount || deleting || running}><Trash2 />{deleting ? "Eliminando productos…" : productCount ? `Borrar los ${productCount} productos` : "No hay productos para borrar"}</button>{running && <p className="delete-help">Esperá a que termine la importación activa para iniciar una eliminación.</p>}</section>
+
     <section className="surface section import-history"><Step n="↶" title="Historial y respaldos" text="Cada importación conserva una copia completa del inventario anterior." />{history.length ? <div className="history-list">{history.map((item) => <article key={item.id}><div><b>{item.fileName}</b><small>{importDate(item.createdAt)}{item.restoredAt ? " · Restaurado" : ""}</small></div><span>{item.strategy === "backup" ? "Respaldo automático" : `${item.importedCount} nuevos · ${item.updatedCount} actualizados`}</span><button className="btn ghost small" onClick={() => setRestoreTarget(item)} disabled={restoringId !== null || item.status !== "completed"}><ArchiveRestore />Volver a este respaldo</button></article>)}</div> : <p className="empty-summary">El historial aparecerá después de la primera importación.</p>}</section>
     {notice && <p className={`alert ${notice.type}`}><AlertCircle />{notice.text}</p>}
+    {deleteConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación de todos los productos"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Borrar todos los productos?</h2><p>Se eliminarán <b>{productCount} productos</b>. Antes se guardará un respaldo para recuperarlos desde el historial si fuera necesario.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setDeleteConfirm(false)}>No, cancelar</button><button className="btn danger-solid" onClick={() => { setDeleteConfirm(false); void onDeleteAll(); }}><Trash2 />Sí, borrar todos</button></div></div></div>}
     {restoreTarget && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar restauración"><div className="confirm-card"><div className="download-symbol"><ArchiveRestore /></div><h2>¿Volver a este respaldo?</h2><p>Se restaurará el inventario que existía antes de <b>{restoreTarget.fileName}</b>. Primero se guardará otra copia del inventario actual para que también puedas recuperarlo.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setRestoreTarget(null)} disabled={restoringId !== null}>No, cancelar</button><button className="btn primary" onClick={() => { const target = restoreTarget; setRestoreTarget(null); void onRestore(target); }} disabled={restoringId !== null}><ArchiveRestore />Sí, restaurar</button></div></div></div>}
   </div>;
 }
@@ -656,27 +671,29 @@ export function NutriPlusApp() {
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [scannerIntent, setScannerIntent] = useState<ScannerIntent | null>(null);
   const [toast, setToast] = useState<Toast>(null);
   const [activeNumeric, setActiveNumeric] = useState<NumericField | null>(null);
-  const [editingProductId, setEditingProductId] = useState<number | null>(null);
+  const [productEditorOpen, setProductEditorOpen] = useState(false);
+  const [restockOpen, setRestockOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProductRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [exportConfirm, setExportConfirm] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [visibleCount, setVisibleCount] = useState(36);
-  const [stockOnly, setStockOnly] = useState(false);
   const [phoneNotificationsEnabled, setPhoneNotificationsEnabled] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">("default");
   const [importJob, setImportJob] = useState<ImportJobRecord | null>(null);
   const [importHistory, setImportHistory] = useState<ImportJobRecord[]>([]);
   const [importSummary, setImportSummary] = useState<ImportChangedProduct[]>([]);
   const [restoringImportId, setRestoringImportId] = useState<number | null>(null);
+  const [deletionJob, setDeletionJob] = useState<ProductDeletionJobRecord | null>(null);
   const deferredQuery = useDeferredValue(query);
   const searchBurst = useRef<BurstState>({ ...EMPTY_BURST });
   const toastTimer = useRef<number | null>(null);
   const importRunner = useRef<number | null>(null);
+  const deletionRunner = useRef<number | null>(null);
+  const nextTemporaryProductId = useRef(-1);
 
   const notify = useCallback((next: NonNullable<Toast>) => {
     setToast(next);
@@ -693,13 +710,13 @@ export function NutriPlusApp() {
 
   const clearForm = useCallback(() => {
     setForm(EMPTY);
-    setEditingProductId(null);
+    setProductEditorOpen(false);
     setActiveNumeric(null);
     setSuggestionsOpen(false);
   }, []);
 
   const refreshProducts = useCallback(async () => {
-    const result = await json<{ products: ProductRecord[] }>(await fetch("/api/products?limit=1000"));
+    const result = await json<{ products: ProductRecord[] }>(await fetch("/api/products?limit=5000"));
     setProducts(result.products);
   }, []);
 
@@ -714,7 +731,7 @@ export function NutriPlusApp() {
     importRunner.current = id;
     try {
       while (true) {
-        const data = await json<{ job: ImportJobRecord }>(await fetch(`/api/imports/${id}/process`, { method: "POST" }));
+        const data = await json<{ job: ImportJobRecord; waitingForDeletion?: boolean }>(await fetch(`/api/imports/${id}/process`, { method: "POST" }));
         setImportJob(data.job);
         if (data.job.status === "completed") {
           const detail = await json<{ job: ImportJobRecord; changedProducts: ImportChangedProduct[] }>(await fetch(`/api/imports/${id}`));
@@ -729,12 +746,37 @@ export function NutriPlusApp() {
           notify({ type: "error", text: "La importación se detuvo sin borrar el inventario anterior. Podés revisar el respaldo en Importar.", sticky: true });
           break;
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 35));
+        await new Promise((resolve) => window.setTimeout(resolve, data.waitingForDeletion ? 220 : 35));
       }
     } catch (error) {
       notify({ type: "error", text: error instanceof Error ? `${error.message} La importación quedó guardada para poder reanudarla.` : "La importación quedó guardada para poder reanudarla.", sticky: true });
     } finally {
       if (importRunner.current === id) importRunner.current = null;
+    }
+  }, [notify, refreshImportHistory, refreshProducts]);
+
+  const runDeletion = useCallback(async (id: number) => {
+    if (deletionRunner.current === id) return;
+    deletionRunner.current = id;
+    try {
+      while (true) {
+        const data = await json<{ job: ProductDeletionJobRecord; waitingForImport?: boolean }>(await fetch(`/api/products/delete-all/${id}/process`, { method: "POST" }));
+        setDeletionJob(data.job);
+        if (data.job.status === "completed") {
+          await Promise.all([refreshProducts(), refreshImportHistory()]);
+          notify({ type: "success", text: `Eliminación completada: ${data.job.deletedProducts} productos borrados${data.job.preservedProducts ? ` y ${data.job.preservedProducts} cambios recientes conservados` : ""}.`, sticky: true });
+          break;
+        }
+        if (data.job.status === "failed") {
+          notify({ type: "error", text: "La eliminación se detuvo. El respaldo permanece disponible en Importar.", sticky: true });
+          break;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, data.waitingForImport ? 220 : 35));
+      }
+    } catch (error) {
+      notify({ type: "error", text: error instanceof Error ? `${error.message} El proceso quedó guardado para reanudarlo.` : "La eliminación quedó guardada para reanudarla.", sticky: true });
+    } finally {
+      if (deletionRunner.current === id) deletionRunner.current = null;
     }
   }, [notify, refreshImportHistory, refreshProducts]);
 
@@ -750,6 +792,17 @@ export function NutriPlusApp() {
     notify({ type: "success", text: "La importación empezó en segundo plano. Podés seguir usando la app." });
     void runImport(data.job.id);
   }, [notify, runImport]);
+
+  const startDeletion = useCallback(async () => {
+    try {
+      const data = await json<{ job: ProductDeletionJobRecord }>(await fetch("/api/products/delete-all", { method: "POST" }));
+      setDeletionJob(data.job);
+      notify({ type: "success", text: "La eliminación empezó en segundo plano. Ya podés preparar el próximo Excel." });
+      if (data.job.status !== "completed") void runDeletion(data.job.id);
+    } catch (error) {
+      notify({ type: "error", text: error instanceof Error ? error.message : "No se pudo iniciar la eliminación.", sticky: true });
+    }
+  }, [notify, runDeletion]);
 
   const restoreImport = useCallback(async (target: ImportJobRecord) => {
     setRestoringImportId(target.id);
@@ -769,13 +822,18 @@ export function NutriPlusApp() {
     const preloadTimer = window.setTimeout(() => { void preloadScanner().catch(() => undefined); }, 700);
     (async () => {
       try {
-        const [settingsResponse, productsResponse, importsResponse] = await Promise.all([fetch("/api/settings"), fetch("/api/products?limit=1000"), fetch("/api/imports")]);
+        const [settingsResponse, productsResponse, importsResponse, deletionsResponse] = await Promise.all([fetch("/api/settings"), fetch("/api/products?limit=5000"), fetch("/api/imports"), fetch("/api/products/delete-all")]);
         const settingsData = await json<{ settings: PricingSettings }>(settingsResponse);
         const productsData = await json<{ products: ProductRecord[] }>(productsResponse);
         const importsData = await json<{ jobs: ImportJobRecord[] }>(importsResponse);
+        const deletionsData = await json<{ jobs: ProductDeletionJobRecord[] }>(deletionsResponse);
         setSettings(settingsData.settings);
         setProducts(productsData.products);
         setImportHistory(importsData.jobs);
+        const activeDeletion = deletionsData.jobs.find((item) => item.status === "queued" || item.status === "running");
+        const latestDeletion = activeDeletion || deletionsData.jobs[0] || null;
+        setDeletionJob(latestDeletion);
+        if (activeDeletion) void runDeletion(activeDeletion.id);
         const active = importsData.jobs.find((item) => item.status === "queued" || item.status === "running");
         const latest = active || importsData.jobs[0] || null;
         setImportJob(latest);
@@ -790,14 +848,13 @@ export function NutriPlusApp() {
       }
     })();
     return () => window.clearTimeout(preloadTimer);
-  }, [notify, runImport]);
+  }, [notify, runDeletion, runImport]);
 
   const suggestions = useMemo(() => searchProducts(products, form.name).filter((product) => product.id !== form.id).slice(0, 8), [form.id, form.name, products]);
   const lowStockProducts = useMemo(() => products.filter((product) => product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock), [products]);
   const filteredProducts = useMemo(() => {
-    const matches = searchProducts(products, deferredQuery);
-    return stockOnly ? matches.filter((product) => product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock) : matches;
-  }, [deferredQuery, products, stockOnly]);
+    return searchProducts(products, deferredQuery);
+  }, [deferredQuery, products]);
 
   const sendDailyStockNotification = useCallback(async (force = false) => {
     if (!phoneNotificationsEnabled || notificationPermission !== "granted" || !lowStockProducts.length || !("serviceWorker" in navigator)) return;
@@ -848,7 +905,7 @@ export function NutriPlusApp() {
       setPhoneNotificationsEnabled(enabled && Notification.permission === "granted");
       const params = new URLSearchParams(window.location.search);
       if (params.get("tab") === "products") setTab("products");
-      if (params.get("stock") === "low") setStockOnly(true);
+      if (params.get("stock") === "low") setRestockOpen(true);
     }, 0);
     if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
     return () => window.clearTimeout(timer);
@@ -863,7 +920,7 @@ export function NutriPlusApp() {
 
   const fillCalculator = useCallback((product: ProductRecord) => {
     setForm(productToForm(product));
-    setEditingProductId(null);
+    setProductEditorOpen(false);
     setActiveNumeric(null);
     setSuggestionsOpen(false);
     setTab("calculator");
@@ -871,7 +928,18 @@ export function NutriPlusApp() {
 
   const editInProducts = useCallback((product: ProductRecord) => {
     setForm(productToForm(product));
-    setEditingProductId(product.id);
+    setProductEditorOpen(true);
+    setRestockOpen(false);
+    setActiveNumeric(null);
+    setSuggestionsOpen(false);
+    setTab("products");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+
+  const addInProducts = useCallback(() => {
+    setForm(EMPTY);
+    setProductEditorOpen(true);
+    setRestockOpen(false);
     setActiveNumeric(null);
     setSuggestionsOpen(false);
     setTab("products");
@@ -901,7 +969,6 @@ export function NutriPlusApp() {
       if (product) {
         if (destination === "products") {
           clearForm();
-          setStockOnly(false);
           setQuery(cleanCode);
           setVisibleCount(36);
           setTab("products");
@@ -912,14 +979,13 @@ export function NutriPlusApp() {
         notify({ type: "success", text: `Encontramos ${product.name}.` });
       } else if (destination === "products") {
         clearForm();
-        setStockOnly(false);
         setQuery(cleanCode);
         setVisibleCount(36);
         setTab("products");
         notify({ type: "error", text: "No encontramos un producto guardado con ese código." });
       } else {
         setForm({ ...EMPTY, code: cleanCode });
-        setEditingProductId(null);
+        setProductEditorOpen(false);
         setActiveNumeric(null);
         setTab("calculator");
         notify({ type: "success", text: "Código nuevo. Completá los datos para guardarlo." });
@@ -953,7 +1019,7 @@ export function NutriPlusApp() {
         const duration = lastAt - startedAt;
         if (buffer.length >= 4 && now - lastAt < 180 && duration <= Math.max(650, buffer.length * 75)) {
           event.preventDefault();
-          if (tab === "calculator" || (tab === "products" && editingProductId !== null)) assignCode(buffer);
+          if (tab === "products" && productEditorOpen) assignCode(buffer);
           else void lookupCode(buffer, tab === "products" ? "products" : "calculator");
         }
         buffer = "";
@@ -965,16 +1031,16 @@ export function NutriPlusApp() {
     };
     window.addEventListener("keydown", receive, true);
     return () => window.removeEventListener("keydown", receive, true);
-  }, [assignCode, editingProductId, lookupCode, tab]);
+  }, [assignCode, lookupCode, productEditorOpen, tab]);
 
   const price = form.purchasePriceUsd.trim() ? Number(form.purchasePriceUsd) : null;
   const weight = form.weightLb.trim() ? Number(form.weightLb) : null;
   const validPrice = price === null || (Number.isFinite(price) && price >= 0);
   const validWeight = weight === null || (Number.isFinite(weight) && weight >= 0);
   const completePricing = price !== null && validPrice && weight !== null && validWeight;
-  const showPriceBar = tab === "calculator" || (tab === "products" && editingProductId !== null);
+  const showPriceBar = tab === "calculator" || (tab === "products" && productEditorOpen);
 
-  async function save(event: FormEvent<HTMLFormElement>) {
+  function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!form.name.trim()) return notify({ type: "error", text: "El nombre del producto es obligatorio." });
     const quantityAvailable = form.quantityAvailable.trim() ? Number(form.quantityAvailable) : 0;
@@ -985,8 +1051,10 @@ export function NutriPlusApp() {
     const submittedForm = { ...form, name: form.name.trim(), code: form.code.trim() };
     const editing = Boolean(submittedForm.id);
     const existing = submittedForm.id === null ? null : products.find((product) => product.id === submittedForm.id) || null;
-    const optimistic = existing ? {
-      ...existing,
+    const optimisticId = existing?.id ?? nextTemporaryProductId.current--;
+    const now = new Date().toISOString();
+    const optimistic: ProductRecord = {
+      id: optimisticId,
       name: submittedForm.name,
       code: submittedForm.code || null,
       purchasePriceUsd: price,
@@ -994,34 +1062,31 @@ export function NutriPlusApp() {
       quantityAvailable,
       minimumStock,
       minimumStockEnabled: submittedForm.minimumStockEnabled,
-      updatedAt: new Date().toISOString(),
-    } : null;
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
 
-    if (optimistic) {
-      setProducts((current) => [optimistic, ...current.filter((product) => product.id !== optimistic.id)]);
-      clearForm();
-      notify({ type: "success", text: "Cambios aplicados. Terminando de guardarlos…" });
-    }
-    setSaving(true);
-    try {
-      const data = await json<{ product: ProductRecord }>(await fetch(submittedForm.id ? `/api/products/${submittedForm.id}` : "/api/products", {
+    setProducts((current) => [optimistic, ...current.filter((product) => product.id !== optimistic.id)]);
+    clearForm();
+    notify({ type: "success", text: editing ? "Cambios aplicados. Guardando en segundo plano…" : "Producto agregado. Guardando en segundo plano…" });
+
+    void (async () => {
+      try {
+        const data = await json<{ product: ProductRecord }>(await fetch(submittedForm.id ? `/api/products/${submittedForm.id}` : "/api/products", {
         method: submittedForm.id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...submittedForm, purchasePriceUsd: price, weightLb: weight, quantityAvailable, minimumStock, minimumStockEnabled: submittedForm.minimumStockEnabled }),
+        keepalive: true,
       }));
-      setProducts((current) => [data.product, ...current.filter((product) => product.id !== data.product.id)]);
-      if (!editing) clearForm();
-      notify({ type: "success", text: editing ? "Producto actualizado y guardado." : completePricing ? "Cotización guardada. Las casillas quedaron limpias." : "Producto incompleto guardado. Las casillas quedaron limpias." });
-    } catch (error) {
-      if (existing) {
-        setProducts((current) => [existing, ...current.filter((product) => product.id !== existing.id)]);
-        setForm(submittedForm);
-        setEditingProductId(tab === "products" ? existing.id : null);
+        setProducts((current) => [data.product, ...current.filter((product) => product.id !== optimisticId && product.id !== data.product.id)]);
+        notify({ type: "success", text: editing ? "Producto actualizado y guardado." : completePricing ? "Cotización guardada." : "Producto incompleto guardado." });
+      } catch (error) {
+        setProducts((current) => existing
+          ? [existing, ...current.filter((product) => product.id !== optimisticId && product.id !== existing.id)]
+          : current.filter((product) => product.id !== optimisticId));
+        notify({ type: "error", text: error instanceof Error ? `${submittedForm.name}: ${error.message}` : `No se pudo guardar ${submittedForm.name}.`, sticky: true });
       }
-      notify({ type: "error", text: error instanceof Error ? error.message : "No se pudo guardar." });
-    } finally {
-      setSaving(false);
-    }
+    })();
   }
 
   async function removeProduct() {
@@ -1077,20 +1142,22 @@ export function NutriPlusApp() {
   return <main className="app-shell">
     {showPriceBar && <StickyPrices price={validPrice ? price : null} weight={validWeight ? weight : null} settings={settings} />}
     <div className="body"><aside className={`side ${showPriceBar ? "under-price" : ""}`}><span>Menú</span>{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}<div className="weight-note"><Weight /><span><b>+{settings.extraWeightLb.toFixed(2)} lb</b><small>en cada cálculo</small></span></div></aside><div className="content">
-      {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{form.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearForm}><RotateCcw />Limpiar</button></header><ProductForm form={form} setForm={setForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onExternalCode={assignCode} onOpenScanner={() => openScanner("assign")} onSubmit={save} saving={saving} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
+      {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{form.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearForm}><RotateCcw />Limpiar</button></header><ProductForm form={form} setForm={setForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onExternalCode={(code) => void lookupCode(code, "calculator")} onOpenScanner={() => openScanner("lookup-calculator")} onSubmit={save} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
 
-      {tab === "products" && <div className="view"><header className="view-head products-head"><div><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá, editá existencias o descargá el inventario.</p></div><button className="btn primary export-btn" onClick={() => setExportConfirm(true)} disabled={!products.length}><Download />Descargar inventario</button></header>
-        <section className={`surface stock-alert-panel ${lowStockProducts.length ? "has-alerts" : ""}`}><div className="stock-alert-heading"><span className="stock-alert-icon">{lowStockProducts.length ? <BellRing /> : <Bell />}</span><div><h2>{lowStockProducts.length ? `${lowStockProducts.length} producto${lowStockProducts.length === 1 ? " con" : "s con"} stock bajo` : "Stock mínimo al día"}</h2><p>La alerta aparece al llegar o bajar del mínimo y se repite diariamente en este celular.</p></div></div>{lowStockProducts.length > 0 && <div className="low-stock-chips">{lowStockProducts.slice(0, 6).map((product) => <span key={product.id}><b>{product.name}</b>{product.quantityAvailable} / mín. {product.minimumStock}</span>)}{lowStockProducts.length > 6 && <span>+{lowStockProducts.length - 6} más</span>}</div>}<div className="stock-alert-actions"><button className={`btn ${stockOnly ? "primary" : "ghost"} small`} onClick={() => { setStockOnly((current) => !current); setVisibleCount(36); }}>{stockOnly ? "Ver todos" : "Ver solo stock bajo"}</button><button className="btn secondary small" onClick={() => void enableStockNotifications()} disabled={phoneNotificationsEnabled}>{phoneNotificationsEnabled ? <Check /> : <Bell />}{phoneNotificationsEnabled ? "Notificaciones activadas" : notificationPermission === "denied" ? "Permiso bloqueado" : "Activar en el celular"}</button></div></section>
-        {editingProductId !== null && <section className="editor-wrap"><div className="editor-heading"><div><span className="eyebrow">Edición en Productos</span><h2>{form.name}</h2></div><button className="icon-btn" onClick={clearForm} aria-label="Cerrar edición"><X /></button></div><ProductForm form={form} setForm={setForm} settings={settings} suggestions={[]} suggestionsOpen={false} setSuggestionsOpen={() => undefined} onPick={() => undefined} onExternalCode={assignCode} onOpenScanner={() => openScanner("assign")} onSubmit={save} onCancel={clearForm} saving={saving} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} showSuggestions={false} /></section>}
+      {tab === "products" && <div className="view"><header className="view-head products-head"><div><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá, agregá o editá cualquier producto guardado.</p></div><button className={`restock-head-btn ${lowStockProducts.length ? "has-items" : ""}`} onClick={() => setRestockOpen(true)} aria-label={`Ver productos por abastecer: ${lowStockProducts.length}`}><BellRing /><span>Por abastecer</span><b>{lowStockProducts.length}</b></button></header>
+        <div className="products-toolbar"><button className="btn primary" onClick={addInProducts}><Plus />Agregar producto</button><button className="btn secondary" onClick={() => setExportConfirm(true)} disabled={!products.length}><Download />Descargar inventario</button></div>
+        <section className={`surface stock-notification-strip ${lowStockProducts.length ? "has-alerts" : ""}`}><div className="stock-alert-heading"><span className="stock-alert-icon">{lowStockProducts.length ? <BellRing /> : <Bell />}</span><div><h2>{lowStockProducts.length ? `${lowStockProducts.length} producto${lowStockProducts.length === 1 ? " por" : "s por"} abastecer` : "Stock mínimo al día"}</h2><p>La lista se actualiza automáticamente al aumentar las existencias.</p></div></div><button className="btn secondary small" onClick={() => void enableStockNotifications()} disabled={phoneNotificationsEnabled}>{phoneNotificationsEnabled ? <Check /> : <Bell />}{phoneNotificationsEnabled ? "Notificaciones activadas" : notificationPermission === "denied" ? "Permiso bloqueado" : "Activar en el celular"}</button></section>
+        {productEditorOpen && <section className="editor-wrap"><div className="editor-heading"><div><span className="eyebrow">{form.id ? "Edición en Productos" : "Nuevo producto"}</span><h2>{form.id ? form.name : "Agregar producto al catálogo"}</h2></div><button className="icon-btn" onClick={clearForm} aria-label="Cerrar editor"><X /></button></div><ProductForm form={form} setForm={setForm} settings={settings} suggestions={[]} suggestionsOpen={false} setSuggestionsOpen={() => undefined} onPick={() => undefined} onExternalCode={assignCode} onOpenScanner={() => openScanner("assign")} onSubmit={save} onCancel={clearForm} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} showSuggestions={false} /></section>}
         <section className="surface search-card"><div className="input-icon grow"><Search /><input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(36); }} onKeyDown={(event) => detectScannerBurst(event, searchBurst, (code, before) => { setQuery(before); setVisibleCount(36); void lookupCode(code, "products"); })} placeholder="Ej. omega encargo o omega nordic" /></div><button className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={() => openScanner("lookup-products")}><Camera /><span>Escanear</span></button></section>
-        {!filteredProducts.length ? <Empty icon={<PackageSearch />} title={query || stockOnly ? "No hay coincidencias" : "Todavía no hay productos"} text={stockOnly ? "No hay productos en alerta de stock mínimo." : query ? "Probá con otras palabras o escaneá el código." : "Las cotizaciones guardadas aparecerán aquí."} /> : <><div className="results-count">{stockOnly ? `${filteredProducts.length} con stock bajo` : query ? `${filteredProducts.length} coincidencias` : `${products.length} productos guardados`}</div><div className="product-grid">{filteredProducts.slice(0, visibleCount).map((product) => { const complete = hasCompletePricing(product); const prices = complete ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; const lowStock = product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock; return <article className={`product-card ${complete ? "" : "pending-product"} ${lowStock ? "low-stock" : ""}`} key={product.id}><div className="product-title"><span className="avatar">{product.name[0].toUpperCase()}</span><div><h2>{product.name}</h2>{product.code && <small><ScanLine />{product.code}</small>}{!complete && <small className="pending-label"><AlertCircle />Incompleto</small>}{lowStock && <small className="stock-label"><AlertCircle />Stock bajo</small>}</div><div className="card-actions"><button className="icon-btn" onClick={() => editInProducts(product)} aria-label={`Editar ${product.name}`}><Pencil /></button><button className="icon-btn danger" onClick={() => setDeleteTarget(product)} aria-label={`Eliminar ${product.name}`}><Trash2 /></button></div></div><div className="facts"><div><span>Compra</span><b>{product.purchasePriceUsd === null ? "—" : usd(product.purchasePriceUsd)}</b></div><div><span>Peso</span><b>{product.weightLb === null ? "—" : `${product.weightLb.toFixed(2)} lb`}</b></div><div className="green"><span>Venta GAM</span><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></div><div className="brown"><span>Venta Puerto</span><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></div><div className="stock"><span>Cantidad disponible</span><b>{product.quantityAvailable}</b></div><div className="stock"><span>Stock mínimo</span><b>{product.minimumStockEnabled ? product.minimumStock : "No configurado"}</b></div></div></article>; })}</div>{visibleCount < filteredProducts.length && <button className="btn secondary load-more" onClick={() => setVisibleCount((current) => current + 36)}>Mostrar más productos</button>}</>}
+        {!filteredProducts.length ? <Empty icon={<PackageSearch />} title={query ? "No hay coincidencias" : "Todavía no hay productos"} text={query ? "Probá con otras palabras o escaneá el código." : "Agregá el primer producto desde el botón superior."} /> : <><div className="results-count">{query ? `${filteredProducts.length} coincidencias` : `${products.length} productos guardados`}</div><div className="product-grid">{filteredProducts.slice(0, visibleCount).map((product) => { const complete = hasCompletePricing(product); const prices = complete ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; const lowStock = product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock; return <article className={`product-card ${complete ? "" : "pending-product"} ${lowStock ? "low-stock" : ""}`} key={product.id}><div className="product-title"><span className="avatar">{product.name[0].toUpperCase()}</span><div><h2>{product.name}</h2>{product.code && <small><ScanLine />{product.code}</small>}{!complete && <small className="pending-label"><AlertCircle />Incompleto</small>}{lowStock && <small className="stock-label"><AlertCircle />Stock bajo</small>}</div><div className="card-actions"><button className="icon-btn" onClick={() => editInProducts(product)} aria-label={`Editar ${product.name}`}><Pencil /></button><button className="icon-btn danger" onClick={() => setDeleteTarget(product)} aria-label={`Eliminar ${product.name}`}><Trash2 /></button></div></div><div className="facts"><div><span>Compra</span><b>{product.purchasePriceUsd === null ? "—" : usd(product.purchasePriceUsd)}</b></div><div><span>Peso</span><b>{product.weightLb === null ? "—" : `${product.weightLb.toFixed(2)} lb`}</b></div><div className="green"><span>Venta GAM</span><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></div><div className="brown"><span>Venta Puerto</span><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></div><div className="stock"><span>Cantidad disponible</span><b>{product.quantityAvailable}</b></div><div className="stock"><span>Stock mínimo</span><b>{product.minimumStockEnabled ? product.minimumStock : "No configurado"}</b></div></div></article>; })}</div>{visibleCount < filteredProducts.length && <button className="btn secondary load-more" onClick={() => setVisibleCount((current) => current + 36)}>Mostrar más productos</button>}</>}
       </div>}
 
-      {tab === "import" && <ImportView settings={settings} job={importJob} history={importHistory} summary={importSummary} restoringId={restoringImportId} onStart={startImport} onRestore={restoreImport} />}
+      {tab === "import" && <ImportView settings={settings} job={importJob} deletionJob={deletionJob} productCount={products.filter((product) => product.id > 0).length} history={importHistory} summary={importSummary} restoringId={restoringImportId} onStart={startImport} onRestore={restoreImport} onDeleteAll={startDeletion} />}
       {tab === "settings" && <SettingsView key={JSON.stringify(settings)} current={settings} onSave={saveSettings} />}
     </div></div>
-    <nav className="bottom">{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}</nav><button className="float-scan" onPointerDown={() => void preloadScanner()} onClick={() => openScanner(tab === "products" ? (editingProductId !== null ? "assign" : "lookup-products") : "lookup-calculator")} aria-label="Escanear"><ScanLine /></button>
+    <nav className="bottom">{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}</nav><button className="float-scan" onPointerDown={() => void preloadScanner()} onClick={() => openScanner(tab === "products" ? (productEditorOpen ? "assign" : "lookup-products") : "lookup-calculator")} aria-label="Escanear"><ScanLine /></button>
     {scannerIntent && <Scanner onClose={() => setScannerIntent(null)} onCode={handleScannerCode} />}
+    {restockOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos por abastecer" onPointerDown={() => setRestockOpen(false)}><div className="restock-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Lista de compra</span><h2>Productos por abastecer</h2><p>Existencias iguales o menores al mínimo configurado.</p></div><button className="icon-btn" onClick={() => setRestockOpen(false)} aria-label="Cerrar lista"><X /></button></div>{lowStockProducts.length ? <div className="restock-list">{lowStockProducts.map((product) => <article key={product.id}><div><b>{product.name}</b>{product.code && <small>{product.code}</small>}</div><span><small>Disponible</small><b>{product.quantityAvailable}</b></span><span><small>Mínimo</small><b>{product.minimumStock}</b></span><button className="btn ghost small" onClick={() => editInProducts(product)}><Pencil />Actualizar</button></article>)}</div> : <div className="restock-empty"><Check /><h3>Todo abastecido</h3><p>No hay productos iguales o por debajo del mínimo.</p></div>}</div></div>}
     {exportConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar descarga del inventario"><div className="confirm-card"><div className="download-symbol"><Download /></div><h2>¿Descargar inventario?</h2><p>Se descargarán <b>dos archivos separados</b>: un Excel y un PDF. Ambos incluirán {products.length} productos, con los incompletos en otra hoja o sección.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setExportConfirm(false)} disabled={exporting}>No, cancelar</button><button className="btn primary" onClick={() => void downloadInventory()} disabled={exporting}>{exporting ? <Loader2 className="spin" /> : <Download />}Sí, descargar ambos</button></div></div></div>}
     {deleteTarget && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar producto?</h2><p>Vas a eliminar <b>{deleteTarget.name}</b>. Esta acción no se puede deshacer.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setDeleteTarget(null)} disabled={deleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeProduct()} disabled={deleting}>{deleting ? <Loader2 className="spin" /> : <Trash2 />}Sí, eliminar</button></div></div></div>}
     {toast && <div className={`toast ${toast.type} ${toast.sticky ? "sticky" : ""}`} role="status" aria-live="polite">{toast.type === "success" ? <Check /> : <AlertCircle />}<span>{toast.text}</span><button onClick={() => setToast(null)} aria-label="Cerrar notificación"><X /></button></div>}

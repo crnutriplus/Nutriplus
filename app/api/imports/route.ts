@@ -97,15 +97,6 @@ export async function POST(request: Request) {
     if (!jobRow) throw new Error("No se pudo iniciar la importación.");
     const jobId = Number(jobRow.id);
 
-    const backup = await db.prepare("INSERT INTO import_backups (import_id,product_count,created_at) SELECT ?,COUNT(*),strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM products RETURNING id").bind(jobId).first<{ id: number }>();
-    if (!backup) throw new Error("No se pudo crear el respaldo previo.");
-    await db.prepare(`INSERT INTO import_backup_products (
-      backup_id,original_id,name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,
-      quantity_available,minimum_stock,minimum_stock_enabled,created_at,updated_at
-    ) SELECT ?,id,name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,
-      quantity_available,minimum_stock,minimum_stock_enabled,created_at,updated_at FROM products`)
-      .bind(backup.id).run();
-
     const serializedRows = JSON.stringify(rows);
     await db.prepare(`INSERT INTO import_job_rows (
       import_id,row_number,name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,

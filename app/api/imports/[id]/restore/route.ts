@@ -7,6 +7,9 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
     if (!Number.isInteger(id) || id < 1) return Response.json({ error: "Respaldo inválido." }, { status: 400 });
     await ensureDatabase();
     const db = getD1();
+    const activeDeletion = await db.prepare("SELECT id FROM product_deletion_jobs WHERE status IN ('queued','running') ORDER BY id LIMIT 1").first<{ id: number }>();
+    const activeImport = await db.prepare("SELECT id FROM import_jobs WHERE status IN ('queued','running') AND strategy IN ('update','skip') ORDER BY id LIMIT 1").first<{ id: number }>();
+    if (activeDeletion || activeImport) return Response.json({ error: "Esperá a que termine la operación en segundo plano antes de restaurar un respaldo." }, { status: 409 });
     const target = await db.prepare(`SELECT j.file_name,b.id AS backup_id,b.product_count
       FROM import_jobs j JOIN import_backups b ON b.import_id=j.id WHERE j.id=? ORDER BY b.id LIMIT 1`).bind(id).first<{ file_name: string; backup_id: number; product_count: number }>();
     if (!target) return Response.json({ error: "No se encontró el respaldo de esa importación." }, { status: 404 });

@@ -9,7 +9,7 @@ export async function GET(request: Request) {
     const code = url.searchParams.get("code")?.trim();
     const query = url.searchParams.get("q")?.trim() ?? "";
     const lowStock = url.searchParams.get("lowStock") === "1";
-    const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit")) || 1000));
+    const limit = Math.min(5000, Math.max(1, Number(url.searchParams.get("limit")) || 1000));
     if (code) {
       const row = await getD1().prepare("SELECT * FROM products WHERE code=? LIMIT 1").bind(code).first();
       return Response.json({ product: row ? productFromRow(row) : null });
