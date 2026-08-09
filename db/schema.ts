@@ -24,12 +24,34 @@ export const products = sqliteTable("products", {
   quantityAvailable: integer("quantity_available").notNull().default(0),
   minimumStock: integer("minimum_stock").notNull().default(0),
   minimumStockEnabled: integer("minimum_stock_enabled", { mode: "boolean" }).notNull().default(false),
+  restockPurchasedAt: text("restock_purchased_at"),
+  zeroStockSince: text("zero_stock_since"),
+  version: integer("version").notNull().default(1),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("products_normalized_name_unique").on(table.normalizedName),
   uniqueIndex("products_code_unique").on(table.code),
 ]);
+
+export const nonInventoryQuotes = sqliteTable("non_inventory_quotes", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  code: text("code"),
+  purchasePriceUsdCents: integer("purchase_price_usd_cents"),
+  weightMilliLb: integer("weight_milli_lb"),
+  version: integer("version").notNull().default(1),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("non_inventory_quotes_updated_idx").on(table.updatedAt, table.id)]);
+
+export const mutationReceipts = sqliteTable("mutation_receipts", {
+  id: text("id").primaryKey(),
+  status: text("status").notNull().default("pending"),
+  responseJson: text("response_json"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  completedAt: text("completed_at"),
+});
 
 export const importJobs = sqliteTable("import_jobs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -91,6 +113,9 @@ export const importBackupProducts = sqliteTable("import_backup_products", {
   quantityAvailable: integer("quantity_available").notNull().default(0),
   minimumStock: integer("minimum_stock").notNull().default(0),
   minimumStockEnabled: integer("minimum_stock_enabled", { mode: "boolean" }).notNull().default(false),
+  restockPurchasedAt: text("restock_purchased_at"),
+  zeroStockSince: text("zero_stock_since"),
+  version: integer("version").notNull().default(1),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [index("import_backup_products_backup_idx").on(table.backupId, table.originalId)]);

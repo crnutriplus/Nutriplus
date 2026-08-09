@@ -57,7 +57,9 @@ function sanitizeRow(source: SourceRow, index: number) {
 export async function GET() {
   try {
     await ensureDatabase();
-    const result = await getD1().prepare("SELECT * FROM import_jobs ORDER BY id DESC LIMIT 25").all();
+    const result = await getD1().prepare(`SELECT j.*,
+      COALESCE((SELECT b.product_count FROM import_backups b WHERE b.import_id=j.id ORDER BY b.id LIMIT 1),j.total_rows,0) AS backup_product_count
+      FROM import_jobs j ORDER BY j.id DESC LIMIT 25`).all();
     return Response.json({ jobs: result.results.map(importJobFromRow) });
   } catch (error) {
     return errorResponse(error);

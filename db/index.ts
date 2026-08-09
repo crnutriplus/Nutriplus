@@ -39,6 +39,9 @@ export async function ensureDatabase() {
           quantity_available INTEGER NOT NULL DEFAULT 0,
           minimum_stock INTEGER NOT NULL DEFAULT 0,
           minimum_stock_enabled INTEGER NOT NULL DEFAULT 0,
+          restock_purchased_at TEXT,
+          zero_stock_since TEXT,
+          version INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`),
@@ -56,6 +59,9 @@ export async function ensureDatabase() {
       if (!columnNames.has("quantity_available")) additions.push(db.prepare("ALTER TABLE products ADD COLUMN quantity_available INTEGER NOT NULL DEFAULT 0"));
       if (!columnNames.has("minimum_stock")) additions.push(db.prepare("ALTER TABLE products ADD COLUMN minimum_stock INTEGER NOT NULL DEFAULT 0"));
       if (!columnNames.has("minimum_stock_enabled")) additions.push(db.prepare("ALTER TABLE products ADD COLUMN minimum_stock_enabled INTEGER NOT NULL DEFAULT 0"));
+      if (!columnNames.has("restock_purchased_at")) additions.push(db.prepare("ALTER TABLE products ADD COLUMN restock_purchased_at TEXT"));
+      if (!columnNames.has("zero_stock_since")) additions.push(db.prepare("ALTER TABLE products ADD COLUMN zero_stock_since TEXT"));
+      if (!columnNames.has("version")) additions.push(db.prepare("ALTER TABLE products ADD COLUMN version INTEGER NOT NULL DEFAULT 1"));
       if (additions.length) await db.batch(additions);
 
       await db.batch([
@@ -117,6 +123,9 @@ export async function ensureDatabase() {
           quantity_available INTEGER NOT NULL DEFAULT 0,
           minimum_stock INTEGER NOT NULL DEFAULT 0,
           minimum_stock_enabled INTEGER NOT NULL DEFAULT 0,
+          restock_purchased_at TEXT,
+          zero_stock_since TEXT,
+          version INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         )`),
@@ -140,7 +149,33 @@ export async function ensureDatabase() {
           outcome TEXT
         )`),
         db.prepare("CREATE INDEX IF NOT EXISTS product_deletion_rows_pending_idx ON product_deletion_rows (deletion_id, processed, id)"),
+        db.prepare(`CREATE TABLE IF NOT EXISTS non_inventory_quotes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          name TEXT NOT NULL,
+          code TEXT,
+          purchase_price_usd_cents INTEGER,
+          weight_milli_lb INTEGER,
+          version INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`),
+        db.prepare("CREATE INDEX IF NOT EXISTS non_inventory_quotes_updated_idx ON non_inventory_quotes (updated_at, id)"),
+        db.prepare(`CREATE TABLE IF NOT EXISTS mutation_receipts (
+          id TEXT PRIMARY KEY NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          response_json TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          completed_at TEXT
+        )`),
       ]);
+
+      const backupColumns = await db.prepare("PRAGMA table_info(import_backup_products)").all<{ name: string }>();
+      const backupColumnNames = new Set(backupColumns.results.map((column) => column.name));
+      const backupAdditions = [];
+      if (!backupColumnNames.has("restock_purchased_at")) backupAdditions.push(db.prepare("ALTER TABLE import_backup_products ADD COLUMN restock_purchased_at TEXT"));
+      if (!backupColumnNames.has("zero_stock_since")) backupAdditions.push(db.prepare("ALTER TABLE import_backup_products ADD COLUMN zero_stock_since TEXT"));
+      if (!backupColumnNames.has("version")) backupAdditions.push(db.prepare("ALTER TABLE import_backup_products ADD COLUMN version INTEGER NOT NULL DEFAULT 1"));
+      if (backupAdditions.length) await db.batch(backupAdditions);
     })().catch((error) => { initialization = null; throw error; });
   }
   await initialization;

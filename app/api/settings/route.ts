@@ -1,6 +1,6 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { errorResponse } from "@/lib/api-helpers";
-import { settingsFromRow } from "@/lib/pricing";
+import { calculatePrices, nonInventoryFromRow, productFromRow, settingsFromRow } from "@/lib/pricing";
 
 export async function GET() {
   try {
@@ -30,6 +30,30 @@ export async function PUT(request: Request) {
     ).run();
     const row = await getD1().prepare("SELECT * FROM settings WHERE id=1").first();
     if (!row) throw new Error("No se pudieron recuperar los ajustes.");
-    return Response.json({ settings: settingsFromRow(row) });
+    const savedSettings = settingsFromRow(row);
+    const [productRows, quoteRows] = await Promise.all([
+      getD1().prepare("SELECT * FROM products WHERE purchase_price_usd_cents IS NOT NULL AND weight_milli_lb IS NOT NULL").all(),
+      getD1().prepare("SELECT * FROM non_inventory_quotes WHERE purchase_price_usd_cents IS NOT NULL AND weight_milli_lb IS NOT NULL").all(),
+    ]);
+    const failures: Array<{ source: string; id: number; name: string }> = [];
+    productRows.results.forEach((source) => {
+      const product = productFromRow(source);
+      const prices = calculatePrices(product.purchasePriceUsd!, product.weightLb!, savedSettings);
+      if (![prices.costCrc, prices.gamPriceCrc, prices.puertoPriceCrc].every(Number.isFinite)) failures.push({ source: "Inventario", id: product.id, name: product.name });
+    });
+    quoteRows.results.forEach((source) => {
+      const quote = nonInventoryFromRow(source);
+      const prices = calculatePrices(quote.purchasePriceUsd!, quote.weightLb!, savedSettings);
+      if (![prices.costCrc, prices.gamPriceCrc, prices.puertoPriceCrc].every(Number.isFinite)) failures.push({ source: "No inventario", id: quote.id, name: quote.name });
+    });
+    return Response.json({
+      settings: savedSettings,
+      verification: {
+        inventory: productRows.results.length,
+        noInventory: quoteRows.results.length,
+        total: productRows.results.length + quoteRows.results.length,
+        failed: failures,
+      },
+    });
   } catch (error) { return errorResponse(error); }
 }

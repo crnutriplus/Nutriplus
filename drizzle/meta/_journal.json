@@ -43,6 +43,13 @@
       "when": 1786243107313,
       "tag": "0005_little_johnny_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786250802439,
+      "tag": "0006_brown_cloak",
+      "breakpoints": true
     }
   ]
 }

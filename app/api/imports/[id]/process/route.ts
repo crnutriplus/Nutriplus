@@ -85,19 +85,35 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
           quantity_available=CASE WHEN ?=1 THEN ? ELSE quantity_available END,
           minimum_stock=CASE WHEN ?=1 THEN ? ELSE minimum_stock END,
           minimum_stock_enabled=CASE WHEN ?=1 THEN ? ELSE minimum_stock_enabled END,
+          zero_stock_since=CASE
+            WHEN ?=1 AND ?=0 AND quantity_available>0 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHEN ?=1 AND ?>0 THEN NULL
+            ELSE zero_stock_since END,
+          restock_purchased_at=CASE WHEN
+            (CASE WHEN ?=1 THEN ? ELSE quantity_available END)>0 AND
+            ((CASE WHEN ?=1 THEN ? ELSE minimum_stock_enabled END)=0 OR
+             (CASE WHEN ?=1 THEN ? ELSE quantity_available END)>(CASE WHEN ?=1 THEN ? ELSE minimum_stock END))
+            THEN NULL ELSE restock_purchased_at END,
+          version=version+1,
           updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
           WHERE id=? AND julianday(replace(replace(updated_at,'T',' '),'Z','')) <= julianday(replace(replace(?,'T',' '),'Z',''))`)
           .bind(row.name,row.normalized_name,row.has_code,row.code,row.has_purchase_price,row.purchase_price_usd_cents,
             row.has_weight,row.weight_milli_lb,row.has_quantity,row.quantity_available,row.has_minimum_stock,row.minimum_stock,
-            row.has_minimum_stock,row.minimum_stock_enabled,existing.id,job.created_at));
+            row.has_minimum_stock,row.minimum_stock_enabled,
+            row.has_quantity,row.quantity_available,row.has_quantity,row.quantity_available,
+            row.has_quantity,row.quantity_available,row.has_minimum_stock,row.minimum_stock_enabled,
+            row.has_quantity,row.quantity_available,row.has_minimum_stock,row.minimum_stock,
+            existing.id,job.created_at));
       } else {
         operations.push(db.prepare(`INSERT OR IGNORE INTO products (
           name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,quantity_available,
-          minimum_stock,minimum_stock_enabled,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))`)
+          minimum_stock,minimum_stock_enabled,zero_stock_since,version,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,CASE WHEN ?=1 AND ?=0 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,1,
+          strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))`)
           .bind(row.name,row.normalized_name,row.has_code ? row.code : null,row.has_purchase_price ? row.purchase_price_usd_cents : null,
             row.has_weight ? row.weight_milli_lb : null,row.has_quantity ? row.quantity_available : 0,
-            row.has_minimum_stock ? row.minimum_stock : 0,row.has_minimum_stock ? row.minimum_stock_enabled : 0));
+            row.has_minimum_stock ? row.minimum_stock : 0,row.has_minimum_stock ? row.minimum_stock_enabled : 0,
+            row.has_quantity,row.quantity_available));
       }
       operationRows.push({ row });
     }

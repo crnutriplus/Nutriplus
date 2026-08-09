@@ -38,6 +38,22 @@ export function parseProductInput(payload: Record<string, unknown>, options: { a
   };
 }
 
+export function parseNonInventoryInput(payload: Record<string, unknown>) {
+  const name = typeof payload.name === "string" ? payload.name.trim().replace(/\s+/g, " ") : "";
+  const code = typeof payload.code === "string" ? payload.code.trim().slice(0, 256) || null : null;
+  const purchasePriceUsd = optionalNumber(payload.purchasePriceUsd);
+  const weightLb = optionalNumber(payload.weightLb);
+  if (!name) throw new Error("El nombre del producto es obligatorio.");
+  if (purchasePriceUsd !== null && (!Number.isFinite(purchasePriceUsd) || purchasePriceUsd < 0)) throw new Error("Ingresá un precio de compra válido.");
+  if (weightLb !== null && (!Number.isFinite(weightLb) || weightLb < 0)) throw new Error("Ingresá un peso válido.");
+  return {
+    name,
+    code,
+    purchasePriceUsdCents: purchasePriceUsd === null ? null : Math.round(purchasePriceUsd * 100),
+    weightMilliLb: weightLb === null ? null : Math.round(weightLb * 1000),
+  };
+}
+
 export function errorResponse(error: unknown) {
   const message = error instanceof Error ? error.message : "No se pudo completar la operación.";
   const duplicate = message.includes("UNIQUE constraint failed");

@@ -23,17 +23,17 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
     if (!safetyBackup) throw new Error("No se pudo crear el respaldo de seguridad.");
     await db.prepare(`INSERT INTO import_backup_products (
       backup_id,original_id,name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,
-      quantity_available,minimum_stock,minimum_stock_enabled,created_at,updated_at
+      quantity_available,minimum_stock,minimum_stock_enabled,restock_purchased_at,zero_stock_since,version,created_at,updated_at
     ) SELECT ?,id,name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,
-      quantity_available,minimum_stock,minimum_stock_enabled,created_at,updated_at FROM products`).bind(safetyBackup.id).run();
+      quantity_available,minimum_stock,minimum_stock_enabled,restock_purchased_at,zero_stock_since,version,created_at,updated_at FROM products`).bind(safetyBackup.id).run();
 
     await db.batch([
       db.prepare("DELETE FROM products"),
       db.prepare(`INSERT INTO products (
         id,name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,quantity_available,
-        minimum_stock,minimum_stock_enabled,created_at,updated_at
+        minimum_stock,minimum_stock_enabled,restock_purchased_at,zero_stock_since,version,created_at,updated_at
       ) SELECT original_id,name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,quantity_available,
-        minimum_stock,minimum_stock_enabled,created_at,updated_at FROM import_backup_products WHERE backup_id=? ORDER BY original_id`).bind(target.backup_id),
+        minimum_stock,minimum_stock_enabled,restock_purchased_at,zero_stock_since,version,created_at,updated_at FROM import_backup_products WHERE backup_id=? ORDER BY original_id`).bind(target.backup_id),
       db.prepare("DELETE FROM sqlite_sequence WHERE name='products'"),
       db.prepare("INSERT INTO sqlite_sequence(name,seq) SELECT 'products',COALESCE(MAX(id),0) FROM products"),
       db.prepare("UPDATE import_jobs SET restored_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").bind(id),

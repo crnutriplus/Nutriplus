@@ -1,5 +1,6 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { errorResponse, parseProductInput } from "@/lib/api-helpers";
+import { runIdempotentMutation } from "@/lib/mutations";
 import { normalizeName, productFromRow, searchTokens } from "@/lib/pricing";
 
 export async function GET(request: Request) {
@@ -9,13 +10,23 @@ export async function GET(request: Request) {
     const code = url.searchParams.get("code")?.trim();
     const query = url.searchParams.get("q")?.trim() ?? "";
     const lowStock = url.searchParams.get("lowStock") === "1";
+    const recent = url.searchParams.get("recent") === "1";
     const limit = Math.min(5000, Math.max(1, Number(url.searchParams.get("limit")) || 1000));
     if (code) {
-      const row = await getD1().prepare("SELECT * FROM products WHERE code=? LIMIT 1").bind(code).first();
+      const normalizedCode = code.toLowerCase().replace(/\s+/g, "");
+      const row = await getD1().prepare("SELECT * FROM products WHERE lower(replace(code,' ',''))=? LIMIT 1").bind(normalizedCode).first();
       return Response.json({ product: row ? productFromRow(row) : null });
     }
     if (lowStock) {
-      const result = await getD1().prepare("SELECT * FROM products WHERE minimum_stock_enabled=1 AND quantity_available<=minimum_stock ORDER BY quantity_available ASC,name COLLATE NOCASE LIMIT ?").bind(limit).all();
+      const result = await getD1().prepare(`SELECT * FROM products
+        WHERE (minimum_stock_enabled=1 AND quantity_available<=minimum_stock) OR zero_stock_since IS NOT NULL
+        ORDER BY CASE WHEN restock_purchased_at IS NULL THEN 0 ELSE 1 END,
+          CASE WHEN quantity_available=0 THEN 0 ELSE 1 END,quantity_available ASC,name COLLATE NOCASE LIMIT ?`)
+        .bind(limit).all();
+      return Response.json({ products: result.results.map(productFromRow) });
+    }
+    if (recent) {
+      const result = await getD1().prepare("SELECT * FROM products ORDER BY updated_at DESC,id DESC LIMIT ?").bind(limit).all();
       return Response.json({ products: result.results.map(productFromRow) });
     }
     const normalized = normalizeName(query);
@@ -39,10 +50,21 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const product = parseProductInput((await request.json()) as Record<string, unknown>, { allowPending: true });
+    const payload = (await request.json()) as Record<string, unknown>;
+    const product = parseProductInput(payload, { allowPending: true });
     await ensureDatabase();
-    const row = await getD1().prepare("INSERT INTO products (name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,quantity_available,minimum_stock,minimum_stock_enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now')) RETURNING *").bind(product.name, product.normalizedName, product.code, product.purchasePriceUsdCents, product.weightMilliLb, product.quantityAvailable, product.minimumStock, product.minimumStockEnabled ? 1 : 0).first();
-    if (!row) throw new Error("No se pudo guardar el producto.");
-    return Response.json({ product: productFromRow(row) }, { status: 201 });
+    const db = getD1();
+    const result = await runIdempotentMutation(db, request, payload, async () => {
+      const row = await db.prepare(`INSERT INTO products (
+        name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,quantity_available,
+        minimum_stock,minimum_stock_enabled,zero_stock_since,version,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,CASE WHEN ?=0 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,1,
+        strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now')) RETURNING *`)
+        .bind(product.name, product.normalizedName, product.code, product.purchasePriceUsdCents, product.weightMilliLb,
+          product.quantityAvailable, product.minimumStock, product.minimumStockEnabled ? 1 : 0, product.quantityAvailable).first();
+      if (!row) throw new Error("No se pudo guardar el producto.");
+      return { body: { product: productFromRow(row) }, status: 201 };
+    });
+    return Response.json(result.body, { status: result.status ?? 200 });
   } catch (error) { return errorResponse(error); }
 }

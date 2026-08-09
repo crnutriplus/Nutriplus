@@ -19,6 +19,7 @@ export type ImportJobRecord = {
   createdAt: string;
   completedAt: string | null;
   restoredAt: string | null;
+  backupProductCount: number;
 };
 
 export type ImportChangedProduct = {
@@ -44,5 +45,6 @@ export function importJobFromRow(row: Record<string, unknown>): ImportJobRecord 
     createdAt: String(row.created_at),
     completedAt: row.completed_at ? String(row.completed_at) : null,
     restoredAt: row.restored_at ? String(row.restored_at) : null,
+    backupProductCount: Number(row.backup_product_count ?? row.product_count ?? row.total_rows ?? 0),
   };
 }

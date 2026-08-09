@@ -19,9 +19,9 @@ export async function createBackupForImport(db: D1Database, importId: number) {
   if (!backup) throw new Error("No se pudo crear el respaldo previo.");
   await db.prepare(`INSERT INTO import_backup_products (
     backup_id,original_id,name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,
-    quantity_available,minimum_stock,minimum_stock_enabled,created_at,updated_at
+    quantity_available,minimum_stock,minimum_stock_enabled,restock_purchased_at,zero_stock_since,version,created_at,updated_at
   ) SELECT ?,id,name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,
-    quantity_available,minimum_stock,minimum_stock_enabled,created_at,updated_at FROM products`)
+    quantity_available,minimum_stock,minimum_stock_enabled,restock_purchased_at,zero_stock_since,version,created_at,updated_at FROM products`)
     .bind(backup.id).run();
   return Number(backup.id);
 }

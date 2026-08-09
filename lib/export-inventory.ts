@@ -1,10 +1,11 @@
-import type { PricingSettings, ProductRecord } from "./pricing";
+import type { NonInventoryRecord, PricingSettings, ProductRecord } from "./pricing";
 import { calculatePrices, hasCompletePricing } from "./pricing";
 import pdfBoldFontUrl from "dejavu-fonts-ttf/ttf/DejaVuSans-Bold.ttf?url";
 import pdfRegularFontUrl from "dejavu-fonts-ttf/ttf/DejaVuSans.ttf?url";
 
 type InventoryRow = {
-  product: ProductRecord;
+  product: ProductRecord | NonInventoryRecord;
+  inventory: boolean;
   purchasePriceUsd: number | null;
   weightLb: number | null;
   chargedWeightLb: number | null;
@@ -28,6 +29,7 @@ function toInventoryRow(product: ProductRecord, settings: PricingSettings): Inve
   if (!hasCompletePricing(product)) {
     return {
       product,
+      inventory: true,
       purchasePriceUsd: product.purchasePriceUsd,
       weightLb: product.weightLb,
       chargedWeightLb: null,
@@ -40,6 +42,7 @@ function toInventoryRow(product: ProductRecord, settings: PricingSettings): Inve
   const prices = calculatePrices(product.purchasePriceUsd, product.weightLb, settings);
   return {
     product,
+    inventory: true,
     purchasePriceUsd: product.purchasePriceUsd,
     weightLb: product.weightLb,
     chargedWeightLb: prices.chargedWeightLb,
@@ -48,6 +51,14 @@ function toInventoryRow(product: ProductRecord, settings: PricingSettings): Inve
     gamPriceCrc: prices.gamPriceCrc,
     puertoPriceCrc: prices.puertoPriceCrc,
   };
+}
+
+function toNonInventoryRow(product: NonInventoryRecord, settings: PricingSettings): InventoryRow {
+  if (!hasCompletePricing(product)) {
+    return { product, inventory: false, purchasePriceUsd: product.purchasePriceUsd, weightLb: product.weightLb, chargedWeightLb: null, courierUsd: null, costCrc: null, gamPriceCrc: null, puertoPriceCrc: null };
+  }
+  const prices = calculatePrices(product.purchasePriceUsd, product.weightLb, settings);
+  return { product, inventory: false, purchasePriceUsd: product.purchasePriceUsd, weightLb: product.weightLb, chargedWeightLb: prices.chargedWeightLb, courierUsd: prices.courierUsd, costCrc: prices.costCrc, gamPriceCrc: prices.gamPriceCrc, puertoPriceCrc: prices.puertoPriceCrc };
 }
 
 function parseUpdatedAt(value: string) {
@@ -82,6 +93,7 @@ function download(blob: Blob, filename: string) {
 async function createExcel(
   complete: InventoryRow[],
   incomplete: InventoryRow[],
+  noInventory: InventoryRow[],
   generatedAt: Date,
   extraWeightLb: number,
 ) {
@@ -110,13 +122,12 @@ async function createExcel(
   ];
   const widths = [44, 22, 19, 18, 22, 21, 18, 18, 19, 19, 15, 22];
 
-  function addSheet(name: string, title: string, rows: InventoryRow[], incompleteSheet: boolean) {
+  function addSheet(name: string, title: string, rows: InventoryRow[], incompleteSheet: boolean, noInventorySheet = false) {
     const sheet = workbook.addWorksheet(name, {
       properties: { tabColor: { argb: incompleteSheet ? AMBER : GREEN } },
-      views: [{ state: "frozen", xSplit: 2, ySplit: 4 }],
+      views: [{ state: "frozen", xSplit: 2, ySplit: 4, showGridLines: false }],
       pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 },
     });
-    sheet.showGridLines = false;
     sheet.mergeCells("A1:L1");
     sheet.getCell("A1").value = title;
     sheet.getCell("A1").font = { name: "Arial", size: 18, bold: true, color: { argb: "FFFFFF" } };
@@ -125,7 +136,7 @@ async function createExcel(
     sheet.getRow(1).height = 34;
 
     sheet.mergeCells("A2:L2");
-    sheet.getCell("A2").value = `${rows.length} productos · Generado el ${dateText(generatedAt)} · Los productos incompletos no muestran precios calculados.`;
+    sheet.getCell("A2").value = `${rows.length} productos · Generado el ${dateText(generatedAt)}${noInventorySheet ? " · Cotizaciones que no forman parte del inventario." : " · Los productos incompletos no muestran precios calculados."}`;
     sheet.getCell("A2").font = { name: "Arial", size: 10, color: { argb: MUTED } };
     sheet.getCell("A2").fill = { type: "pattern", pattern: "solid", fgColor: { argb: incompleteSheet ? AMBER_LIGHT : GREEN_LIGHT } };
     sheet.getCell("A2").alignment = { vertical: "middle", horizontal: "left" };
@@ -156,8 +167,8 @@ async function createExcel(
         item.costCrc,
         item.gamPriceCrc,
         item.puertoPriceCrc,
-        product.quantityAvailable,
-        product.minimumStockEnabled ? product.minimumStock : null,
+        item.inventory ? (product as ProductRecord).quantityAvailable : null,
+        item.inventory && (product as ProductRecord).minimumStockEnabled ? (product as ProductRecord).minimumStock : null,
         parseUpdatedAt(product.updatedAt),
       ];
       row.height = 27;
@@ -182,7 +193,7 @@ async function createExcel(
     const lastRow = Math.max(4, rows.length + 4);
     sheet.autoFilter = { from: "A4", to: `L${lastRow}` };
     if (rows.length) {
-      sheet.addConditionalFormatting({
+      if (!noInventorySheet) sheet.addConditionalFormatting({
         ref: `A5:L${lastRow}`,
         rules: [{
           type: "expression",
@@ -198,6 +209,7 @@ async function createExcel(
 
   addSheet("Productos completos", "Inventario NutriPlus - Productos completos", complete, false);
   addSheet("Productos incompletos", "Inventario NutriPlus - Productos incompletos", incomplete, true);
+  addSheet("No inventario", "NutriPlus - No inventario", noInventory, false, true);
   return workbook.xlsx.writeBuffer();
 }
 
@@ -217,7 +229,7 @@ function money(value: number | null, decimals = 0) {
   return new Intl.NumberFormat("es-CR", { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(value);
 }
 
-async function createPdf(complete: InventoryRow[], incomplete: InventoryRow[], generatedAt: Date, extraWeightLb: number) {
+async function createPdf(complete: InventoryRow[], incomplete: InventoryRow[], noInventory: InventoryRow[], generatedAt: Date, extraWeightLb: number) {
   const [{ PDFDocument, rgb }, fontkitModule] = await Promise.all([import("pdf-lib"), import("@pdf-lib/fontkit")]);
   const pdf = await PDFDocument.create();
   pdf.registerFontkit(fontkitModule.default);
@@ -310,8 +322,8 @@ async function createPdf(complete: InventoryRow[], incomplete: InventoryRow[], g
       money(item.costCrc),
       money(item.gamPriceCrc),
       money(item.puertoPriceCrc),
-      String(product.quantityAvailable),
-      product.minimumStockEnabled ? String(product.minimumStock) : "-",
+      item.inventory ? String((product as ProductRecord).quantityAvailable) : "-",
+      item.inventory && (product as ProductRecord).minimumStockEnabled ? String((product as ProductRecord).minimumStock) : "-",
       dateText(parseUpdatedAt(product.updatedAt)),
     ];
   }
@@ -327,7 +339,7 @@ async function createPdf(complete: InventoryRow[], incomplete: InventoryRow[], g
       const lineSets = values.map((value, index) => wrap(value, widths[index] - 6, 6.4, index < 2 ? 2 : 1));
       const rowHeight = Math.max(19, Math.max(...lineSets.map((lines) => lines.length)) * 7.2 + 7);
       if (state.y - rowHeight < 34) state = addPage(section, incompleteSection, false);
-      const lowStock = item.product.minimumStockEnabled && item.product.quantityAvailable <= item.product.minimumStock;
+      const lowStock = item.inventory && (item.product as ProductRecord).minimumStockEnabled && (item.product as ProductRecord).quantityAvailable <= (item.product as ProductRecord).minimumStock;
       const fill = lowStock ? colors.redLight : incompleteSection ? colors.amberLight : rowIndex % 2 ? colors.greenLight : colors.white;
       let x = margin;
       values.forEach((_value, columnIndex) => {
@@ -353,6 +365,7 @@ async function createPdf(complete: InventoryRow[], incomplete: InventoryRow[], g
 
   addSection(`Productos completos (${complete.length})`, complete, false);
   addSection(`Productos incompletos (${incomplete.length})`, incomplete, true);
+  addSection(`No inventario (${noInventory.length})`, noInventory, false);
   const pages = pdf.getPages();
   pages.forEach((page, index) => {
     const pageText = `Página ${index + 1} de ${pages.length}`;
@@ -362,32 +375,36 @@ async function createPdf(complete: InventoryRow[], incomplete: InventoryRow[], g
   return pdf.save();
 }
 
-export async function createInventoryArtifacts(products: ProductRecord[], settings: PricingSettings) {
+export async function createInventoryArtifacts(products: ProductRecord[], quotes: NonInventoryRecord[], settings: PricingSettings, format: "excel" | "pdf" | "both" = "both") {
   const generatedAt = new Date();
   const rows = products
     .map((product) => toInventoryRow(product, settings))
     .sort((a, b) => a.product.name.localeCompare(b.product.name, "es", { sensitivity: "base" }));
   const complete = rows.filter((row) => hasCompletePricing(row.product));
   const incomplete = rows.filter((row) => !hasCompletePricing(row.product));
+  const noInventory = quotes
+    .map((quote) => toNonInventoryRow(quote, settings))
+    .sort((a, b) => b.product.updatedAt.localeCompare(a.product.updatedAt));
   const [xlsxBytes, pdfBytes] = await Promise.all([
-    createExcel(complete, incomplete, generatedAt, settings.extraWeightLb),
-    createPdf(complete, incomplete, generatedAt, settings.extraWeightLb),
+    format === "pdf" ? Promise.resolve(null) : createExcel(complete, incomplete, noInventory, generatedAt, settings.extraWeightLb),
+    format === "excel" ? Promise.resolve(null) : createPdf(complete, incomplete, noInventory, generatedAt, settings.extraWeightLb),
   ]);
   const stamp = dateStamp(generatedAt);
-  const excelArray = xlsxBytes instanceof ArrayBuffer ? new Uint8Array(xlsxBytes) : new Uint8Array(xlsxBytes as ArrayLike<number>);
+  const excelArray = xlsxBytes === null ? null : xlsxBytes instanceof ArrayBuffer ? new Uint8Array(xlsxBytes) : new Uint8Array(xlsxBytes as ArrayLike<number>);
   return {
     complete: complete.length,
     incomplete: incomplete.length,
     excelArray,
-    pdfArray: new Uint8Array(pdfBytes),
+    noInventory: noInventory.length,
+    pdfArray: pdfBytes === null ? null : new Uint8Array(pdfBytes),
     excelFilename: `inventario-nutriplus-${stamp}.xlsx`,
     pdfFilename: `inventario-nutriplus-${stamp}.pdf`,
   };
 }
 
-export async function exportInventoryFiles(products: ProductRecord[], settings: PricingSettings) {
-  const result = await createInventoryArtifacts(products, settings);
-  download(new Blob([result.excelArray], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), result.excelFilename);
-  download(new Blob([result.pdfArray], { type: "application/pdf" }), result.pdfFilename);
-  return { complete: result.complete, incomplete: result.incomplete };
+export async function exportInventoryFiles(products: ProductRecord[], quotes: NonInventoryRecord[], settings: PricingSettings, format: "excel" | "pdf" | "both") {
+  const result = await createInventoryArtifacts(products, quotes, settings, format);
+  if (result.excelArray) download(new Blob([result.excelArray], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), result.excelFilename);
+  if (result.pdfArray) download(new Blob([result.pdfArray], { type: "application/pdf" }), result.pdfFilename);
+  return { complete: result.complete, incomplete: result.incomplete, noInventory: result.noInventory };
 }

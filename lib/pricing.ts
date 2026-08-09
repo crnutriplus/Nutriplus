@@ -18,6 +18,20 @@ export type ProductRecord = {
   quantityAvailable: number;
   minimumStock: number;
   minimumStockEnabled: boolean;
+  restockPurchasedAt: string | null;
+  zeroStockSince: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NonInventoryRecord = {
+  id: number;
+  name: string;
+  code: string | null;
+  purchasePriceUsd: number | null;
+  weightLb: number | null;
+  version: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -128,6 +142,22 @@ export function productFromRow(row: Record<string, unknown>): ProductRecord {
     quantityAvailable: Number(row.quantity_available ?? 0),
     minimumStock: Number(row.minimum_stock ?? 0),
     minimumStockEnabled: Boolean(Number(row.minimum_stock_enabled ?? 0)),
+    restockPurchasedAt: row.restock_purchased_at ? String(row.restock_purchased_at) : null,
+    zeroStockSince: row.zero_stock_since ? String(row.zero_stock_since) : null,
+    version: Number(row.version ?? 1),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+export function nonInventoryFromRow(row: Record<string, unknown>): NonInventoryRecord {
+  return {
+    id: Number(row.id),
+    name: String(row.name),
+    code: row.code ? String(row.code) : null,
+    purchasePriceUsd: row.purchase_price_usd_cents == null ? null : Number(row.purchase_price_usd_cents) / 100,
+    weightLb: row.weight_milli_lb == null ? null : Number(row.weight_milli_lb) / 1000,
+    version: Number(row.version ?? 1),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
