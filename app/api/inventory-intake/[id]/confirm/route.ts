@@ -1,0 +1,369 @@
+import { ensureDatabase, getD1 } from "@/db";
+import { errorResponse } from "@/lib/api-helpers";
+import { validateBarcode } from "@/lib/barcodes";
+import { descriptionSignature, descriptionsCompatible, presentationSignature } from "@/lib/inventory-intake";
+import { normalizeName, productFromRow } from "@/lib/pricing";
+import { requestUserLabel } from "@/lib/request-user";
+
+type ConfirmLine = {
+  id?: unknown;
+  lineKey?: unknown;
+  name?: unknown;
+  brand?: unknown;
+  presentation?: unknown;
+  flavor?: unknown;
+  concentration?: unknown;
+  originalDescription?: unknown;
+  billedQuantity?: unknown;
+  receivedQuantity?: unknown;
+  unitsPerPackage?: unknown;
+  barcode?: unknown;
+  secondaryId?: unknown;
+  secondaryType?: unknown;
+  barcodeMethod?: unknown;
+  barcodeSource?: unknown;
+  barcodeLevel?: unknown;
+  action?: unknown;
+  matchProductId?: unknown;
+  matchNonInventoryId?: unknown;
+  selected?: unknown;
+};
+
+type CleanLine = {
+  id: string;
+  lineKey: string;
+  name: string;
+  brand: string;
+  presentation: string;
+  flavor: string;
+  concentration: string;
+  originalDescription: string;
+  billedQuantity: number | null;
+  receivedQuantity: number;
+  unitsPerPackage: number;
+  totalToAdd: number;
+  barcode: string;
+  canonicalBarcode: string;
+  barcodeType: string;
+  secondaryId: string;
+  secondaryType: string;
+  barcodeMethod: string;
+  barcodeSource: string;
+  barcodeLevel: string;
+  action: "existing" | "move" | "create";
+  matchProductId: number | null;
+  matchNonInventoryId: number | null;
+};
+
+function cleanText(value: unknown, max = 500) {
+  return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, max) : "";
+}
+
+function cleanInteger(value: unknown, label: string, minimum = 0, maximum = 1_000_000) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < minimum || number > maximum) throw new Error(`${label} debe ser un número entero entre ${minimum} y ${maximum}.`);
+  return number;
+}
+
+function operationResult(operation: Record<string, unknown>, products: Record<string, unknown>[], movements: Record<string, unknown>[]) {
+  return {
+    operation: {
+      id: String(operation.id),
+      documentId: operation.document_id ? String(operation.document_id) : "",
+      status: String(operation.status),
+      operationType: String(operation.operation_type),
+      lineCount: Number(operation.line_count),
+      totalUnits: Number(operation.total_units),
+      confirmedAt: operation.confirmed_at ? String(operation.confirmed_at) : "",
+      confirmedBy: operation.confirmed_by ? String(operation.confirmed_by) : "",
+      verificationStatus: String(operation.verification_status),
+    },
+    products: products.map(productFromRow),
+    movements: movements.map((movement) => ({
+      id: String(movement.id),
+      productId: Number(movement.product_id),
+      productName: String(movement.product_name),
+      previousQuantity: Number(movement.previous_quantity),
+      quantityAdded: Number(movement.quantity_change),
+      resultingQuantity: Number(movement.resulting_quantity),
+    })),
+  };
+}
+
+async function loadOperationResult(db: D1Database, operationId: string) {
+  const operation = await db.prepare("SELECT * FROM inventory_operations WHERE id=? LIMIT 1").bind(operationId).first<Record<string, unknown>>();
+  if (!operation) return null;
+  const movements = await db.prepare("SELECT * FROM inventory_movements WHERE operation_id=? ORDER BY id").bind(operationId).all<Record<string, unknown>>();
+  const productIds = [...new Set(movements.results.map((movement) => Number(movement.product_id)))];
+  const products = productIds.length
+    ? await db.prepare("SELECT * FROM products WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(productIds)).all<Record<string, unknown>>()
+    : { results: [] as Record<string, unknown>[] };
+  return operationResult(operation, products.results, movements.results);
+}
+
+function canonicalOwners(rows: Record<string, unknown>[]) {
+  const result = new Map<string, Record<string, unknown>[]>();
+  rows.forEach((row) => {
+    const barcode = validateBarcode(row.code);
+    if (!barcode.valid || !barcode.canonical) return;
+    result.set(barcode.canonical, [...(result.get(barcode.canonical) || []), row]);
+  });
+  return result;
+}
+
+export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  let operationId = "";
+  try {
+    const documentId = (await context.params).id;
+    const payload = await request.json() as Record<string, unknown> & { lines?: ConfirmLine[] };
+    operationId = cleanText(payload.operationId, 160);
+    if (!/^[A-Za-z0-9:_-]{8,160}$/.test(operationId)) return Response.json({ error: "La confirmación no tiene un identificador seguro." }, { status: 400 });
+    const sourceLines = Array.isArray(payload.lines) ? payload.lines.filter((line) => line?.selected !== false).slice(0, 500) : [];
+    if (!sourceLines.length) return Response.json({ error: "Seleccioná al menos una línea confirmada para ingresar." }, { status: 400 });
+
+    await ensureDatabase();
+    const db = getD1();
+    const priorResult = await loadOperationResult(db, operationId);
+    if (priorResult?.operation.status === "completed") return Response.json({ ...priorResult, idempotent: true });
+    if (priorResult) return Response.json({ operation: priorResult.operation, pendingVerification: true }, { status: 202 });
+
+    const document = await db.prepare("SELECT * FROM inventory_documents WHERE id=? LIMIT 1").bind(documentId).first<Record<string, unknown>>();
+    if (!document) return Response.json({ error: "No se encontró la factura que intentás confirmar." }, { status: 404 });
+    if (["credit_note", "return"].includes(String(document.status))) return Response.json({ error: "Una devolución o nota de crédito no puede procesarse como ingreso de inventario." }, { status: 409 });
+
+    const storedLines = await db.prepare("SELECT * FROM inventory_document_lines WHERE document_id=?").bind(documentId).all<Record<string, unknown>>();
+    const storedById = new Map(storedLines.results.map((line) => [String(line.id), line]));
+    const productsResult = await db.prepare("SELECT * FROM products").all<Record<string, unknown>>();
+    const quotesResult = await db.prepare("SELECT * FROM non_inventory_quotes").all<Record<string, unknown>>();
+    const aliasesResult = await db.prepare("SELECT * FROM supplier_product_aliases").all<Record<string, unknown>>();
+    const productCodes = canonicalOwners(productsResult.results);
+    const quoteCodes = canonicalOwners(quotesResult.results);
+    const errors: string[] = [];
+
+    const lines: CleanLine[] = sourceLines.map((source, index) => {
+      const id = cleanText(source.id, 100) || `iline-${crypto.randomUUID()}`;
+      const lineKey = cleanText(source.lineKey, 150) || `manual-${id}`;
+      const stored = storedById.get(id);
+      if (stored?.processed_operation_id) errors.push(`La línea ${index + 1} ya fue procesada anteriormente.`);
+      const name = cleanText(source.name, 500);
+      const originalDescription = cleanText(source.originalDescription, 1000) || name;
+      if (!name) errors.push(`La línea ${index + 1} no tiene nombre de producto.`);
+      const receivedQuantity = cleanInteger(source.receivedQuantity, `La cantidad recibida de la línea ${index + 1}`, 0, 100000);
+      const unitsPerPackage = cleanInteger(source.unitsPerPackage, `Las unidades por paquete de la línea ${index + 1}`, 1, 10000);
+      const totalToAdd = receivedQuantity * unitsPerPackage;
+      if (totalToAdd <= 0) errors.push(`La línea ${index + 1} no agrega ninguna unidad.`);
+      const billedRaw = source.billedQuantity;
+      const billedQuantity = billedRaw == null || billedRaw === "" ? null : cleanInteger(billedRaw, `La cantidad facturada de la línea ${index + 1}`, 0, 100000);
+      const barcode = validateBarcode(source.barcode);
+      if (!barcode.valid || !barcode.normalized || !barcode.canonical) errors.push(`Línea ${index + 1}: ${barcode.error || "el código de barras no es válido"}`);
+      const action = cleanText(source.action, 20) as CleanLine["action"];
+      if (!["existing", "move", "create"].includes(action)) errors.push(`La línea ${index + 1} todavía no tiene una acción confirmada.`);
+      const barcodeLevel = cleanText(source.barcodeLevel, 30) || (unitsPerPackage === 1 ? "unit" : "");
+      if (unitsPerPackage > 1 && !["unit", "package", "distribution", "set"].includes(barcodeLevel)) errors.push(`La línea ${index + 1} necesita definir si el código es de unidad, paquete, caja o set.`);
+      return {
+        id,
+        lineKey,
+        name,
+        brand: cleanText(source.brand, 200),
+        presentation: cleanText(source.presentation, 250),
+        flavor: cleanText(source.flavor, 150),
+        concentration: cleanText(source.concentration, 100),
+        originalDescription,
+        billedQuantity,
+        receivedQuantity,
+        unitsPerPackage,
+        totalToAdd,
+        barcode: barcode.normalized || "",
+        canonicalBarcode: barcode.canonical || "",
+        barcodeType: barcode.type || "",
+        secondaryId: cleanText(source.secondaryId, 200),
+        secondaryType: cleanText(source.secondaryType, 40),
+        barcodeMethod: cleanText(source.barcodeMethod, 80) || "manual",
+        barcodeSource: cleanText(source.barcodeSource, 500) || "Confirmado por el usuario",
+        barcodeLevel,
+        action,
+        matchProductId: Number.isInteger(Number(source.matchProductId)) && Number(source.matchProductId) > 0 ? Number(source.matchProductId) : null,
+        matchNonInventoryId: Number.isInteger(Number(source.matchNonInventoryId)) && Number(source.matchNonInventoryId) > 0 ? Number(source.matchNonInventoryId) : null,
+      };
+    });
+
+    const duplicateDocumentId = document.duplicate_of ? String(document.duplicate_of) : "";
+    if (duplicateDocumentId) {
+      const prior = await db.prepare(`SELECT m.canonical_barcode,m.secondary_id,l.original_description
+        FROM inventory_movements m LEFT JOIN inventory_document_lines l ON l.id=m.document_line_id
+        JOIN inventory_operations o ON o.id=m.operation_id
+        WHERE o.document_id=? AND o.status='completed' AND o.operation_type='ingress'`).bind(duplicateDocumentId).all<Record<string, unknown>>();
+      lines.forEach((line, index) => {
+        if (prior.results.some((movement) => String(movement.canonical_barcode || "") === line.canonicalBarcode
+          && (!line.secondaryId || !movement.secondary_id || String(movement.secondary_id).toLowerCase() === line.secondaryId.toLowerCase()))) {
+          errors.push(`La línea ${index + 1} coincide con un producto ya ingresado desde la factura anterior.`);
+        }
+      });
+    }
+
+    lines.forEach((line, index) => {
+      const productOwners = productCodes.get(line.canonicalBarcode) || [];
+      const quoteOwners = quoteCodes.get(line.canonicalBarcode) || [];
+      if (productOwners.length + quoteOwners.length > 1) errors.push(`La línea ${index + 1} tiene un código asignado a más de un registro.`);
+      const selectedProduct = line.matchProductId ? productsResult.results.find((product) => Number(product.id) === line.matchProductId) : null;
+      const selectedQuote = line.matchNonInventoryId ? quotesResult.results.find((quote) => Number(quote.id) === line.matchNonInventoryId) : null;
+      if (line.action === "existing") {
+        if (!selectedProduct) errors.push(`No se encontró el producto seleccionado en la línea ${index + 1}.`);
+        else {
+          const currentBarcode = validateBarcode(selectedProduct.code);
+          if (currentBarcode.valid && currentBarcode.canonical !== line.canonicalBarcode) errors.push(`El producto seleccionado en la línea ${index + 1} tiene otro código de barras.`);
+          if (productOwners.length && !productOwners.some((product) => Number(product.id) === line.matchProductId)) errors.push(`El código de la línea ${index + 1} pertenece a otro producto.`);
+          if (!descriptionsCompatible(String(selectedProduct.name), line.name, String(selectedProduct.presentation || ""), line.presentation)) errors.push(`El nombre o la presentación de la línea ${index + 1} no coincide con el producto seleccionado.`);
+        }
+      } else if (line.action === "move") {
+        if (!selectedQuote) errors.push(`No se encontró el producto de No inventario de la línea ${index + 1}.`);
+        else {
+          const currentBarcode = validateBarcode(selectedQuote.code);
+          if (currentBarcode.valid && currentBarcode.canonical !== line.canonicalBarcode) errors.push(`El registro de No inventario de la línea ${index + 1} tiene otro código.`);
+          if (!descriptionsCompatible(String(selectedQuote.name), line.name, "", line.presentation)) errors.push(`La presentación de la línea ${index + 1} no coincide con No inventario.`);
+        }
+      } else if (line.action === "create") {
+        if (productOwners.length || quoteOwners.length) errors.push(`La línea ${index + 1} no puede crear un producto porque el código ya existe.`);
+        if (productsResult.results.some((product) => normalizeName(String(product.name)) === normalizeName(line.name))) errors.push(`Ya existe un producto con el mismo nombre que la línea ${index + 1}; seleccioná ese producto para revisarlo.`);
+      }
+
+      if (line.secondaryId) {
+        const alias = aliasesResult.results.find((candidate) => String(candidate.provider) === String(document.provider)
+          && String(candidate.secondary_type) === line.secondaryType
+          && String(candidate.secondary_id).toLowerCase() === line.secondaryId.toLowerCase());
+        if (alias && (String(alias.canonical_barcode) !== line.canonicalBarcode
+          || !descriptionsCompatible(String(alias.description_signature), line.name, String(alias.presentation_signature || ""), line.presentation))) {
+          errors.push(`El identificador secundario de la línea ${index + 1} corresponde a otra presentación o código.`);
+        }
+      }
+    });
+    if (errors.length) return Response.json({ error: "El ingreso está bloqueado hasta resolver los conflictos.", errors: [...new Set(errors)] }, { status: 409 });
+
+    const user = requestUserLabel(request);
+    const now = new Date().toISOString();
+    const statements: D1PreparedStatement[] = [
+      db.prepare(`INSERT INTO inventory_operations (
+        id,document_id,operation_type,status,confirmed_by,line_count,total_units,created_at,confirmed_at,verification_status
+      ) VALUES (?,?,'ingress','pending',?,?,?,?,?,'pending')`).bind(
+        operationId, documentId, user, lines.length, lines.reduce((total, line) => total + line.totalToAdd, 0), now, now,
+      ),
+    ];
+
+    lines.forEach((line) => {
+      const stored = storedById.get(line.id);
+      if (!stored) {
+        statements.push(db.prepare(`INSERT INTO inventory_document_lines (
+          id,document_id,line_key,original_description,name,brand,presentation,flavor,concentration,billed_quantity,
+          received_quantity,units_per_package,total_to_add,barcode,canonical_barcode,barcode_type,secondary_id,
+          secondary_type,barcode_method,barcode_source,confidence,status,match_product_id,match_non_inventory_id,
+          action,barcode_level,warnings_json,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,100,'confirmed',?,?,?,?,'[]',?,?)`).bind(
+          line.id, documentId, line.lineKey, line.originalDescription, line.name, line.brand || null, line.presentation || null,
+          line.flavor || null, line.concentration || null, line.billedQuantity, line.receivedQuantity, line.unitsPerPackage,
+          line.totalToAdd, line.barcode, line.canonicalBarcode, line.barcodeType, line.secondaryId || null,
+          line.secondaryType || null, line.barcodeMethod, line.barcodeSource, line.matchProductId, line.matchNonInventoryId,
+          line.action, line.barcodeLevel, now, now,
+        ));
+      } else {
+        statements.push(db.prepare(`UPDATE inventory_document_lines SET
+          original_description=?,name=?,brand=?,presentation=?,flavor=?,concentration=?,billed_quantity=?,received_quantity=?,
+          units_per_package=?,total_to_add=?,barcode=?,canonical_barcode=?,barcode_type=?,secondary_id=?,secondary_type=?,
+          barcode_method=?,barcode_source=?,status='confirmed',match_product_id=?,match_non_inventory_id=?,action=?,barcode_level=?,
+          updated_at=? WHERE id=? AND document_id=? AND processed_operation_id IS NULL`).bind(
+          line.originalDescription, line.name, line.brand || null, line.presentation || null, line.flavor || null,
+          line.concentration || null, line.billedQuantity, line.receivedQuantity, line.unitsPerPackage, line.totalToAdd,
+          line.barcode, line.canonicalBarcode, line.barcodeType, line.secondaryId || null, line.secondaryType || null,
+          line.barcodeMethod, line.barcodeSource, line.matchProductId, line.matchNonInventoryId, line.action, line.barcodeLevel,
+          now, line.id, documentId,
+        ));
+      }
+
+      let productLookupSql = "SELECT id FROM products WHERE id=?";
+      let productLookupValue: number | string = line.matchProductId || 0;
+      if (line.action === "existing") {
+        statements.push(db.prepare("UPDATE products SET code=CASE WHEN code IS NULL OR trim(code)='' THEN ? ELSE code END WHERE id=?").bind(line.barcode, line.matchProductId));
+      } else if (line.action === "move") {
+        const movingQuote = quotesResult.results.find((quote) => Number(quote.id) === line.matchNonInventoryId);
+        statements.push(db.prepare(`INSERT INTO products (
+          name,normalized_name,code,brand,presentation,purchase_price_usd_cents,weight_milli_lb,quantity_available,
+          minimum_stock,minimum_stock_enabled,restock_purchased_at,zero_stock_since,version,created_at,updated_at
+        ) SELECT name,?,?,?,?,purchase_price_usd_cents,weight_milli_lb,0,0,0,NULL,
+          strftime('%Y-%m-%dT%H:%M:%fZ','now'),1,created_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          FROM non_inventory_quotes WHERE id=?`).bind(normalizeName(String(movingQuote?.name || line.name)), line.barcode, line.brand || null, line.presentation || null, line.matchNonInventoryId));
+        statements.push(db.prepare("DELETE FROM non_inventory_quotes WHERE id=?").bind(line.matchNonInventoryId));
+        productLookupSql = "SELECT id FROM products WHERE code=?";
+        productLookupValue = line.barcode;
+      } else {
+        statements.push(db.prepare(`INSERT INTO products (
+          name,normalized_name,code,brand,presentation,purchase_price_usd_cents,weight_milli_lb,quantity_available,
+          minimum_stock,minimum_stock_enabled,restock_purchased_at,zero_stock_since,version,created_at,updated_at
+        ) VALUES (?,?,?,?,?,NULL,NULL,0,0,0,NULL,strftime('%Y-%m-%dT%H:%M:%fZ','now'),1,
+          strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))`)
+          .bind(line.name, normalizeName(line.name), line.barcode, line.brand || null, line.presentation || null));
+        productLookupSql = "SELECT id FROM products WHERE code=?";
+        productLookupValue = line.barcode;
+      }
+
+      const movementId = `mov-${crypto.randomUUID()}`;
+      statements.push(db.prepare(`INSERT INTO inventory_movements (
+        id,operation_id,document_line_id,product_id,product_name,barcode,canonical_barcode,secondary_id,secondary_type,
+        previous_quantity,quantity_change,conversion,resulting_quantity,barcode_method,barcode_source,confirmed_by,created_at
+      ) VALUES (?,?,?,
+        (${productLookupSql}),
+        (SELECT name FROM products WHERE id=(${productLookupSql})),?,?,?,?,
+        (SELECT quantity_available FROM products WHERE id=(${productLookupSql})),?,?,
+        (SELECT quantity_available+? FROM products WHERE id=(${productLookupSql})),?,?,?,?)`).bind(
+        movementId, operationId, line.id,
+        productLookupValue, productLookupValue, line.barcode, line.canonicalBarcode, line.secondaryId || null, line.secondaryType || null,
+        productLookupValue, line.totalToAdd, line.unitsPerPackage, line.totalToAdd, productLookupValue,
+        line.barcodeMethod, line.barcodeSource, user, now,
+      ));
+      statements.push(db.prepare(`UPDATE products SET quantity_available=quantity_available+?,zero_stock_since=NULL,
+        restock_purchased_at=CASE WHEN quantity_available+?>0 AND (minimum_stock_enabled=0 OR quantity_available+?>minimum_stock) THEN NULL ELSE restock_purchased_at END,
+        version=version+1,updated_at=? WHERE id=(${productLookupSql})`).bind(
+        line.totalToAdd, line.totalToAdd, line.totalToAdd, now, productLookupValue,
+      ));
+      statements.push(db.prepare("UPDATE inventory_document_lines SET processed_operation_id=?,status='processed',updated_at=? WHERE id=? AND processed_operation_id IS NULL")
+        .bind(operationId, now, line.id));
+      if (line.secondaryId) {
+        statements.push(db.prepare(`INSERT INTO supplier_product_aliases (
+          provider,secondary_type,secondary_id,barcode,canonical_barcode,product_id,description_signature,
+          presentation_signature,units_per_package,barcode_level,source,confirmed_at,confirmed_by,updated_at
+        ) VALUES (?,?,?,?,?,(${productLookupSql}),?,?,?,?,?,?,?,?)
+        ON CONFLICT(provider,secondary_type,secondary_id) DO UPDATE SET
+          barcode=excluded.barcode,canonical_barcode=excluded.canonical_barcode,product_id=excluded.product_id,
+          description_signature=excluded.description_signature,presentation_signature=excluded.presentation_signature,
+          units_per_package=excluded.units_per_package,barcode_level=excluded.barcode_level,source=excluded.source,
+          confirmed_by=excluded.confirmed_by,updated_at=excluded.updated_at`).bind(
+          String(document.provider), line.secondaryType || "other", line.secondaryId, line.barcode, line.canonicalBarcode,
+          productLookupValue, descriptionSignature(line.name), presentationSignature(line.name, line.presentation, line.flavor, line.concentration),
+          line.unitsPerPackage, line.barcodeLevel, line.barcodeSource, now, user, now,
+        ));
+      }
+    });
+
+    statements.push(db.prepare(`UPDATE inventory_documents SET
+      status=CASE WHEN EXISTS(SELECT 1 FROM inventory_document_lines WHERE document_id=? AND processed_operation_id IS NULL AND action<>'ignore') THEN 'partial' ELSE 'processed' END,
+      confirmed_at=?,confirmed_by=?,updated_at=? WHERE id=?`).bind(documentId, now, user, now, documentId));
+    statements.push(db.prepare("UPDATE inventory_operations SET status='completed',verification_status='verified',confirmed_at=? WHERE id=?").bind(now, operationId));
+
+    try { await db.batch(statements); }
+    catch (error) {
+      const raced = await loadOperationResult(db, operationId);
+      if (raced?.operation.status === "completed") return Response.json({ ...raced, idempotent: true });
+      throw error;
+    }
+    const result = await loadOperationResult(db, operationId);
+    if (!result || result.movements.length !== lines.length) throw new Error("No se pudo verificar que todas las líneas fueran guardadas. Ninguna línea debe volver a confirmarse hasta revisar el historial.");
+    return Response.json(result);
+  } catch (error) {
+    if (operationId) {
+      try {
+        await ensureDatabase();
+        const existing = await loadOperationResult(getD1(), operationId);
+        if (existing?.operation.status === "completed") return Response.json({ ...existing, recoveredAfterConnectionCheck: true });
+      } catch { /* Se devuelve el error original. */ }
+    }
+    return errorResponse(error);
+  }
+}

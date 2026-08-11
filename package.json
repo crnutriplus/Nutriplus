@@ -1,7 +1,7 @@
 {
   "name": "nutriplus-precios",
   "displayName": "Calculadora de Precios NutriPlus",
-  "version": "1.9.0",
+  "version": "2.0.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -11,13 +11,15 @@
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
     "build": "bash scripts/build-verified.sh",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs && node tests/api-integration.mjs && node tests/concurrency-integration.mjs && node tests/export-integration.mjs",
+    "test": "npm run build && node --test tests/rendered-html.test.mjs && node tests/api-integration.mjs && node tests/concurrency-integration.mjs && node tests/inventory-intake-integration.mjs && node tests/export-integration.mjs",
     "validate:artifact": "bash scripts/validate-artifact.sh",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
   },
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@tesseract.js-data/spa": "^1.0.0",
     "@zxing/browser": "0.2.1",
     "dejavu-fonts-ttf": "^2.37.3",
     "drizzle-orm": "0.45.2",
@@ -25,8 +27,10 @@
     "lucide-react": "1.30.0",
     "next": "16.2.6",
     "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.2.108",
     "react": "19.2.6",
     "react-dom": "19.2.6",
+    "tesseract.js": "^7.0.0",
     "xlsx": "0.18.5"
   },
   "devDependencies": {

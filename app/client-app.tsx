@@ -50,6 +50,7 @@ import {
   useState,
 } from "react";
 import Image from "next/image";
+import { InventoryIntakeModal, type IntakeScanEvent } from "./inventory-intake";
 import type { ImportChangedProduct, ImportJobRecord } from "@/lib/import-jobs";
 import type { ProductDeletionJobRecord } from "@/lib/deletion-jobs";
 import {
@@ -76,7 +77,7 @@ import {
 
 type Tab = "calculator" | "products" | "import" | "settings";
 type NumericField = "purchasePriceUsd" | "weightLb" | "code";
-type ScannerIntent = "assign" | "lookup-products" | "lookup-calculator" | "floating";
+type ScannerIntent = "assign" | "lookup-products" | "lookup-calculator" | "floating" | "intake";
 type Form = {
   id: number | null;
   source: "inventory" | "no_inventory" | null;
@@ -231,19 +232,21 @@ function normalizeCode(value: string | null | undefined) {
 }
 
 function parseQuantityText(value: string) {
-  const entries = new Map<string, { code: string; quantityAvailable: number }>();
+  const entries = new Map<string, { code: string; quantityAdded: number }>();
   const invalidLines: number[] = [];
   value.split(/\r?\n/).forEach((source, index) => {
     const line = source.trim();
     if (!line) return;
     const match = line.match(/^(.+?)(?:\s*[:=;\t]\s*|\s{2,})(\d+)\s*$/);
     const code = match?.[1]?.trim() || "";
-    const quantityAvailable = Number(match?.[2]);
-    if (!code || !Number.isInteger(quantityAvailable) || quantityAvailable < 0) {
+    const quantityAdded = Number(match?.[2]);
+    if (!code || !Number.isInteger(quantityAdded) || quantityAdded < 0) {
       invalidLines.push(index + 1);
       return;
     }
-    entries.set(normalizeCode(code), { code, quantityAvailable });
+    const normalized = normalizeCode(code);
+    const previous = entries.get(normalized);
+    entries.set(normalized, { code: previous?.code || code, quantityAdded: (previous?.quantityAdded ?? 0) + quantityAdded });
   });
   return { entries: [...entries.values()], invalidLines };
 }
@@ -833,8 +836,10 @@ export function NutriPlusApp() {
   const [selectedProductIds, setSelectedProductIds] = useState<Set<number>>(new Set());
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
-  const [quantitiesOpen, setQuantitiesOpen] = useState(false);
+  const [inventoryIntakeOpen, setInventoryIntakeOpen] = useState(false);
   const [quantityText, setQuantityText] = useState("");
+  const [intakeScanTarget, setIntakeScanTarget] = useState<string | null>(null);
+  const [intakeScannedBarcode, setIntakeScannedBarcode] = useState<IntakeScanEvent>(null);
   const [exportConfirm, setExportConfirm] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("both");
@@ -1356,7 +1361,12 @@ export function NutriPlusApp() {
     else if (scannerIntent === "lookup-products") void lookupCode(code, "products");
     else if (scannerIntent === "lookup-calculator") void lookupCode(code, "calculator");
     else if (scannerIntent === "floating") void lookupCode(code, "floating");
-  }, [assignCode, lookupCode, scannerIntent]);
+    else if (scannerIntent === "intake" && intakeScanTarget) {
+      setScannerIntent(null);
+      setIntakeScannedBarcode({ lineId: intakeScanTarget, code, nonce: Date.now() });
+      setIntakeScanTarget(null);
+    }
+  }, [assignCode, intakeScanTarget, lookupCode, scannerIntent]);
 
   const readCodeFromImage = useCallback(async (file: File, intent: "assign" | "calculator" | "products") => {
     try {
@@ -1644,11 +1654,12 @@ export function NutriPlusApp() {
       notify({ type: "error", text: parsed.invalidLines.length ? `Revisá la${parsed.invalidLines.length === 1 ? " línea" : "s líneas"} ${parsed.invalidLines.join(", ")}. Usá el formato CÓDIGO: CANTIDAD.` : "Agregá al menos un código y su cantidad." });
       return;
     }
-    const values = new Map(parsed.entries.map((entry) => [normalizeCode(entry.code), entry.quantityAvailable]));
+    const values = new Map(parsed.entries.map((entry) => [normalizeCode(entry.code), entry.quantityAdded]));
     const now = new Date().toISOString();
     setProducts((items) => items.map((product) => {
-      const nextQuantity = values.get(normalizeCode(product.code));
-      if (nextQuantity === undefined) return product;
+      const quantityAdded = values.get(normalizeCode(product.code));
+      if (quantityAdded === undefined) return product;
+      const nextQuantity = product.quantityAvailable + quantityAdded;
       const aboveMinimum = nextQuantity > 0 && (!product.minimumStockEnabled || nextQuantity > product.minimumStock);
       return {
         ...product,
@@ -1659,7 +1670,6 @@ export function NutriPlusApp() {
         updatedAt: now,
       };
     }));
-    setQuantitiesOpen(false);
     setQuantityText("");
     const id = mutationId();
     const mutation: QueuedMutation = {
@@ -1677,7 +1687,7 @@ export function NutriPlusApp() {
     notify({ type: "success", text: `Actualizando ${parsed.entries.length} cantidad${parsed.entries.length === 1 ? "" : "es"} en segundo plano.` });
     void (async () => {
       try {
-        const data = await json<{ products: ProductRecord[]; updated: number; notFound: string[]; invalid: number[] }>(await fetch(mutation.url, {
+        const data = await json<{ products: ProductRecord[]; updated: number; addedTotal: number; notFound: string[]; invalid: number[] }>(await fetch(mutation.url, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Mutation-Id": id },
           body: JSON.stringify({ ...mutation.body, mutationId: id }),
@@ -1689,9 +1699,9 @@ export function NutriPlusApp() {
           const parts = [];
           if (data.notFound.length) parts.push(`${data.notFound.length} código${data.notFound.length === 1 ? " no existe" : "s no existen"}: ${data.notFound.slice(0, 5).join(", ")}`);
           if (parsed.invalidLines.length) parts.push(`líneas inválidas: ${parsed.invalidLines.join(", ")}`);
-          notify({ type: "warning", text: `${data.updated} cantidades actualizadas. ${parts.join(" · ")}.` });
+          notify({ type: "warning", text: `${data.addedTotal} unidades agregadas. ${parts.join(" · ")}.` });
         } else {
-          notify({ type: "success", text: `${data.updated} cantidad${data.updated === 1 ? " actualizada" : "es actualizadas"}.` });
+          notify({ type: "success", text: `${data.addedTotal} unidad${data.addedTotal === 1 ? " agregada" : "es agregadas"} al inventario.` });
         }
       } catch (error) {
         if (!navigator.onLine || error instanceof TypeError) {
@@ -1854,7 +1864,7 @@ export function NutriPlusApp() {
       {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{form.source === "no_inventory" ? "Actualizar cotización" : form.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearForm}><RotateCcw />Limpiar</button></header><ProductForm form={form} setForm={setForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onExternalCode={(code) => void lookupCode(code, "calculator")} onOpenScanner={() => openScanner("lookup-calculator")} onImageCode={(file) => void readCodeFromImage(file, "calculator")} onPasteCode={() => void pasteCode("calculator")} onSubmit={save} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
 
       {tab === "products" && <div className="view"><header className="view-head products-head"><div><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá, agregá o editá cualquier producto guardado.</p></div><button className={`restock-head-btn ${lowStockProducts.length ? "has-items" : ""}`} onClick={() => setRestockOpen(true)} aria-label={`Ver productos por abastecer: ${lowStockProducts.length}`}><BellRing /><span>Por abastecer</span><b>{lowStockProducts.length}</b></button></header>
-        <div className="products-toolbar"><button className="btn primary" onClick={addInProducts}><Plus />Agregar producto</button><button className="btn secondary" onClick={() => setNoInventoryOpen(true)}><Package />No inventario ({quotes.length})</button><button className="btn secondary" onClick={() => void openRecent()}><Clock3 />Guardados recientemente</button><button className="btn secondary" onClick={() => setQuantitiesOpen(true)} disabled={!products.length}><Upload />Cargar cantidades</button><button className={`btn ${selectionMode ? "ghost" : "secondary"}`} onClick={() => { setSelectionMode((current) => !current); setSelectedProductIds(new Set()); }} disabled={!products.length}><Check />{selectionMode ? "Cancelar selección" : "Seleccionar varios"}</button>{selectionMode && selectedProductIds.size > 0 && <button className="btn danger-solid" onClick={() => setBulkDeleteConfirm(true)} disabled={bulkDeleting}><Trash2 />Eliminar ({selectedProductIds.size})</button>}<button className="btn secondary" onClick={() => setExportConfirm(true)} disabled={!products.length && !quotes.length}><Download />Descargar inventario</button></div>
+        <div className="products-toolbar"><button className="btn primary" onClick={addInProducts}><Plus />Agregar producto</button><button className="btn secondary" onClick={() => setNoInventoryOpen(true)}><Package />No inventario ({quotes.length})</button><button className="btn secondary" onClick={() => void openRecent()}><Clock3 />Guardados recientemente</button><button className="btn secondary" onClick={() => setInventoryIntakeOpen(true)}><Upload />Agregar inventario</button><button className={`btn ${selectionMode ? "ghost" : "secondary"}`} onClick={() => { setSelectionMode((current) => !current); setSelectedProductIds(new Set()); }} disabled={!products.length}><Check />{selectionMode ? "Cancelar selección" : "Seleccionar varios"}</button>{selectionMode && selectedProductIds.size > 0 && <button className="btn danger-solid" onClick={() => setBulkDeleteConfirm(true)} disabled={bulkDeleting}><Trash2 />Eliminar ({selectedProductIds.size})</button>}<button className="btn secondary" onClick={() => setExportConfirm(true)} disabled={!products.length && !quotes.length}><Download />Descargar inventario</button></div>
         <section className={`surface stock-notification-strip ${lowStockProducts.length ? "has-alerts" : ""}`}><div className="stock-alert-heading"><span className="stock-alert-icon">{lowStockProducts.length ? <BellRing /> : <Bell />}</span><div><h2>{lowStockProducts.length ? `${pendingRestockProducts.length} pendiente${pendingRestockProducts.length === 1 ? "" : "s"} de compra · ${lowStockProducts.length - pendingRestockProducts.length} comprado${lowStockProducts.length - pendingRestockProducts.length === 1 ? "" : "s"}` : "Stock mínimo al día"}</h2><p>También se avisa cuando un producto llega a stock 0. Al reponerlo sale de la lista.</p></div></div><button className="btn secondary small" onClick={() => void enableStockNotifications()} disabled={phoneNotificationsEnabled}>{phoneNotificationsEnabled ? <Check /> : <Bell />}{phoneNotificationsEnabled ? "Notificaciones activadas" : notificationPermission === "denied" ? "Permiso bloqueado" : "Activar en el celular"}</button></section>
         {productEditorOpen && <section className="editor-wrap"><div className="editor-heading"><div><span className="eyebrow">{form.id ? "Edición en Productos" : "Nuevo producto"}</span><h2>{form.id ? form.name : "Agregar producto al catálogo"}</h2></div><button className="icon-btn" onClick={clearForm} aria-label="Cerrar editor"><X /></button></div><ProductForm form={form} setForm={setForm} settings={settings} suggestions={[]} suggestionsOpen={false} setSuggestionsOpen={() => undefined} onPick={() => undefined} onExternalCode={form.id ? assignCode : (code) => void lookupCode(code, "products")} onOpenScanner={() => openScanner(form.id ? "assign" : "lookup-products")} onImageCode={(file) => void readCodeFromImage(file, form.id ? "assign" : "products")} onPasteCode={() => void pasteCode(form.id ? "assign" : "products")} onSubmit={save} onCancel={clearForm} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} showSuggestions={false} /></section>}
         <section className="surface search-card"><div className="input-icon grow"><Search /><input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(36); }} onKeyDown={(event) => detectScannerBurst(event, searchBurst, (code, before) => { setQuery(before); setVisibleCount(36); void lookupCode(code, "products"); })} placeholder="Ej. omega encargo o omega nordic" /></div><button className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={() => openScanner("lookup-products")}><Camera /><span>Escanear</span></button></section>
@@ -1870,7 +1880,25 @@ export function NutriPlusApp() {
     {restockOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos por abastecer" onPointerDown={() => setRestockOpen(false)}><div className="restock-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Lista de compra</span><h2>Productos por abastecer</h2><p>Incluye los productos en el mínimo y cualquiera que haya llegado a stock 0.</p></div><button className="icon-btn" onClick={() => setRestockOpen(false)} aria-label="Cerrar lista"><X /></button></div>{lowStockProducts.length ? <div className="restock-list">{lowStockProducts.map((product) => <article className={`${product.restockPurchasedAt ? "purchased" : "pending-purchase"} ${product.quantityAvailable === 0 ? "zero-stock" : ""}`} key={product.id}><div><b>{product.name}</b>{product.code && <small>{product.code}</small>}<small className="purchase-status">{product.restockPurchasedAt ? "Comprado" : "Pendiente de compra"}{product.quantityAvailable === 0 ? " · Stock 0" : ""}</small></div><span><small>Disponible</small><b>{product.quantityAvailable}</b></span><span><small>Mínimo</small><b>{product.minimumStockEnabled ? product.minimumStock : "-"}</b></span><div className="restock-actions"><button className={`btn small ${product.restockPurchasedAt ? "secondary" : "primary"}`} onClick={() => void markRestock(product, !product.restockPurchasedAt)}>{product.restockPurchasedAt ? <RotateCcw /> : <Check />}{product.restockPurchasedAt ? "Marcar pendiente" : "Comprado"}</button><button className="btn ghost small" onClick={() => editInProducts(product)}><Pencil />Actualizar</button></div></article>)}</div> : <div className="restock-empty"><Check /><h3>Todo abastecido</h3><p>No hay productos por debajo del mínimo ni con stock 0.</p></div>}</div></div>}
     {noInventoryOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos de No inventario" onPointerDown={() => setNoInventoryOpen(false)}><div className="restock-card recent-card no-inventory-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Cotizaciones separadas</span><h2>No inventario</h2><p>{quotes.length} producto{quotes.length === 1 ? "" : "s"} que no {quotes.length === 1 ? "aparece" : "aparecen"} en el catálogo principal.</p></div><button className="icon-btn" onClick={() => setNoInventoryOpen(false)} aria-label="Cerrar No inventario"><X /></button></div><div className="surface search-card no-inventory-search"><div className="input-icon grow"><Search /><input value={noInventoryQuery} onChange={(event) => setNoInventoryQuery(event.target.value)} placeholder="Buscar por nombre o código" /></div></div>{filteredNoInventory.length ? <div className="recent-list no-inventory-list">{filteredNoInventory.map((item) => { const prices = hasCompletePricing(item) ? calculatePrices(item.purchasePriceUsd, item.weightLb, settings) : null; return <article key={item.id}><div><b>{item.name}</b><small>{item.code || "Sin código"} · {importDate(item.updatedAt)}</small></div><span className="source-pill no_inventory">No inventario</span><span><small>GAM</small><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></span><button className="btn ghost small" onClick={() => editNoInventory(item)}><Pencil />Editar</button></article>; })}</div> : <p className="empty-summary">{noInventoryQuery ? "No hay coincidencias." : "Todavía no hay productos en No inventario."}</p>}</div></div>}
     {recentOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos guardados recientemente" onPointerDown={() => setRecentOpen(false)}><div className="restock-card recent-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Actividad reciente</span><h2>Guardados recientemente</h2><p>Se identifica si cada registro pertenece al Inventario o a No inventario.</p></div><button className="icon-btn" onClick={() => setRecentOpen(false)} aria-label="Cerrar recientes"><X /></button></div>{recentLoading ? <div className="recent-loading"><Loader2 className="spin" />Cargando…</div> : <div className="recent-list">{recentItems.map(({ source, item }) => { const prices = hasCompletePricing(item) ? calculatePrices(item.purchasePriceUsd, item.weightLb, settings) : null; return <article key={`${source}-${item.id}`}><div><b>{item.name}</b><small>{item.code || "Sin código"} · {importDate(item.updatedAt)}</small></div><span className={`source-pill ${source}`}>{source === "inventory" ? "Inventario" : "No inventario"}</span><span><small>GAM</small><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></span><button className="btn ghost small" onClick={() => source === "inventory" ? editInProducts(item as ProductRecord) : editNoInventory(item as NonInventoryRecord)}><Pencil />Editar</button></article>; })}</div>}</div></div>}
-    {quantitiesOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Cargar cantidades por código"><div className="confirm-card quantity-card"><div className="download-symbol"><Upload /></div><h2>Cargar cantidades</h2><p>Escribí un producto por línea en el formato <b>NP-001: 2</b>. Se acepta cualquier código de barras con letras o números.</p><textarea className="quantity-input" value={quantityText} onChange={(event) => setQuantityText(event.target.value)} placeholder={"NP-001: 2\n7501234567890: 5\nABC9: 0"} autoFocus />{parseQuantityText(quantityText).invalidLines.length > 0 && <p className="alert error"><AlertCircle />Revisá las líneas {parseQuantityText(quantityText).invalidLines.join(", ")}.</p>}<div className="confirm-actions"><button className="btn secondary" onClick={() => { setQuantitiesOpen(false); setQuantityText(""); }}>Cancelar</button><button className="btn primary" onClick={saveQuantities} disabled={!parseQuantityText(quantityText).entries.length}><Save />Guardar en segundo plano</button></div></div></div>}
+    <InventoryIntakeModal
+      open={inventoryIntakeOpen}
+      products={products}
+      quotes={quotes}
+      quickText={quantityText}
+      setQuickText={setQuantityText}
+      onQuickSave={saveQuantities}
+      onClose={() => setInventoryIntakeOpen(false)}
+      onNotify={notify}
+      onProductsChanged={(updated) => setProducts((current) => {
+        const ids = new Set(updated.map((product) => product.id));
+        return [...updated, ...current.filter((product) => !ids.has(product.id))];
+      })}
+      onRefresh={async () => { await Promise.all([refreshProducts(), refreshQuotes()]); }}
+      onRequestScan={(lineId) => { setIntakeScanTarget(lineId); setScannerIntent("intake"); }}
+      scannedBarcode={intakeScannedBarcode}
+      onConsumeScan={() => setIntakeScannedBarcode(null)}
+      readBarcodeImage={decodeBarcodeImage}
+    />
     {installHelpOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Activar notificaciones en iPhone"><div className="confirm-card install-help"><Image src="/nutriplus-logo.jpg" alt="NutriPlus" width={78} height={78} /><h2>Activar en iPhone</h2><p>En Chrome tocá <b>Compartir</b> y luego <b>Agregar a pantalla de inicio</b>. Abrí NutriPlus desde el nuevo ícono y tocá nuevamente “Activar en el celular”.</p><button className="btn primary full" onClick={() => setInstallHelpOpen(false)}>Entendido</button></div></div>}
     {exportConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Elegir descarga del inventario"><div className="confirm-card export-card"><div className="download-symbol"><Download /></div><h2>Descargar inventario</h2><p>Incluye {products.length} productos del inventario y {quotes.length} de No inventario. El PDF también tendrá la sección No inventario.</p><div className="export-options"><button className={exportFormat === "pdf" ? "chosen" : ""} onClick={() => setExportFormat("pdf")}><b>PDF</b><small>Documento minimalista</small></button><button className={exportFormat === "excel" ? "chosen" : ""} onClick={() => setExportFormat("excel")}><b>Excel</b><small>Hojas editables</small></button><button className={exportFormat === "both" ? "chosen" : ""} onClick={() => setExportFormat("both")}><b>Ambos</b><small>Dos archivos separados</small></button></div><div className="confirm-actions"><button className="btn secondary" onClick={() => setExportConfirm(false)} disabled={exporting}>Cancelar</button><button className="btn primary" onClick={() => void downloadInventory(exportFormat)} disabled={exporting}>{exporting ? <Loader2 className="spin" /> : <Download />}Descargar</button></div></div></div>}
     {deleteTarget && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar producto?</h2><p>Vas a eliminar <b>{deleteTarget.name}</b>. Esta acción no se puede deshacer.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setDeleteTarget(null)} disabled={deleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeProduct()} disabled={deleting}>{deleting ? <Loader2 className="spin" /> : <Trash2 />}Sí, eliminar</button></div></div></div>}

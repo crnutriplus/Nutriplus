@@ -92,12 +92,27 @@ for (const [name, code] of [["Cantidad uno", "QTY-001"], ["Cantidad dos", "QTY-A
 }
 const quantities = await call("/api/products/quantities", {
   method: "POST",
-  body: JSON.stringify({ entries: [{ code: "QTY-001", quantityAvailable: 7 }, { code: "qty-a2", quantityAvailable: 0 }] }),
+  headers: { "x-mutation-id": "quick-quantity-add-0001" },
+  body: JSON.stringify({ entries: [{ code: "QTY-001", quantityAdded: 7 }, { code: "qty-a2", quantityAdded: 0 }], mutationId: "quick-quantity-add-0001" }),
 });
 assert.equal(quantities.response.status, 200);
 assert.equal(quantities.body.updated, 2);
-assert.equal((await call("/api/products?code=QTY-001")).body.product.quantityAvailable, 7);
-assert.equal((await call("/api/products?code=QTY-A2")).body.product.quantityAvailable, 0);
+assert.equal((await call("/api/products?code=QTY-001")).body.product.quantityAvailable, 9);
+assert.equal((await call("/api/products?code=QTY-A2")).body.product.quantityAvailable, 2);
+const secondAddition = await call("/api/products/quantities", {
+  method: "POST",
+  headers: { "x-mutation-id": "quick-quantity-add-0002" },
+  body: JSON.stringify({ entries: [{ code: "QTY-001", quantityAdded: 5 }], mutationId: "quick-quantity-add-0002" }),
+});
+assert.equal(secondAddition.response.status, 200);
+assert.equal((await call("/api/products?code=QTY-001")).body.product.quantityAvailable, 14);
+const retriedAddition = await call("/api/products/quantities", {
+  method: "POST",
+  headers: { "x-mutation-id": "quick-quantity-add-0002" },
+  body: JSON.stringify({ entries: [{ code: "QTY-001", quantityAdded: 5 }], mutationId: "quick-quantity-add-0002" }),
+});
+assert.equal(retriedAddition.response.status, 200);
+assert.equal((await call("/api/products?code=QTY-001")).body.product.quantityAvailable, 14);
 
 const bulkDeleted = await call("/api/products/bulk-delete", {
   method: "POST",

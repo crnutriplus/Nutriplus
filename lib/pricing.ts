@@ -13,6 +13,8 @@ export type ProductRecord = {
   id: number;
   name: string;
   code: string | null;
+  brand?: string | null;
+  presentation?: string | null;
   purchasePriceUsd: number | null;
   weightLb: number | null;
   quantityAvailable: number;
@@ -137,6 +139,8 @@ export function productFromRow(row: Record<string, unknown>): ProductRecord {
     id: Number(row.id),
     name: String(row.name),
     code: row.code ? String(row.code) : null,
+    brand: row.brand ? String(row.brand) : null,
+    presentation: row.presentation ? String(row.presentation) : null,
     purchasePriceUsd: row.purchase_price_usd_cents == null ? null : Number(row.purchase_price_usd_cents) / 100,
     weightLb: row.weight_milli_lb == null ? null : Number(row.weight_milli_lb) / 1000,
     quantityAvailable: Number(row.quantity_available ?? 0),
