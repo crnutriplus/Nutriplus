@@ -118,7 +118,15 @@ const STATUS_LABELS: Record<IntakeLineStatus, string> = {
 const CONFIRMABLE = new Set<IntakeLineStatus>(["confirmed", "new_product", "non_inventory"]);
 
 async function apiJson<T>(response: Response) {
-  const body = await response.json() as T & { error?: string; errors?: string[] };
+  const raw = await response.text();
+  let body: T & { error?: string; errors?: string[] };
+  try {
+    body = raw ? JSON.parse(raw) as T & { error?: string; errors?: string[] } : {} as T & { error?: string; errors?: string[] };
+  } catch {
+    throw new Error(response.ok
+      ? "El servidor devolvió una respuesta que no se pudo leer. Intentá nuevamente."
+      : `El servidor rechazó la operación (código ${response.status}) sin indicar el detalle.`);
+  }
   if (!response.ok) {
     const details = body.errors?.length ? ` ${body.errors.join(" ")}` : "";
     throw new Error(`${body.error || "No se pudo completar la operación."}${details}`);
@@ -128,6 +136,15 @@ async function apiJson<T>(response: Response) {
 
 function operationId(prefix: string) {
   return `${prefix}-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
+function intakeErrorText(error: unknown, fallback: string) {
+  const raw = error instanceof Error ? error.message.trim() : "";
+  if (!raw) return fallback;
+  if (/failed to fetch|networkerror|network error|load failed/i.test(raw)) return "No se pudo conectar con NutriPlus. Verificá Internet e intentá nuevamente.";
+  if (/aborterror|aborted|cancelled|canceled/i.test(raw)) return "La operación se interrumpió antes de terminar. Intentá nuevamente.";
+  if (/[áéíóúñ¿¡]/i.test(raw) || /^(?:No se|El |La |Los |Las |Revisá|Ingresá|Seleccioná|Ocurrió|Código|Factura|Archivo)/i.test(raw)) return raw;
+  return fallback;
 }
 
 function equivalentOwners(code: string, products: ProductRecord[], quotes: NonInventoryRecord[]) {
@@ -254,6 +271,8 @@ export function InventoryIntakeModal(props: Props) {
       onConsumeScan();
       return;
     }
+    // El escáner llega como un evento externo y debe hidratar la confirmación una sola vez.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPendingBarcode({ lineId: scannedBarcode.lineId, code: checked.normalized, method: "scanner", source: "Producto físico escaneado" });
     onConsumeScan();
   }, [onConsumeScan, onNotify, scannedBarcode]);
@@ -262,6 +281,8 @@ export function InventoryIntakeModal(props: Props) {
     if (!open) return;
     try {
       const stored = localStorage.getItem("nutriplus-pending-intake-operation");
+      // La comprobación pendiente se conserva fuera de React para sobrevivir una pérdida de conexión.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (stored) setPendingVerification(JSON.parse(stored) as { operationId: string; documentId: string });
     } catch { /* No hay comprobación pendiente válida. */ }
   }, [open]);
@@ -275,16 +296,18 @@ export function InventoryIntakeModal(props: Props) {
       const result = await apiJson<{ operations: IntakeOperation[] }>(await fetch("/api/inventory-intake?history=1"));
       setHistory(result.operations);
     } catch (error) {
-      onNotify({ type: "error", text: error instanceof Error ? error.message : "No se pudo cargar el historial." });
+      onNotify({ type: "error", text: intakeErrorText(error, "No se pudo cargar el historial."), sticky: true });
     } finally { setHistoryLoading(false); }
   }, [onNotify]);
 
+  // Entrar a Historial dispara su sincronización con el servidor.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (open && tab === "history") void loadHistory(); }, [loadHistory, open, tab]);
 
   async function analyzeFiles(event: ChangeEvent<HTMLInputElement>) {
-    const files = [...(event.target.files || [])];
-    event.target.value = "";
+    const files = [...(event.currentTarget.files || [])];
     if (!files.length) return;
+    setReadProgress({ current: 0, total: Math.max(1, files.length), message: `Preparando ${files.length === 1 ? files[0].name : `${files.length} archivos`}…` });
     setReading(true);
     setDocument(null);
     setLines([]);
@@ -302,9 +325,10 @@ export function InventoryIntakeModal(props: Props) {
       setLines(hydrated);
       setSelected(new Set(hydrated.filter((line) => CONFIRMABLE.has(line.status) && line.totalToAdd > 0).map((line) => line.id)));
       if (result.exactDuplicate) onNotify({ type: "warning", text: "Esta misma factura ya había sido cargada. Las líneas procesadas no se volverán a sumar.", sticky: true });
+      else if (!hydrated.length) onNotify({ type: "error", text: "La factura se abrió, pero no se reconoció ningún producto. Revisá que muestre nombres y cantidades legibles o agregá las líneas manualmente.", sticky: true });
       else onNotify({ type: "success", text: `Factura leída: ${hydrated.length} producto${hydrated.length === 1 ? "" : "s"} para revisar.` });
     } catch (error) {
-      onNotify({ type: "error", text: error instanceof Error ? error.message : "No se pudo leer la factura.", sticky: true });
+      onNotify({ type: "error", text: intakeErrorText(error, "No se pudo leer la factura. Revisá el archivo e intentá nuevamente."), sticky: true });
     } finally { setReading(false); }
   }
 
@@ -319,7 +343,12 @@ export function InventoryIntakeModal(props: Props) {
       }));
       if (showNotice) onNotify({ type: "success", text: "La revisión quedó guardada sin modificar el inventario." });
     } catch (error) {
-      if (showNotice) onNotify({ type: "error", text: error instanceof Error ? error.message : "No se pudo guardar la revisión." });
+      const message = intakeErrorText(error, "No se pudo guardar la revisión.");
+      if (showNotice) {
+        onNotify({ type: "error", text: message, sticky: true });
+        return;
+      }
+      throw new Error(message);
     } finally { setSavingDraft(false); }
   }
 
@@ -335,7 +364,9 @@ export function InventoryIntakeModal(props: Props) {
       setCandidates((current) => ({ ...current, [line.id]: result.candidates }));
       setLookupMessages((current) => ({ ...current, [line.id]: result.message }));
     } catch (error) {
-      setLookupMessages((current) => ({ ...current, [line.id]: error instanceof Error ? error.message : "No se pudo buscar el código." }));
+      const message = intakeErrorText(error, "No se pudo buscar el código.");
+      setLookupMessages((current) => ({ ...current, [line.id]: message }));
+      onNotify({ type: "error", text: message, sticky: true });
     } finally { setLookupLineId(null); }
   }
 
@@ -366,7 +397,7 @@ export function InventoryIntakeModal(props: Props) {
       if (!checked.valid || !checked.normalized) throw new Error(checked.error || "La imagen no contiene un código válido.");
       setPendingBarcode({ lineId, code: checked.normalized, method: "barcode_image", source: "Imagen del código físico" });
     } catch (error) {
-      onNotify({ type: "error", text: error instanceof Error ? error.message : "No se encontró un código de barras en la imagen." });
+      onNotify({ type: "error", text: intakeErrorText(error, "No se encontró un código de barras en la imagen."), sticky: true });
     }
   }
 
@@ -377,7 +408,7 @@ export function InventoryIntakeModal(props: Props) {
       if (!checked.valid || !checked.normalized) throw new Error(checked.error || "El portapapeles no contiene un código válido.");
       setPendingBarcode({ lineId, code: checked.normalized, method: "clipboard", source: "Código pegado y confirmado" });
     } catch (error) {
-      onNotify({ type: "warning", text: error instanceof Error ? error.message : "No se pudo leer el portapapeles." });
+      onNotify({ type: "error", text: intakeErrorText(error, "No se pudo leer el portapapeles."), sticky: true });
     }
   }
 
@@ -406,7 +437,7 @@ export function InventoryIntakeModal(props: Props) {
         if (document?.id === target.documentId) setLines((current) => current.map((line) => selected.has(line.id) ? { ...line, status: "processed", processedOperationId: target.operationId } : line));
       }
     } catch (error) {
-      onNotify({ type: "warning", text: error instanceof Error ? `El ingreso continúa pendiente de comprobación: ${error.message}` : "El ingreso continúa pendiente de comprobación.", sticky: true });
+      onNotify({ type: "error", text: `El ingreso continúa pendiente de comprobación: ${intakeErrorText(error, "no fue posible consultar el servidor.")}`, sticky: true });
     }
   }
 
@@ -448,7 +479,7 @@ export function InventoryIntakeModal(props: Props) {
           }
         }
       } catch { /* La operación queda pendiente de comprobación manual. */ }
-      onNotify({ type: "error", text: `${error instanceof Error ? error.message : "No se pudo confirmar el ingreso."} No lo repitás: usá “Comprobar estado” para verificar si se registró.`, sticky: true });
+      onNotify({ type: "error", text: `${intakeErrorText(error, "No se pudo confirmar el ingreso.")} No lo repitás: usá “Comprobar estado” para verificar si se registró.`, sticky: true });
     } finally {
       confirmingRef.current = false;
       setConfirming(false);
@@ -472,12 +503,14 @@ export function InventoryIntakeModal(props: Props) {
       await loadHistory();
       onNotify({ type: "success", text: "La reversión creó un movimiento contrario; el ingreso original permanece en el historial.", sticky: true });
     } catch (error) {
-      onNotify({ type: "error", text: error instanceof Error ? error.message : "No se pudo revertir el ingreso.", sticky: true });
+      onNotify({ type: "error", text: intakeErrorText(error, "No se pudo revertir el ingreso."), sticky: true });
     } finally { setReversing(false); }
   }
 
   function closeModal() {
-    if (document && lines.some((line) => !line.processedOperationId)) void saveDraft(false);
+    if (document && lines.some((line) => !line.processedOperationId)) {
+      void saveDraft(false).catch((error) => onNotify({ type: "error", text: intakeErrorText(error, "No se pudo guardar la revisión antes de cerrar."), sticky: true }));
+    }
     onClose();
   }
 
@@ -539,7 +572,7 @@ export function InventoryIntakeModal(props: Props) {
                   {line.unitsPerPackage > 1 && <label><span>Nivel del código</span><select value={line.barcodeLevel} onChange={(event) => updateLine(line.id, { barcodeLevel: event.target.value as IntakeLineDto["barcodeLevel"] })}><option value="">Confirmar nivel</option><option value="unit">Unidad individual</option><option value="package">Paquete completo</option><option value="distribution">Caja de distribución</option><option value="set">Set de productos</option></select></label>}
                   <label className="wide barcode-field"><span>UPC / EAN / GTIN</span><div><input value={line.barcode} inputMode="numeric" onChange={(event) => updateLine(line.id, { barcode: event.target.value }, false)} placeholder="Código pendiente" /><button className="btn ghost small" onClick={() => { const checked = validateBarcode(line.barcode); if (!checked.valid || !checked.normalized) return onNotify({ type: "error", text: checked.error || "Ingresá un código válido." }); setPendingBarcode({ lineId: line.id, code: checked.normalized, method: "manual", source: "Escrito y confirmado manualmente" }); }}><Check />Confirmar</button></div></label>
                 </div>
-                {(!line.barcode || ["requires_confirm_code", "conflict_identifiers"].includes(line.status)) && <div className="code-pending-box"><p><b>No fue posible confirmar el código de barras de este producto.</b> Selecciona una opción para continuar.</p><div><button className="btn secondary small" onClick={() => onRequestScan(line.id)}><Camera />Escanear código</button><label className="btn secondary small"><ImageUp />Subir imagen<input className="native-file-input" type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void readLineImage(line.id, file); }} /></label><button className="btn secondary small" onClick={() => void pasteLineCode(line.id)}><ClipboardPaste />Pegar código</button><button className="btn secondary small" onClick={() => setManualCodeLine(manualCodeLine === line.id ? null : line.id)}><Barcode />Escribir código</button><button className="btn ghost small" onClick={() => void lookupCode(line)} disabled={lookupLineId === line.id}>{lookupLineId === line.id ? <Loader2 className="spin" /> : <Search />}Buscar código</button></div>{manualCodeLine === line.id && <div className="manual-code-row"><input value={line.barcode} inputMode="numeric" onChange={(event) => updateLine(line.id, { barcode: event.target.value }, false)} placeholder="Escribí 8, 12, 13 o 14 dígitos" /><button className="btn primary small" onClick={() => { const checked = validateBarcode(line.barcode); if (!checked.valid || !checked.normalized) return onNotify({ type: "error", text: checked.error || "Código inválido." }); setPendingBarcode({ lineId: line.id, code: checked.normalized, method: "manual", source: "Escrito y confirmado manualmente" }); }}>Revisar</button></div>}</div>}
+                {(!line.barcode || ["requires_confirm_code", "conflict_identifiers"].includes(line.status)) && <div className="code-pending-box"><p><b>No fue posible confirmar el código de barras de este producto.</b> Selecciona una opción para continuar.</p><div><button className="btn secondary small" onClick={() => onRequestScan(line.id)}><Camera />Escanear código</button><label className="btn secondary small"><ImageUp />Subir imagen<input className="native-file-input" type="file" accept="image/*" onChange={(event) => { const input = event.currentTarget; const file = input.files?.[0]; if (file) void readLineImage(line.id, file).finally(() => { input.value = ""; }); }} /></label><button className="btn secondary small" onClick={() => void pasteLineCode(line.id)}><ClipboardPaste />Pegar código</button><button className="btn secondary small" onClick={() => setManualCodeLine(manualCodeLine === line.id ? null : line.id)}><Barcode />Escribir código</button><button className="btn ghost small" onClick={() => void lookupCode(line)} disabled={lookupLineId === line.id}>{lookupLineId === line.id ? <Loader2 className="spin" /> : <Search />}Buscar código</button></div>{manualCodeLine === line.id && <div className="manual-code-row"><input value={line.barcode} inputMode="numeric" onChange={(event) => updateLine(line.id, { barcode: event.target.value }, false)} placeholder="Escribí 8, 12, 13 o 14 dígitos" /><button className="btn primary small" onClick={() => { const checked = validateBarcode(line.barcode); if (!checked.valid || !checked.normalized) return onNotify({ type: "error", text: checked.error || "Código inválido." }); setPendingBarcode({ lineId: line.id, code: checked.normalized, method: "manual", source: "Escrito y confirmado manualmente" }); }}>Revisar</button></div>}</div>}
                 {lookupMessages[line.id] && <div className={`lookup-results ${lineCandidates.length ? "has-results" : ""}`}><p>{lookupMessages[line.id]}</p>{lineCandidates.map((candidate) => <button key={`${candidate.code}-${candidate.source}`} onClick={() => setPendingBarcode({ lineId: line.id, code: candidate.code, method: "external_source", source: `${candidate.source}: ${candidate.sourceUrl}` })}><span><b>{candidate.code} · {candidate.type}</b><small>{candidate.title}{candidate.presentation ? ` · ${candidate.presentation}` : ""}</small>{candidate.differences.map((difference) => <em key={difference}>{difference}</em>)}</span><strong>{candidate.confidence}%<small>Confirmar</small></strong></button>)}</div>}
                 {line.warnings.map((warning) => <div className="alert warning line-warning" key={warning}><AlertCircle />{warning}</div>)}
                 <div className="quantity-preview"><span><small>Existencia actual</small><b>{line.match?.source === "inventory" ? currentQuantity : line.action === "move" || line.action === "create" ? 0 : "—"}</b></span><span><small>Se agregará</small><b>+{line.totalToAdd}</b></span><span><small>Existencia resultante</small><b>{line.match?.source === "inventory" || ["move", "create"].includes(line.action) ? resultingQuantity : "—"}</b></span></div>

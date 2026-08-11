@@ -372,7 +372,7 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .quantity-input { width: 100%; min-height: 190px; margin: 0 0 13px; padding: 13px; resize: vertical; border: 1px solid #d6dfd4; border-radius: 12px; outline: 0; background: #fbfcfa; color: var(--ink); font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; text-align: left; }
 .quantity-input:focus { border-color: var(--g700); background: #fff; box-shadow: 0 0 0 3px rgba(54, 118, 78, .1); }
 .confirm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
-.toast { position: fixed; right: 22px; bottom: 22px; z-index: 120; width: min(calc(100% - 32px), 390px); min-height: 52px; padding: 12px 11px 12px 15px; display: flex; align-items: center; gap: 8px; border-radius: 13px; color: #fff; box-shadow: 0 15px 40px rgba(20, 42, 26, .24); font-size: 11px; font-weight: 750; }
+.toast { position: fixed; right: 22px; bottom: 22px; z-index: 240; width: min(calc(100% - 32px), 390px); min-height: 52px; padding: 12px 11px 12px 15px; display: flex; align-items: center; gap: 8px; border-radius: 13px; color: #fff; box-shadow: 0 15px 40px rgba(20, 42, 26, .24); font-size: 11px; font-weight: 750; }
 .toast.success { background: var(--g800); }
 .toast.error { background: #9f3d38; }
 .toast.warning { background: #84651f; }
