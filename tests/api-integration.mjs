@@ -66,6 +66,35 @@ const quote = await call("/api/quotes", {
 });
 assert.equal(quote.response.status, 201);
 
+const editedQuote = await call(`/api/quotes/${quote.body.quote.id}`, {
+  method: "PUT",
+  headers: { "x-mutation-id": "test-edit-quote-0001" },
+  body: JSON.stringify({
+    name: "Cotización temporal editada",
+    code: "WEB-22",
+    purchasePriceUsd: 9,
+    weightLb: 0.3,
+    version: quote.body.quote.version,
+    mutationId: "test-edit-quote-0001",
+  }),
+});
+assert.equal(editedQuote.response.status, 200);
+assert.equal(editedQuote.body.quote.name, "Cotización temporal editada");
+assert.equal(editedQuote.body.quote.version, quote.body.quote.version + 1);
+
+const conflictingQuoteEdit = await call(`/api/quotes/${quote.body.quote.id}`, {
+  method: "PUT",
+  body: JSON.stringify({
+    name: "Cambio atrasado",
+    code: "WEB-22",
+    purchasePriceUsd: 10,
+    weightLb: 0.35,
+    version: quote.body.quote.version,
+  }),
+});
+assert.equal(conflictingQuoteEdit.response.status, 409);
+assert.equal(conflictingQuoteEdit.body.current.name, "Cotización temporal editada");
+
 const recent = await call("/api/recent?limit=10");
 assert.equal(recent.response.status, 200);
 assert.deepEqual(new Set(recent.body.items.map((item) => item.source)), new Set(["inventory", "no_inventory"]));
