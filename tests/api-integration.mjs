@@ -170,7 +170,7 @@ assert.equal(importJob.updatedCount, 1);
 const history = await call("/api/imports");
 assert.equal(history.response.status, 200);
 const historyEntry = history.body.jobs.find((item) => item.id === importJob.id);
-assert.equal(historyEntry.backupProductCount, 1);
+assert.equal(historyEntry.backupProductCount, 2);
 
 const savedSettings = await call("/api/settings", { method: "PUT", body: JSON.stringify(settings.body.settings) });
 assert.equal(savedSettings.response.status, 200);
