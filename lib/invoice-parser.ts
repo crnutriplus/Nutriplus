@@ -106,7 +106,10 @@ function windowAround(lines: string[], index: number) {
 }
 
 function taggedBarcode(source: string) {
-  const tagged = source.match(/\b(?:UPC(?:-A|-E)?|EAN(?:-8|-13)?|GTIN(?:-14)?|BARCODE|C[ÓO]DIGO\s+DE\s+BARRAS)\s*[:#-]?\s*([\d\s-]{8,24})\b/i)?.[1];
+  // Keep the capture on the identifier's own line. Using `\s` here can consume
+  // the quantity at the beginning of the next invoice line and accidentally
+  // turn a valid UPC into a different, also-valid EAN.
+  const tagged = source.match(/\b(?:UPC(?:-A|-E)?|EAN(?:-8|-13)?|GTIN(?:-14)?|BARCODE|C[ÓO]DIGO[ \t]+DE[ \t]+BARRAS)[ \t]*[:#-]?[ \t]*([\d \t-]{8,24})\b/i)?.[1];
   const checked = tagged ? validateBarcode(tagged) : null;
   return checked?.valid ? checked : null;
 }
