@@ -99,6 +99,51 @@ const recent = await call("/api/recent?limit=10");
 assert.equal(recent.response.status, 200);
 assert.deepEqual(new Set(recent.body.items.map((item) => item.source)), new Set(["inventory", "no_inventory"]));
 
+const movedQuote = await call(`/api/quotes/${quote.body.quote.id}/move-to-inventory`, {
+  method: "POST",
+  headers: { "x-mutation-id": "test-move-quote-0001" },
+  body: JSON.stringify({
+    name: "Cotización convertida",
+    code: "WEB-22",
+    purchasePriceUsd: 9,
+    weightLb: 0.3,
+    quantityAvailable: 4,
+    minimumStock: 2,
+    minimumStockEnabled: true,
+    version: editedQuote.body.quote.version,
+    mutationId: "test-move-quote-0001",
+  }),
+});
+assert.equal(movedQuote.response.status, 201);
+assert.equal(movedQuote.body.removedQuoteId, quote.body.quote.id);
+assert.equal(movedQuote.body.product.quantityAvailable, 4);
+const quotesAfterMove = await call("/api/quotes?limit=100");
+assert.equal(quotesAfterMove.body.quotes.some((item) => item.id === quote.body.quote.id), false);
+
+const duplicateQuote = await call("/api/quotes", {
+  method: "POST",
+  headers: { "x-mutation-id": "test-create-quote-0002" },
+  body: JSON.stringify({ name: "Cotización que debe conservarse", code: "TEMP-33", purchasePriceUsd: 6, weightLb: 0.2, mutationId: "test-create-quote-0002" }),
+});
+const blockedMove = await call(`/api/quotes/${duplicateQuote.body.quote.id}/move-to-inventory`, {
+  method: "POST",
+  headers: { "x-mutation-id": "test-move-quote-duplicate" },
+  body: JSON.stringify({
+    name: "Producto con código repetido",
+    code: "NP-A01",
+    purchasePriceUsd: 6,
+    weightLb: 0.2,
+    quantityAvailable: 1,
+    minimumStock: 0,
+    minimumStockEnabled: false,
+    version: duplicateQuote.body.quote.version,
+    mutationId: "test-move-quote-duplicate",
+  }),
+});
+assert.equal(blockedMove.response.status, 409);
+const quotesAfterBlockedMove = await call("/api/quotes?limit=100");
+assert.equal(quotesAfterBlockedMove.body.quotes.some((item) => item.id === duplicateQuote.body.quote.id), true);
+
 const importStart = await call("/api/imports", {
   method: "POST",
   body: JSON.stringify({
@@ -129,7 +174,7 @@ assert.equal(historyEntry.backupProductCount, 1);
 
 const savedSettings = await call("/api/settings", { method: "PUT", body: JSON.stringify(settings.body.settings) });
 assert.equal(savedSettings.response.status, 200);
-assert.equal(savedSettings.body.verification.inventory, 2);
+assert.equal(savedSettings.body.verification.inventory, 3);
 assert.equal(savedSettings.body.verification.noInventory, 1);
 assert.equal(savedSettings.body.verification.failed.length, 0);
 

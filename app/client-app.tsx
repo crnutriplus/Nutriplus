@@ -229,6 +229,24 @@ function normalizeCode(value: string | null | undefined) {
   return (value || "").trim().toLowerCase().replace(/\s+/g, "");
 }
 
+function mergeRecentItems(products: ProductRecord[], quotes: NonInventoryRecord[], limit = 40): RecentItem[] {
+  const recent: RecentItem[] = [];
+  let productIndex = 0;
+  let quoteIndex = 0;
+  while (recent.length < limit && (productIndex < products.length || quoteIndex < quotes.length)) {
+    const product = products[productIndex];
+    const quote = quotes[quoteIndex];
+    if (!quote || (product && product.updatedAt.localeCompare(quote.updatedAt) >= 0)) {
+      recent.push({ source: "inventory", item: product! });
+      productIndex += 1;
+    } else {
+      recent.push({ source: "no_inventory", item: quote });
+      quoteIndex += 1;
+    }
+  }
+  return recent;
+}
+
 function detectScannerBurst(
   event: ReactKeyboardEvent<HTMLInputElement>,
   state: MutableRefObject<BurstState>,
@@ -550,7 +568,7 @@ function ProductForm({
     <div className="field"><span>Código QR o de barras <small>Opcional</small></span><div className="code-row"><div className={`input-icon grow ${activeNumeric === "code" ? "active" : ""}`} data-keypad-zone><ScanLine /><input aria-label="Código QR o de barras" value={form.code} inputMode="none" onFocus={() => setActiveNumeric("code")} onClick={() => setActiveNumeric("code")} onChange={(event) => setForm({ ...form, code: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); const code = event.currentTarget.value.trim(); if (code) onExternalCode(code); } }} placeholder="Escaneá, cargá o pegá el código" autoComplete="off" /></div><button type="button" className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={onOpenScanner} title="Escanear con la cámara"><Camera /><span>Escanear</span></button><button type="button" className="scan-btn compact" onClick={() => imageInput.current?.click()} title="Leer código desde una imagen"><ImageUp /><span>Imagen</span></button><button type="button" className="scan-btn compact" onClick={onPasteCode} title="Pegar código copiado"><ClipboardPaste /><span>Pegar</span></button><input ref={imageInput} className="native-file-input" type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; if (file) onImageCode(file); event.target.value = ""; }} /></div></div>
     <div className="two"><label className="field"><span>Precio de compra</span><div className={`number-box tappable ${activeNumeric === "purchasePriceUsd" ? "active" : ""}`} data-keypad-zone><i>$</i><input type="text" inputMode="none" readOnly value={form.purchasePriceUsd} onFocus={() => setActiveNumeric("purchasePriceUsd")} onClick={() => setActiveNumeric("purchasePriceUsd")} placeholder="" /></div><p className="hint">En dólares</p></label><label className="field"><span>Peso</span><div className={`number-box tappable ${activeNumeric === "weightLb" ? "active" : ""}`} data-keypad-zone><input type="text" inputMode="none" readOnly value={form.weightLb} onFocus={() => setActiveNumeric("weightLb")} onClick={() => setActiveNumeric("weightLb")} placeholder="" /><small>lb</small></div><p className="hint">Se suman {settings.extraWeightLb.toFixed(2)} lb.</p></label></div>
     {activeNumeric && <NumericKeypad active={activeNumeric} onKey={keypad} onClose={() => setActiveNumeric(null)} />}
-    <label className={`inventory-choice ${form.addToInventory ? "enabled" : ""}`}><input type="checkbox" checked={form.addToInventory} disabled={form.source !== null} onChange={(event) => setForm((current) => ({ ...current, addToInventory: event.target.checked }))} /><span><b>Agregar producto al inventario</b><small>{form.source === "inventory" ? "Este producto ya pertenece al inventario." : form.source === "no_inventory" ? "Este producto pertenece a No inventario y se actualizará ahí." : form.addToInventory ? "Aparecerá en Productos y tendrá control de existencias." : "Se guardará en la hoja No inventario y no aparecerá en Productos."}</small></span></label>
+    <label className={`inventory-choice ${form.addToInventory ? "enabled" : ""}`}><input type="checkbox" checked={form.addToInventory} disabled={form.source === "inventory"} onChange={(event) => setForm((current) => ({ ...current, addToInventory: event.target.checked }))} /><span><b>Agregar producto al inventario</b><small>{form.source === "inventory" ? "Este producto ya pertenece al inventario." : form.source === "no_inventory" ? (form.addToInventory ? "Al guardar, pasará a Productos y se eliminará de No inventario." : "Marcá esta opción para pasarlo de No inventario al inventario.") : form.addToInventory ? "Aparecerá en Productos y tendrá control de existencias." : "Se guardará en la hoja No inventario y no aparecerá en Productos."}</small></span></label>
     {form.addToInventory && <div className="inventory-fields"><label className="field"><span>Cantidad disponible</span><div className="stock-stepper"><button type="button" onClick={() => setForm((current) => ({ ...current, quantityAvailable: String(Math.max(0, Number(current.quantityAvailable || 0) - 1)) }))} aria-label="Restar una unidad"><Minus /></button><input type="text" inputMode="numeric" value={form.quantityAvailable} onChange={(event) => setForm({ ...form, quantityAvailable: event.target.value.replace(/\D/g, "").slice(0, 7) })} placeholder="0" aria-label="Cantidad disponible" /><button type="button" onClick={() => setForm((current) => ({ ...current, quantityAvailable: String(Number(current.quantityAvailable || 0) + 1) }))} aria-label="Sumar una unidad"><Plus /></button></div></label>
       <label className={`stock-toggle ${form.minimumStockEnabled ? "enabled" : ""}`}><input type="checkbox" checked={form.minimumStockEnabled} onChange={(event) => setForm((current) => ({ ...current, minimumStockEnabled: event.target.checked, minimumStock: event.target.checked ? (current.minimumStock || "0") : "" }))} /><span><b>Controlar stock mínimo</b><small>Activá esta alerta solo para los productos más vendidos.</small></span></label>
       {form.minimumStockEnabled && <label className="field minimum-stock-field"><span>Cantidad para activar la alerta</span><div className="stock-stepper"><button type="button" onClick={() => setForm((current) => ({ ...current, minimumStock: String(Math.max(0, Number(current.minimumStock || 0) - 1)) }))} aria-label="Restar una unidad al stock mínimo"><Minus /></button><input type="text" inputMode="numeric" value={form.minimumStock} onChange={(event) => setForm({ ...form, minimumStock: event.target.value.replace(/\D/g, "").slice(0, 7) })} placeholder="0" aria-label="Stock mínimo" /><button type="button" onClick={() => setForm((current) => ({ ...current, minimumStock: String(Number(current.minimumStock || 0) + 1) }))} aria-label="Sumar una unidad al stock mínimo"><Plus /></button></div><p className="hint">Se avisará cuando la cantidad llegue o baje de este número.</p></label>}
@@ -863,7 +881,12 @@ export function NutriPlusApp() {
         const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
         if (!response.ok) {
           if (response.status === 409) {
-            if (mutation.url.startsWith("/api/quotes/")) {
+            const movingQuote = mutation.url.endsWith("/move-to-inventory");
+            if (movingQuote) {
+              const current = payload.current as NonInventoryRecord | undefined;
+              setProducts((items) => items.filter((item) => item.id !== mutation.tempId));
+              if (current) setQuotes((items) => [current, ...items.filter((item) => item.id !== current.id)]);
+            } else if (mutation.url.startsWith("/api/quotes/")) {
               const current = payload.current as NonInventoryRecord | undefined;
               if (current) setQuotes((items) => [current, ...items.filter((item) => item.id !== current.id && item.id !== mutation.tempId)]);
             } else {
@@ -880,6 +903,8 @@ export function NutriPlusApp() {
         if (payload.product) {
           const product = payload.product as ProductRecord;
           setProducts((items) => [product, ...items.filter((item) => item.id !== product.id && item.id !== mutation.tempId)]);
+          const removedQuoteId = Number(payload.removedQuoteId || 0);
+          if (removedQuoteId) setQuotes((items) => items.filter((item) => item.id !== removedQuoteId));
         } else if (payload.quote) {
           const quote = payload.quote as NonInventoryRecord;
           setQuotes((items) => [quote, ...items.filter((item) => item.id !== quote.id && item.id !== mutation.tempId)]);
@@ -1209,16 +1234,14 @@ export function NutriPlusApp() {
 
   const openRecent = useCallback(async () => {
     setRecentOpen(true);
-    setRecentLoading(true);
+    const local = mergeRecentItems(products, quotes);
+    setRecentItems(local);
+    setRecentLoading(local.length === 0);
     try {
       const data = await json<{ items: RecentItem[] }>(await fetch("/api/recent?limit=40"));
       setRecentItems(data.items);
     } catch {
-      const local: RecentItem[] = [
-        ...products.map((item) => ({ source: "inventory" as const, item })),
-        ...quotes.map((item) => ({ source: "no_inventory" as const, item })),
-      ].sort((a, b) => b.item.updatedAt.localeCompare(a.item.updatedAt)).slice(0, 40);
-      setRecentItems(local);
+      // La lista local ya está visible; la actualización remota se reintentará al volver a abrirla.
     } finally { setRecentLoading(false); }
   }, [products, quotes]);
 
@@ -1341,7 +1364,7 @@ export function NutriPlusApp() {
       return notify({ type: "error", text: "La cantidad y el stock mínimo deben ser números enteros iguales o mayores que cero." });
     }
     const submittedForm = { ...form, name: form.name.trim(), code: form.code.trim() };
-    const saveToInventory = submittedForm.source === "inventory" || (submittedForm.source === null && submittedForm.addToInventory);
+    const saveToInventory = submittedForm.source === "inventory" || submittedForm.addToInventory;
     const existing = submittedForm.source === "inventory" && submittedForm.id !== null
       ? products.find((product) => product.id === submittedForm.id) || null
       : null;
@@ -1349,6 +1372,79 @@ export function NutriPlusApp() {
       ? quotes.find((quote) => quote.id === submittedForm.id) || null
       : null;
     const now = new Date().toISOString();
+
+    if (submittedForm.source === "no_inventory" && submittedForm.addToInventory && existingQuote) {
+      const optimisticId = nextTemporaryProductId.current--;
+      const optimistic: ProductRecord = {
+        id: optimisticId,
+        name: submittedForm.name,
+        code: submittedForm.code || null,
+        purchasePriceUsd: price,
+        weightLb: weight,
+        quantityAvailable,
+        minimumStock,
+        minimumStockEnabled: submittedForm.minimumStockEnabled,
+        restockPurchasedAt: null,
+        zeroStockSince: quantityAvailable === 0 ? now : null,
+        version: 1,
+        createdAt: existingQuote.createdAt,
+        updatedAt: now,
+      };
+      setQuotes((current) => current.filter((item) => item.id !== existingQuote.id));
+      setProducts((current) => [optimistic, ...current]);
+      clearForm();
+      notify({ type: "success", text: "Producto agregado." });
+
+      const id = mutationId();
+      const mutation: QueuedMutation = {
+        id,
+        method: "POST",
+        url: `/api/quotes/${existingQuote.id}/move-to-inventory`,
+        body: {
+          name: submittedForm.name,
+          code: submittedForm.code,
+          purchasePriceUsd: price,
+          weightLb: weight,
+          quantityAvailable,
+          minimumStock,
+          minimumStockEnabled: submittedForm.minimumStockEnabled,
+          version: existingQuote.version,
+        },
+        tempId: optimisticId,
+        createdAt: now,
+      };
+
+      void (async () => {
+        if (!navigator.onLine) return queueOfflineMutation(mutation);
+        try {
+          const data = await json<{ product: ProductRecord; removedQuoteId: number }>(await fetch(mutation.url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Mutation-Id": id },
+            body: JSON.stringify({ ...mutation.body, mutationId: id }),
+            keepalive: true,
+          }));
+          setProducts((current) => [data.product, ...current.filter((item) => item.id !== optimisticId && item.id !== data.product.id)]);
+          setQuotes((current) => current.filter((item) => item.id !== data.removedQuoteId));
+        } catch (error) {
+          if (!navigator.onLine || error instanceof TypeError) {
+            await queueOfflineMutation(mutation);
+            return;
+          }
+          const currentQuote = error instanceof ApiError && error.payload.current
+            ? error.payload.current as NonInventoryRecord
+            : existingQuote;
+          setProducts((current) => current.filter((item) => item.id !== optimisticId));
+          setQuotes((current) => [currentQuote, ...current.filter((item) => item.id !== currentQuote.id)]);
+          setForm({ ...quoteToForm(currentQuote), addToInventory: true });
+          setProductEditorOpen(false);
+          setNoInventoryOpen(false);
+          setRecentOpen(false);
+          setTab("calculator");
+          notify({ type: "error", text: error instanceof Error ? error.message : `No se pudo pasar ${submittedForm.name} al inventario.`, sticky: true });
+        }
+      })();
+      return;
+    }
 
     if (!saveToInventory) {
       const optimisticId = existingQuote?.id ?? nextTemporaryQuoteId.current--;
