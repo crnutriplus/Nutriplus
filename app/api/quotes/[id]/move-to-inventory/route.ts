@@ -18,16 +18,21 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       const currentRow = await db.prepare("SELECT * FROM non_inventory_quotes WHERE id=? LIMIT 1")
         .bind(quoteId).first<Record<string, unknown>>();
       if (!currentRow) {
-        return { body: { error: "Este producto ya no está en No inventario." }, status: 404 };
+        const moved = await db.prepare(`SELECT * FROM products
+          WHERE normalized_name=? OR (? IS NOT NULL AND lower(replace(code,' ',''))=lower(replace(?,' ','')))
+          ORDER BY CASE WHEN normalized_name=? THEN 0 ELSE 1 END LIMIT 1`)
+          .bind(product.normalizedName, product.code, product.code, product.normalizedName).first<Record<string, unknown>>();
+        return moved
+          ? { body: { product: productFromRow(moved), removedQuoteId: quoteId, alreadyMoved: true } }
+          : { body: { product: null, removedQuoteId: quoteId, deleted: true } };
       }
 
       const current = nonInventoryFromRow(currentRow);
-      const requestedVersion = Number(payload.version ?? 0);
-      if (requestedVersion !== current.version) {
-        return {
-          body: { error: "Este producto cambió en otro dispositivo. Se conservó la versión más reciente.", current },
-          status: 409,
-        };
+      const duplicate = await db.prepare(`SELECT * FROM products
+        WHERE normalized_name=? OR (? IS NOT NULL AND lower(replace(code,' ',''))=lower(replace(?,' ',''))) LIMIT 1`)
+        .bind(product.normalizedName, product.code, product.code).first<Record<string, unknown>>();
+      if (duplicate) {
+        return { body: { error: "Ya existe un producto con ese nombre o código. El registro se conservó en No inventario.", current }, status: 409 };
       }
 
       const [insertResult, deleteResult] = await db.batch([
@@ -37,7 +42,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         ) SELECT ?,?,?,?,?,?,?,?,NULL,
           CASE WHEN ?=0 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,
           1,created_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')
-          FROM non_inventory_quotes WHERE id=? AND version=? RETURNING *`)
+          FROM non_inventory_quotes WHERE id=? RETURNING *`)
           .bind(
             product.name,
             product.normalizedName,
@@ -49,24 +54,20 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             product.minimumStockEnabled ? 1 : 0,
             product.quantityAvailable,
             quoteId,
-            current.version,
           ),
-        db.prepare("DELETE FROM non_inventory_quotes WHERE id=? AND version=?")
-          .bind(quoteId, current.version),
+        db.prepare("DELETE FROM non_inventory_quotes WHERE id=?")
+          .bind(quoteId),
       ]);
 
       const row = insertResult.results?.[0] as Record<string, unknown> | undefined;
       const deleted = Number(deleteResult.meta?.changes ?? 0) > 0;
       if (!row || !deleted) {
-        const latest = await db.prepare("SELECT * FROM non_inventory_quotes WHERE id=? LIMIT 1")
-          .bind(quoteId).first<Record<string, unknown>>();
-        return {
-          body: {
-            error: "Otro cambio llegó al mismo tiempo. El producto permaneció en No inventario.",
-            current: latest ? nonInventoryFromRow(latest) : current,
-          },
-          status: 409,
-        };
+        const moved = await db.prepare(`SELECT * FROM products
+          WHERE normalized_name=? OR (? IS NOT NULL AND lower(replace(code,' ',''))=lower(replace(?,' ','')))
+          ORDER BY CASE WHEN normalized_name=? THEN 0 ELSE 1 END LIMIT 1`)
+          .bind(product.normalizedName, product.code, product.code, product.normalizedName).first<Record<string, unknown>>();
+        if (moved) return { body: { product: productFromRow(moved), removedQuoteId: quoteId, alreadyMoved: true } };
+        return { body: { product: null, removedQuoteId: quoteId, deleted: true } };
       }
 
       return {

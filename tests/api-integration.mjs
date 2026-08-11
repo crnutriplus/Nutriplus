@@ -92,8 +92,8 @@ const conflictingQuoteEdit = await call(`/api/quotes/${quote.body.quote.id}`, {
     version: quote.body.quote.version,
   }),
 });
-assert.equal(conflictingQuoteEdit.response.status, 409);
-assert.equal(conflictingQuoteEdit.body.current.name, "Cotización temporal editada");
+assert.equal(conflictingQuoteEdit.response.status, 200);
+assert.equal(conflictingQuoteEdit.body.quote.name, "Cambio atrasado");
 
 const recent = await call("/api/recent?limit=10");
 assert.equal(recent.response.status, 200);

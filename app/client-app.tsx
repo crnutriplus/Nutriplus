@@ -68,6 +68,7 @@ import {
   enqueueMutation,
   listQueuedMutations,
   loadOfflineSnapshot,
+  remapQueuedResource,
   removeQueuedMutation,
   saveOfflineSnapshot,
   type QueuedMutation,
@@ -75,7 +76,7 @@ import {
 
 type Tab = "calculator" | "products" | "import" | "settings";
 type NumericField = "purchasePriceUsd" | "weightLb" | "code";
-type ScannerIntent = "assign" | "lookup-products" | "lookup-calculator";
+type ScannerIntent = "assign" | "lookup-products" | "lookup-calculator" | "floating";
 type Form = {
   id: number | null;
   source: "inventory" | "no_inventory" | null;
@@ -227,6 +228,38 @@ function quoteToForm(quote: NonInventoryRecord): Form {
 
 function normalizeCode(value: string | null | undefined) {
   return (value || "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function parseQuantityText(value: string) {
+  const entries = new Map<string, { code: string; quantityAvailable: number }>();
+  const invalidLines: number[] = [];
+  value.split(/\r?\n/).forEach((source, index) => {
+    const line = source.trim();
+    if (!line) return;
+    const match = line.match(/^(.+?)(?:\s*[:=;\t]\s*|\s{2,})(\d+)\s*$/);
+    const code = match?.[1]?.trim() || "";
+    const quantityAvailable = Number(match?.[2]);
+    if (!code || !Number.isInteger(quantityAvailable) || quantityAvailable < 0) {
+      invalidLines.push(index + 1);
+      return;
+    }
+    entries.set(normalizeCode(code), { code, quantityAvailable });
+  });
+  return { entries: [...entries.values()], invalidLines };
+}
+
+function remapTemporaryUrl(url: string, productIds: Map<number, number>, quoteIds: Map<number, number>) {
+  const productMatch = url.match(/^\/api\/products\/(-\d+)(\/.*)?$/);
+  if (productMatch) {
+    const realId = productIds.get(Number(productMatch[1]));
+    if (realId) return `/api/products/${realId}${productMatch[2] || ""}`;
+  }
+  const quoteMatch = url.match(/^\/api\/quotes\/(-\d+)(\/.*)?$/);
+  if (quoteMatch) {
+    const realId = quoteIds.get(Number(quoteMatch[1]));
+    if (realId) return `/api/quotes/${realId}${quoteMatch[2] || ""}`;
+  }
+  return url;
 }
 
 function mergeRecentItems(products: ProductRecord[], quotes: NonInventoryRecord[], limit = 40): RecentItem[] {
@@ -455,7 +488,7 @@ function Scanner({ onClose, onCode }: { onClose: () => void; onCode: (value: str
     };
   }, [applyTorch, confirmCandidate]);
 
-  return <div className="modal" role="dialog" aria-modal="true" aria-label="Escáner de producto" onPointerDown={onClose}><div className="scanner-card" onPointerDown={(event) => event.stopPropagation()}>
+  return <div className="modal scanner-modal" role="dialog" aria-modal="true" aria-label="Escáner de producto" onPointerDown={onClose}><div className="scanner-card">
     <div className="modal-head"><div><span className="eyebrow">Cámara</span><h2>Escanear producto</h2></div><button className="icon-btn" onClick={onClose} aria-label="Cerrar"><X /></button></div>
     <div className="camera" onPointerDown={onClose}><video ref={video} muted playsInline /><canvas ref={canvas} hidden /><div className="scan-frame" />{starting && <div className="camera-state"><Loader2 className="spin" />Abriendo cámara…</div>}</div>
     {error ? <p className="alert error"><AlertCircle size={17} />{error}</p> : <div className="scanner-help"><p className="hint">Colocá el QR o código de barras dentro del recuadro.</p>{torchAvailable && <button className={`torch-btn ${torchOn ? "active" : ""}`} onClick={() => { autoTorchEnabledRef.current = false; void applyTorch(!torchOn); }}><Flashlight />{torchOn ? "Apagar linterna" : "Encender linterna"}</button>}</div>}
@@ -796,6 +829,12 @@ export function NutriPlusApp() {
   const [installHelpOpen, setInstallHelpOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProductRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<number>>(new Set());
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [quantitiesOpen, setQuantitiesOpen] = useState(false);
+  const [quantityText, setQuantityText] = useState("");
   const [exportConfirm, setExportConfirm] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("both");
@@ -813,8 +852,8 @@ export function NutriPlusApp() {
   const deferredQuery = useDeferredValue(query);
   const deferredNoInventoryQuery = useDeferredValue(noInventoryQuery);
   const searchBurst = useRef<BurstState>({ ...EMPTY_BURST });
-  const importRunner = useRef<number | null>(null);
-  const deletionRunner = useRef<number | null>(null);
+  const importRunners = useRef<Set<number>>(new Set());
+  const deletionRunners = useRef<Set<number>>(new Set());
   const nextTemporaryProductId = useRef(-1);
   const nextTemporaryQuoteId = useRef(-1);
   const initialStockPromptHandled = useRef(false);
@@ -863,65 +902,85 @@ export function NutriPlusApp() {
   }, []);
 
   const flushOfflineMutations = useCallback(async () => {
-    if (!navigator.onLine || syncing) return;
-    setSyncing(true);
-    let synchronized = 0;
-    try {
-      const queued = await listQueuedMutations();
-      setPendingSyncCount(queued.length);
-      for (const mutation of queued) {
-        let response: Response;
-        try {
-          response = await fetch(mutation.url, {
-            method: mutation.method,
-            headers: { "Content-Type": "application/json", "X-Mutation-Id": mutation.id, ...(mutation.headers || {}) },
-            body: mutation.method === "DELETE" ? undefined : JSON.stringify({ ...(mutation.body || {}), mutationId: mutation.id }),
-          });
-        } catch { break; }
-        const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-        if (!response.ok) {
-          if (response.status === 409) {
-            const movingQuote = mutation.url.endsWith("/move-to-inventory");
-            if (movingQuote) {
-              const current = payload.current as NonInventoryRecord | undefined;
-              setProducts((items) => items.filter((item) => item.id !== mutation.tempId));
-              if (current) setQuotes((items) => [current, ...items.filter((item) => item.id !== current.id)]);
-            } else if (mutation.url.startsWith("/api/quotes/")) {
-              const current = payload.current as NonInventoryRecord | undefined;
-              if (current) setQuotes((items) => [current, ...items.filter((item) => item.id !== current.id && item.id !== mutation.tempId)]);
-            } else {
-              const current = payload.current as ProductRecord | undefined;
-              if (current) setProducts((items) => [current, ...items.filter((item) => item.id !== current.id && item.id !== mutation.tempId)]);
+    if (!navigator.onLine) return;
+    const execute = async () => {
+      if (syncing) return;
+      setSyncing(true);
+      let synchronized = 0;
+      const productIds = new Map<number, number>();
+      const quoteIds = new Map<number, number>();
+      try {
+        const queued = await listQueuedMutations();
+        setPendingSyncCount(queued.length);
+        for (const mutation of queued) {
+          const url = remapTemporaryUrl(mutation.url, productIds, quoteIds);
+          let response: Response;
+          try {
+            response = await fetch(url, {
+              method: mutation.method,
+              headers: { "Content-Type": "application/json", "X-Mutation-Id": mutation.id, ...(mutation.headers || {}) },
+              body: mutation.method === "DELETE" ? undefined : JSON.stringify({ ...(mutation.body || {}), mutationId: mutation.id }),
+            });
+          } catch { break; }
+          const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+          if (!response.ok) {
+            if (response.status === 409) {
+              const movingQuote = url.endsWith("/move-to-inventory");
+              if (movingQuote) {
+                const current = payload.current as NonInventoryRecord | undefined;
+                setProducts((items) => items.filter((item) => item.id !== mutation.tempId));
+                if (current) setQuotes((items) => [current, ...items.filter((item) => item.id !== current.id)]);
+              }
+              await removeQueuedMutation(mutation.id);
+              setPendingSyncCount((count) => Math.max(0, count - 1));
+              notify({ type: "warning", text: String(payload.error || "Se conservó la información más reciente."), dismissOnPageTouch: false, durationMs: 5000 });
+              continue;
             }
-            await removeQueuedMutation(mutation.id);
-            setPendingSyncCount((count) => Math.max(0, count - 1));
-            notify({ type: "warning", text: String(payload.error || "Se conservó un cambio más reciente hecho desde otro dispositivo."), dismissOnPageTouch: false, durationMs: 5000 });
-            continue;
+            break;
           }
-          break;
+          if (payload.product) {
+            const product = payload.product as ProductRecord;
+            if (typeof mutation.tempId === "number" && mutation.tempId < 0) {
+              productIds.set(mutation.tempId, product.id);
+              await remapQueuedResource("product", mutation.tempId, product.id);
+            }
+            setProducts((items) => [product, ...items.filter((item) => item.id !== product.id && item.id !== mutation.tempId)]);
+            const removedQuoteId = Number(payload.removedQuoteId || 0);
+            if (removedQuoteId) setQuotes((items) => items.filter((item) => item.id !== removedQuoteId));
+          } else if (Array.isArray(payload.products)) {
+            const updated = payload.products as ProductRecord[];
+            const updatedIds = new Set(updated.map((product) => product.id));
+            setProducts((items) => [...updated, ...items.filter((item) => !updatedIds.has(item.id))]);
+          } else if (payload.quote) {
+            const quote = payload.quote as NonInventoryRecord;
+            if (typeof mutation.tempId === "number" && mutation.tempId < 0) {
+              quoteIds.set(mutation.tempId, quote.id);
+              await remapQueuedResource("quote", mutation.tempId, quote.id);
+            }
+            setQuotes((items) => [quote, ...items.filter((item) => item.id !== quote.id && item.id !== mutation.tempId)]);
+          } else if (Array.isArray(payload.deletedIds)) {
+            const deletedIds = new Set((payload.deletedIds as unknown[]).map(Number));
+            setProducts((items) => items.filter((item) => !deletedIds.has(item.id)));
+          } else if (payload.deleted) {
+            const productId = Number(url.match(/^\/api\/products\/(\d+)/)?.[1]);
+            const quoteId = Number(url.match(/^\/api\/quotes\/(\d+)/)?.[1]);
+            if (productId) setProducts((items) => items.filter((item) => item.id !== productId));
+            if (quoteId) setQuotes((items) => items.filter((item) => item.id !== quoteId));
+          }
+          if (payload.settings) setSettings(payload.settings as PricingSettings);
+          await removeQueuedMutation(mutation.id);
+          synchronized += 1;
+          setPendingSyncCount((count) => Math.max(0, count - 1));
         }
-        if (payload.product) {
-          const product = payload.product as ProductRecord;
-          setProducts((items) => [product, ...items.filter((item) => item.id !== product.id && item.id !== mutation.tempId)]);
-          const removedQuoteId = Number(payload.removedQuoteId || 0);
-          if (removedQuoteId) setQuotes((items) => items.filter((item) => item.id !== removedQuoteId));
-        } else if (payload.quote) {
-          const quote = payload.quote as NonInventoryRecord;
-          setQuotes((items) => [quote, ...items.filter((item) => item.id !== quote.id && item.id !== mutation.tempId)]);
-        } else if (mutation.method === "DELETE") {
-          const id = Number(mutation.url.match(/\/api\/products\/(\d+)/)?.[1]);
-          if (id) setProducts((items) => items.filter((item) => item.id !== id));
+        if (synchronized) {
+          await Promise.all([refreshProducts(), refreshQuotes()]).catch(() => undefined);
+          notify({ type: "success", text: `${synchronized} cambio${synchronized === 1 ? "" : "s"} sin conexión sincronizado${synchronized === 1 ? "" : "s"}.`, dismissOnPageTouch: false, durationMs: 3000 });
         }
-        if (payload.settings) setSettings(payload.settings as PricingSettings);
-        await removeQueuedMutation(mutation.id);
-        synchronized += 1;
-        setPendingSyncCount((count) => Math.max(0, count - 1));
-      }
-      if (synchronized) {
-        await Promise.all([refreshProducts(), refreshQuotes()]).catch(() => undefined);
-        notify({ type: "success", text: `${synchronized} cambio${synchronized === 1 ? "" : "s"} sin conexión sincronizado${synchronized === 1 ? "" : "s"}.`, dismissOnPageTouch: false, durationMs: 3000 });
-      }
-    } finally { setSyncing(false); }
+      } finally { setSyncing(false); }
+    };
+    const locks = (navigator as Navigator & { locks?: { request: (name: string, options: { ifAvailable: boolean }, callback: (lock: unknown) => Promise<void>) => Promise<void> } }).locks;
+    if (locks) await locks.request("nutriplus-offline-sync", { ifAvailable: true }, async (lock) => { if (lock) await execute(); });
+    else await execute();
   }, [notify, refreshProducts, refreshQuotes, syncing]);
 
   const refreshImportHistory = useCallback(async () => {
@@ -931,8 +990,8 @@ export function NutriPlusApp() {
   }, []);
 
   const runImport = useCallback(async (id: number) => {
-    if (importRunner.current === id) return;
-    importRunner.current = id;
+    if (importRunners.current.has(id)) return;
+    importRunners.current.add(id);
     try {
       while (true) {
         const data = await json<{ job: ImportJobRecord; waitingForDeletion?: boolean }>(await fetch(`/api/imports/${id}/process`, { method: "POST" }));
@@ -954,14 +1013,12 @@ export function NutriPlusApp() {
       }
     } catch (error) {
       notify({ type: "error", text: error instanceof Error ? `${error.message} La importación quedó guardada para poder reanudarla.` : "La importación quedó guardada para poder reanudarla.", dismissOnPageTouch: false, durationMs: 3000 });
-    } finally {
-      if (importRunner.current === id) importRunner.current = null;
-    }
+    } finally { importRunners.current.delete(id); }
   }, [notify, refreshImportHistory, refreshProducts]);
 
   const runDeletion = useCallback(async (id: number) => {
-    if (deletionRunner.current === id) return;
-    deletionRunner.current = id;
+    if (deletionRunners.current.has(id)) return;
+    deletionRunners.current.add(id);
     try {
       while (true) {
         const data = await json<{ job: ProductDeletionJobRecord; waitingForImport?: boolean }>(await fetch(`/api/products/delete-all/${id}/process`, { method: "POST" }));
@@ -979,9 +1036,7 @@ export function NutriPlusApp() {
       }
     } catch (error) {
       notify({ type: "error", text: error instanceof Error ? `${error.message} El proceso quedó guardado para reanudarlo.` : "La eliminación quedó guardada para reanudarla.", dismissOnPageTouch: false, durationMs: 3000 });
-    } finally {
-      if (deletionRunner.current === id) deletionRunner.current = null;
-    }
+    } finally { deletionRunners.current.delete(id); }
   }, [notify, refreshImportHistory, refreshProducts]);
 
   const startImport = useCallback(async (payload: { rows: Array<Record<string, unknown>>; strategy: "update" | "skip"; fileName: string; sheetName: string }) => {
@@ -1041,10 +1096,12 @@ export function NutriPlusApp() {
         const latestDeletion = activeDeletion || deletionsData.jobs[0] || null;
         setDeletionJob(latestDeletion);
         if (activeDeletion) void runDeletion(activeDeletion.id);
-        const active = importsData.jobs.find((item) => item.status === "queued" || item.status === "running");
-        const latest = active || importsData.jobs[0] || null;
+        const activeImports = importsData.jobs
+          .filter((item) => item.strategy !== "backup" && (item.status === "queued" || item.status === "running"))
+          .sort((left, right) => left.id - right.id);
+        const latest = activeImports.at(-1) || importsData.jobs.find((item) => item.strategy !== "backup") || importsData.jobs[0] || null;
         setImportJob(latest);
-        if (active) void runImport(active.id);
+        if (activeImports.length) activeImports.forEach((item) => { void runImport(item.id); });
         else if (latest?.status === "completed" && latest.strategy !== "backup") {
           void json<{ job: ImportJobRecord; changedProducts: ImportChangedProduct[] }>(await fetch(`/api/imports/${latest.id}`)).then((detail) => setImportSummary(detail.changedProducts)).catch(() => undefined);
         }
@@ -1254,7 +1311,7 @@ export function NutriPlusApp() {
     notify({ type: "success", text: "Código agregado. Podés guardar los cambios sin salir de esta pantalla." });
   }, [notify]);
 
-  const lookupCode = useCallback(async (code: string, destination: "products" | "calculator") => {
+  const lookupCode = useCallback(async (code: string, destination: "products" | "calculator" | "floating") => {
     const cleanCode = code.trim();
     if (!cleanCode) return;
     setScannerIntent(null);
@@ -1266,18 +1323,18 @@ export function NutriPlusApp() {
         if (product) setProducts((current) => current.some((candidate) => candidate.id === product!.id) ? current : [product!, ...current]);
       }
       if (product) {
-        if (destination === "products") {
+        if (destination === "products" || destination === "floating") {
           editInProducts(product);
         } else {
           fillCalculator(product);
         }
         notify({ type: "success", text: `Encontramos ${product.name}.` });
-      } else if (destination === "products") {
+      } else if (destination === "products" || destination === "floating") {
         setForm((current) => ({ ...current, id: null, source: null, code: cleanCode, addToInventory: true }));
         setProductEditorOpen(true);
         setActiveNumeric(null);
         setTab("products");
-        notify({ type: "success", text: "Código nuevo agregado al formulario de Productos." });
+        notify({ type: "success", text: "Código nuevo agregado. Quedará disponible tanto en Productos como en Calcular." });
       } else {
         setForm((current) => ({ ...current, code: cleanCode }));
         setProductEditorOpen(false);
@@ -1298,24 +1355,25 @@ export function NutriPlusApp() {
     if (scannerIntent === "assign") assignCode(code);
     else if (scannerIntent === "lookup-products") void lookupCode(code, "products");
     else if (scannerIntent === "lookup-calculator") void lookupCode(code, "calculator");
+    else if (scannerIntent === "floating") void lookupCode(code, "floating");
   }, [assignCode, lookupCode, scannerIntent]);
 
-  const readCodeFromImage = useCallback(async (file: File, intent: "assign" | "calculator") => {
+  const readCodeFromImage = useCallback(async (file: File, intent: "assign" | "calculator" | "products") => {
     try {
       const code = await decodeBarcodeImage(file);
       if (intent === "assign") assignCode(code);
-      else await lookupCode(code, "calculator");
+      else await lookupCode(code, intent);
     } catch (error) {
       notify({ type: "error", text: error instanceof Error ? error.message : "No se encontró un código de barras en la imagen." });
     }
   }, [assignCode, lookupCode, notify]);
 
-  const pasteCode = useCallback(async (intent: "assign" | "calculator") => {
+  const pasteCode = useCallback(async (intent: "assign" | "calculator" | "products") => {
     try {
       const code = (await navigator.clipboard.readText()).trim();
       if (!validDecodedCode(code)) throw new Error("El portapapeles no contiene un código válido.");
       if (intent === "assign") assignCode(code);
-      else await lookupCode(code, "calculator");
+      else await lookupCode(code, intent);
     } catch (error) {
       notify({ type: "warning", text: error instanceof Error ? error.message : "No se pudo leer el portapapeles. Podés mantener presionada la casilla y pegar manualmente." });
     }
@@ -1417,14 +1475,16 @@ export function NutriPlusApp() {
       void (async () => {
         if (!navigator.onLine) return queueOfflineMutation(mutation);
         try {
-          const data = await json<{ product: ProductRecord; removedQuoteId: number }>(await fetch(mutation.url, {
+          const data = await json<{ product: ProductRecord | null; removedQuoteId: number; deleted?: boolean }>(await fetch(mutation.url, {
             method: "POST",
             headers: { "Content-Type": "application/json", "X-Mutation-Id": id },
             body: JSON.stringify({ ...mutation.body, mutationId: id }),
             keepalive: true,
           }));
-          setProducts((current) => [data.product, ...current.filter((item) => item.id !== optimisticId && item.id !== data.product.id)]);
+          if (data.product) setProducts((current) => [data.product!, ...current.filter((item) => item.id !== optimisticId && item.id !== data.product!.id)]);
+          else setProducts((current) => current.filter((item) => item.id !== optimisticId));
           setQuotes((current) => current.filter((item) => item.id !== data.removedQuoteId));
+          if (!data.product) notify({ type: "warning", text: "El producto ya había sido procesado o eliminado por otra persona." });
         } catch (error) {
           if (!navigator.onLine || error instanceof TypeError) {
             await queueOfflineMutation(mutation);
@@ -1473,8 +1533,12 @@ export function NutriPlusApp() {
       void (async () => {
         if (!navigator.onLine) return queueOfflineMutation(mutation);
         try {
-          const data = await json<{ quote: NonInventoryRecord }>(await fetch(mutation.url, { method: mutation.method, headers: { "Content-Type": "application/json", "X-Mutation-Id": id }, body: JSON.stringify({ ...mutation.body, mutationId: id }), keepalive: true }));
-          setQuotes((current) => [data.quote, ...current.filter((item) => item.id !== optimisticId && item.id !== data.quote.id)]);
+          const data = await json<{ quote: NonInventoryRecord | null; deleted?: boolean }>(await fetch(mutation.url, { method: mutation.method, headers: { "Content-Type": "application/json", "X-Mutation-Id": id }, body: JSON.stringify({ ...mutation.body, mutationId: id }), keepalive: true }));
+          if (data.quote) setQuotes((current) => [data.quote!, ...current.filter((item) => item.id !== optimisticId && item.id !== data.quote!.id)]);
+          else {
+            setQuotes((current) => current.filter((item) => item.id !== optimisticId));
+            notify({ type: "warning", text: "Ese producto de No inventario ya había sido eliminado o trasladado por otra persona." });
+          }
         } catch (error) {
           if (!navigator.onLine || error instanceof TypeError) await queueOfflineMutation(mutation);
           else if (error instanceof ApiError && error.status === 409 && error.payload.current) {
@@ -1539,13 +1603,18 @@ export function NutriPlusApp() {
     void (async () => {
       if (!navigator.onLine) return queueOfflineMutation(mutation);
       try {
-        const data = await json<{ product: ProductRecord; skippedFields?: string[] }>(await fetch(mutation.url, {
+        const data = await json<{ product: ProductRecord | null; deleted?: boolean; skippedFields?: string[] }>(await fetch(mutation.url, {
         method: mutation.method,
         headers: { "Content-Type": "application/json", "X-Mutation-Id": id },
         body: JSON.stringify({ ...mutation.body, mutationId: id }),
         keepalive: true,
       }));
-        setProducts((current) => [data.product, ...current.filter((product) => product.id !== optimisticId && product.id !== data.product.id)]);
+        if (!data.product) {
+          setProducts((current) => current.filter((product) => product.id !== optimisticId));
+          notify({ type: "warning", text: "El producto fue eliminado por otra persona mientras lo editabas; no se volvió a crear." });
+          return;
+        }
+        setProducts((current) => [data.product!, ...current.filter((product) => product.id !== optimisticId && product.id !== data.product!.id)]);
         if (data.skippedFields?.length) notify({ type: "warning", text: "Otra persona cambió algunos datos al mismo tiempo. Se conservaron esos valores más recientes; revisá el producto.", dismissOnPageTouch: false, durationMs: 5000 });
       } catch (error) {
         if (!navigator.onLine || error instanceof TypeError) {
@@ -1566,6 +1635,131 @@ export function NutriPlusApp() {
           : current.filter((product) => product.id !== optimisticId));
         notify({ type: "error", text: error instanceof Error ? `${submittedForm.name}: ${error.message}` : `No se pudo guardar ${submittedForm.name}.`, sticky: true });
       }
+    })();
+  }
+
+  function saveQuantities() {
+    const parsed = parseQuantityText(quantityText);
+    if (!parsed.entries.length) {
+      notify({ type: "error", text: parsed.invalidLines.length ? `Revisá la${parsed.invalidLines.length === 1 ? " línea" : "s líneas"} ${parsed.invalidLines.join(", ")}. Usá el formato CÓDIGO: CANTIDAD.` : "Agregá al menos un código y su cantidad." });
+      return;
+    }
+    const values = new Map(parsed.entries.map((entry) => [normalizeCode(entry.code), entry.quantityAvailable]));
+    const now = new Date().toISOString();
+    setProducts((items) => items.map((product) => {
+      const nextQuantity = values.get(normalizeCode(product.code));
+      if (nextQuantity === undefined) return product;
+      const aboveMinimum = nextQuantity > 0 && (!product.minimumStockEnabled || nextQuantity > product.minimumStock);
+      return {
+        ...product,
+        quantityAvailable: nextQuantity,
+        zeroStockSince: nextQuantity === 0 ? product.zeroStockSince || now : null,
+        restockPurchasedAt: aboveMinimum ? null : product.restockPurchasedAt,
+        version: product.version + 1,
+        updatedAt: now,
+      };
+    }));
+    setQuantitiesOpen(false);
+    setQuantityText("");
+    const id = mutationId();
+    const mutation: QueuedMutation = {
+      id,
+      method: "POST",
+      url: "/api/products/quantities",
+      body: { entries: parsed.entries },
+      createdAt: now,
+    };
+    if (!navigator.onLine) {
+      void queueOfflineMutation(mutation);
+      notify({ type: "warning", text: `${parsed.entries.length} cantidad${parsed.entries.length === 1 ? " quedó guardada" : "es quedaron guardadas"} sin conexión y se sincronizarán al volver Internet.` });
+      return;
+    }
+    notify({ type: "success", text: `Actualizando ${parsed.entries.length} cantidad${parsed.entries.length === 1 ? "" : "es"} en segundo plano.` });
+    void (async () => {
+      try {
+        const data = await json<{ products: ProductRecord[]; updated: number; notFound: string[]; invalid: number[] }>(await fetch(mutation.url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Mutation-Id": id },
+          body: JSON.stringify({ ...mutation.body, mutationId: id }),
+          keepalive: true,
+        }));
+        const updatedIds = new Set(data.products.map((product) => product.id));
+        setProducts((items) => [...data.products, ...items.filter((item) => !updatedIds.has(item.id))]);
+        if (data.notFound.length || parsed.invalidLines.length) {
+          const parts = [];
+          if (data.notFound.length) parts.push(`${data.notFound.length} código${data.notFound.length === 1 ? " no existe" : "s no existen"}: ${data.notFound.slice(0, 5).join(", ")}`);
+          if (parsed.invalidLines.length) parts.push(`líneas inválidas: ${parsed.invalidLines.join(", ")}`);
+          notify({ type: "warning", text: `${data.updated} cantidades actualizadas. ${parts.join(" · ")}.` });
+        } else {
+          notify({ type: "success", text: `${data.updated} cantidad${data.updated === 1 ? " actualizada" : "es actualizadas"}.` });
+        }
+      } catch (error) {
+        if (!navigator.onLine || error instanceof TypeError) {
+          await queueOfflineMutation(mutation);
+          notify({ type: "warning", text: "Las cantidades quedaron guardadas sin conexión y se sincronizarán al volver Internet." });
+        } else {
+          await refreshProducts().catch(() => undefined);
+          notify({ type: "error", text: error instanceof Error ? error.message : "No se pudieron actualizar las cantidades." });
+        }
+      }
+    })();
+  }
+
+  async function removeSelectedProducts() {
+    const allIds = [...selectedProductIds];
+    const ids = allIds.filter((id) => id > 0);
+    const temporaryIds = allIds.filter((id) => id < 0);
+    if (!allIds.length) {
+      setBulkDeleteConfirm(false);
+      notify({ type: "error", text: "Seleccioná al menos un producto." });
+      return;
+    }
+    if (isOnline && temporaryIds.length) {
+      setBulkDeleteConfirm(false);
+      notify({ type: "warning", text: "Esperá un momento a que terminen de guardarse los productos nuevos antes de eliminarlos en grupo." });
+      return;
+    }
+    const names = products.filter((product) => allIds.includes(product.id)).map((product) => product.name);
+    setBulkDeleting(true);
+    setBulkDeleteConfirm(false);
+    setProducts((items) => items.filter((product) => !allIds.includes(product.id)));
+    setSelectedProductIds(new Set());
+    setSelectionMode(false);
+    const id = mutationId();
+    const mutation: QueuedMutation = { id, method: "POST", url: "/api/products/bulk-delete", body: { ids }, createdAt: new Date().toISOString() };
+    if (!navigator.onLine) {
+      if (ids.length) await queueOfflineMutation(mutation);
+      for (const temporaryId of temporaryIds) {
+        await queueOfflineMutation({
+          id: mutationId(),
+          method: "DELETE",
+          url: `/api/products/${temporaryId}`,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      setBulkDeleting(false);
+      notify({ type: "success", text: `${allIds.length} producto${allIds.length === 1 ? " fue eliminado" : "s fueron eliminados"}. El cambio se sincronizará al volver Internet.` });
+      return;
+    }
+    notify({ type: "success", text: `Eliminando ${ids.length} producto${ids.length === 1 ? "" : "s"} en segundo plano.` });
+    void (async () => {
+      try {
+        const data = await json<{ deleted: number; deletedIds: number[]; alreadyDeleted: number[] }>(await fetch(mutation.url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Mutation-Id": id },
+          body: JSON.stringify({ ids, mutationId: id }),
+          keepalive: true,
+        }));
+        notify({ type: "success", text: `${ids.length} producto${ids.length === 1 ? " fue eliminado" : "s fueron eliminados"}${data.alreadyDeleted.length ? "; algunos ya habían sido eliminados por otra persona" : ""}.` });
+      } catch (error) {
+        if (!navigator.onLine || error instanceof TypeError) {
+          await queueOfflineMutation(mutation);
+          notify({ type: "success", text: `${ids.length} producto${ids.length === 1 ? " fue eliminado" : "s fueron eliminados"}. El cambio se sincronizará al volver Internet.` });
+        } else {
+          await refreshProducts().catch(() => undefined);
+          notify({ type: "error", text: error instanceof Error ? error.message : `No se pudieron eliminar ${names.length} productos.` });
+        }
+      } finally { setBulkDeleting(false); }
     })();
   }
 
@@ -1660,25 +1854,27 @@ export function NutriPlusApp() {
       {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{form.source === "no_inventory" ? "Actualizar cotización" : form.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearForm}><RotateCcw />Limpiar</button></header><ProductForm form={form} setForm={setForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onExternalCode={(code) => void lookupCode(code, "calculator")} onOpenScanner={() => openScanner("lookup-calculator")} onImageCode={(file) => void readCodeFromImage(file, "calculator")} onPasteCode={() => void pasteCode("calculator")} onSubmit={save} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
 
       {tab === "products" && <div className="view"><header className="view-head products-head"><div><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá, agregá o editá cualquier producto guardado.</p></div><button className={`restock-head-btn ${lowStockProducts.length ? "has-items" : ""}`} onClick={() => setRestockOpen(true)} aria-label={`Ver productos por abastecer: ${lowStockProducts.length}`}><BellRing /><span>Por abastecer</span><b>{lowStockProducts.length}</b></button></header>
-        <div className="products-toolbar"><button className="btn primary" onClick={addInProducts}><Plus />Agregar producto</button><button className="btn secondary" onClick={() => setNoInventoryOpen(true)}><Package />No inventario ({quotes.length})</button><button className="btn secondary" onClick={() => void openRecent()}><Clock3 />Guardados recientemente</button><button className="btn secondary" onClick={() => setExportConfirm(true)} disabled={!products.length && !quotes.length}><Download />Descargar inventario</button></div>
+        <div className="products-toolbar"><button className="btn primary" onClick={addInProducts}><Plus />Agregar producto</button><button className="btn secondary" onClick={() => setNoInventoryOpen(true)}><Package />No inventario ({quotes.length})</button><button className="btn secondary" onClick={() => void openRecent()}><Clock3 />Guardados recientemente</button><button className="btn secondary" onClick={() => setQuantitiesOpen(true)} disabled={!products.length}><Upload />Cargar cantidades</button><button className={`btn ${selectionMode ? "ghost" : "secondary"}`} onClick={() => { setSelectionMode((current) => !current); setSelectedProductIds(new Set()); }} disabled={!products.length}><Check />{selectionMode ? "Cancelar selección" : "Seleccionar varios"}</button>{selectionMode && selectedProductIds.size > 0 && <button className="btn danger-solid" onClick={() => setBulkDeleteConfirm(true)} disabled={bulkDeleting}><Trash2 />Eliminar ({selectedProductIds.size})</button>}<button className="btn secondary" onClick={() => setExportConfirm(true)} disabled={!products.length && !quotes.length}><Download />Descargar inventario</button></div>
         <section className={`surface stock-notification-strip ${lowStockProducts.length ? "has-alerts" : ""}`}><div className="stock-alert-heading"><span className="stock-alert-icon">{lowStockProducts.length ? <BellRing /> : <Bell />}</span><div><h2>{lowStockProducts.length ? `${pendingRestockProducts.length} pendiente${pendingRestockProducts.length === 1 ? "" : "s"} de compra · ${lowStockProducts.length - pendingRestockProducts.length} comprado${lowStockProducts.length - pendingRestockProducts.length === 1 ? "" : "s"}` : "Stock mínimo al día"}</h2><p>También se avisa cuando un producto llega a stock 0. Al reponerlo sale de la lista.</p></div></div><button className="btn secondary small" onClick={() => void enableStockNotifications()} disabled={phoneNotificationsEnabled}>{phoneNotificationsEnabled ? <Check /> : <Bell />}{phoneNotificationsEnabled ? "Notificaciones activadas" : notificationPermission === "denied" ? "Permiso bloqueado" : "Activar en el celular"}</button></section>
-        {productEditorOpen && <section className="editor-wrap"><div className="editor-heading"><div><span className="eyebrow">{form.id ? "Edición en Productos" : "Nuevo producto"}</span><h2>{form.id ? form.name : "Agregar producto al catálogo"}</h2></div><button className="icon-btn" onClick={clearForm} aria-label="Cerrar editor"><X /></button></div><ProductForm form={form} setForm={setForm} settings={settings} suggestions={[]} suggestionsOpen={false} setSuggestionsOpen={() => undefined} onPick={() => undefined} onExternalCode={assignCode} onOpenScanner={() => openScanner("assign")} onImageCode={(file) => void readCodeFromImage(file, "assign")} onPasteCode={() => void pasteCode("assign")} onSubmit={save} onCancel={clearForm} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} showSuggestions={false} /></section>}
+        {productEditorOpen && <section className="editor-wrap"><div className="editor-heading"><div><span className="eyebrow">{form.id ? "Edición en Productos" : "Nuevo producto"}</span><h2>{form.id ? form.name : "Agregar producto al catálogo"}</h2></div><button className="icon-btn" onClick={clearForm} aria-label="Cerrar editor"><X /></button></div><ProductForm form={form} setForm={setForm} settings={settings} suggestions={[]} suggestionsOpen={false} setSuggestionsOpen={() => undefined} onPick={() => undefined} onExternalCode={form.id ? assignCode : (code) => void lookupCode(code, "products")} onOpenScanner={() => openScanner(form.id ? "assign" : "lookup-products")} onImageCode={(file) => void readCodeFromImage(file, form.id ? "assign" : "products")} onPasteCode={() => void pasteCode(form.id ? "assign" : "products")} onSubmit={save} onCancel={clearForm} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} showSuggestions={false} /></section>}
         <section className="surface search-card"><div className="input-icon grow"><Search /><input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(36); }} onKeyDown={(event) => detectScannerBurst(event, searchBurst, (code, before) => { setQuery(before); setVisibleCount(36); void lookupCode(code, "products"); })} placeholder="Ej. omega encargo o omega nordic" /></div><button className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={() => openScanner("lookup-products")}><Camera /><span>Escanear</span></button></section>
-        {!filteredProducts.length ? <Empty icon={<PackageSearch />} title={query ? "No hay coincidencias" : "Todavía no hay productos"} text={query ? "Probá con otras palabras o escaneá el código." : "Agregá el primer producto desde el botón superior."} /> : <><div className="results-count">{query ? `${filteredProducts.length} coincidencias` : `${products.length} productos guardados`}</div><div className="product-grid">{filteredProducts.slice(0, visibleCount).map((product) => { const complete = hasCompletePricing(product); const prices = complete ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; const lowStock = product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock; return <article className={`product-card ${complete ? "" : "pending-product"} ${lowStock ? "low-stock" : ""}`} key={product.id}><div className="product-title"><span className="avatar">{product.name[0].toUpperCase()}</span><div><h2>{product.name}</h2>{product.code && <small><ScanLine />{product.code}</small>}{!complete && <small className="pending-label"><AlertCircle />Incompleto</small>}{lowStock && <small className="stock-label"><AlertCircle />Stock bajo</small>}</div><div className="card-actions"><button className="icon-btn" onClick={() => editInProducts(product)} aria-label={`Editar ${product.name}`}><Pencil /></button><button className="icon-btn danger" onClick={() => setDeleteTarget(product)} aria-label={`Eliminar ${product.name}`}><Trash2 /></button></div></div><div className="facts"><div><span>Compra</span><b>{product.purchasePriceUsd === null ? "—" : usd(product.purchasePriceUsd)}</b></div><div><span>Peso</span><b>{product.weightLb === null ? "—" : `${product.weightLb.toFixed(2)} lb`}</b></div><div className="green"><span>Venta GAM</span><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></div><div className="brown"><span>Venta Puerto</span><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></div><div className="stock"><span>Cantidad disponible</span><b>{product.quantityAvailable}</b></div><div className="stock"><span>Stock mínimo</span><b>{product.minimumStockEnabled ? product.minimumStock : "No configurado"}</b></div></div></article>; })}</div>{visibleCount < filteredProducts.length && <button className="btn secondary load-more" onClick={() => setVisibleCount((current) => current + 36)}>Mostrar más productos</button>}</>}
+        {!filteredProducts.length ? <Empty icon={<PackageSearch />} title={query ? "No hay coincidencias" : "Todavía no hay productos"} text={query ? "Probá con otras palabras o escaneá el código." : "Agregá el primer producto desde el botón superior."} /> : <><div className="results-count">{selectionMode ? `${selectedProductIds.size} seleccionado${selectedProductIds.size === 1 ? "" : "s"} · tocá las casillas de los productos` : query ? `${filteredProducts.length} coincidencias` : `${products.length} productos guardados`}</div><div className="product-grid">{filteredProducts.slice(0, visibleCount).map((product) => { const complete = hasCompletePricing(product); const prices = complete ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; const lowStock = (product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock) || product.quantityAvailable === 0; const selected = selectedProductIds.has(product.id); const pendingOnlineSave = product.id < 0 && isOnline; return <article className={`product-card ${complete ? "" : "pending-product"} ${lowStock ? "low-stock" : ""} ${selected ? "selected-product" : ""}`} key={product.id}><div className="product-title">{selectionMode && <label className="product-selector"><input type="checkbox" checked={selected} disabled={pendingOnlineSave} onChange={() => setSelectedProductIds((current) => { const next = new Set(current); if (next.has(product.id)) next.delete(product.id); else next.add(product.id); return next; })} aria-label={`Seleccionar ${product.name}`} /><span><Check /></span></label>}<span className="avatar">{product.name[0].toUpperCase()}</span><div><h2>{product.name}</h2>{product.code && <small><ScanLine />{product.code}</small>}{!complete && <small className="pending-label"><AlertCircle />Incompleto</small>}{lowStock && <small className="stock-label"><AlertCircle />{product.quantityAvailable === 0 ? "Stock 0" : "Stock bajo"}</small>}</div><div className="card-actions"><button className="icon-btn" onClick={() => editInProducts(product)} aria-label={`Editar ${product.name}`} disabled={pendingOnlineSave}><Pencil /></button><button className="icon-btn danger" onClick={() => setDeleteTarget(product)} aria-label={`Eliminar ${product.name}`} disabled={pendingOnlineSave}><Trash2 /></button></div></div><div className="facts"><div><span>Compra</span><b>{product.purchasePriceUsd === null ? "—" : usd(product.purchasePriceUsd)}</b></div><div><span>Peso</span><b>{product.weightLb === null ? "—" : `${product.weightLb.toFixed(2)} lb`}</b></div><div className="green"><span>Venta GAM</span><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></div><div className="brown"><span>Venta Puerto</span><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></div><div className="stock"><span>Cantidad disponible</span><b>{product.quantityAvailable}</b></div><div className="stock"><span>Stock mínimo</span><b>{product.minimumStockEnabled ? product.minimumStock : "No configurado"}</b></div></div></article>; })}</div>{visibleCount < filteredProducts.length && <button className="btn secondary load-more" onClick={() => setVisibleCount((current) => current + 36)}>Mostrar más productos</button>}</>}
       </div>}
 
       {tab === "import" && <ImportView key={importJob?.id ?? "sin-importacion"} settings={settings} job={importJob} deletionJob={deletionJob} productCount={products.filter((product) => product.id > 0).length} history={importHistory} summary={importSummary} restoringId={restoringImportId} onStart={startImport} onRestore={restoreImport} onDeleteAll={startDeletion} />}
       {tab === "settings" && <SettingsView key={JSON.stringify(settings)} current={settings} onSave={saveSettings} />}
     </div></div>
-    <nav className="bottom">{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}</nav><button className="float-scan" onPointerDown={() => void preloadScanner()} onClick={() => openScanner(tab === "products" ? "lookup-products" : "lookup-calculator")} aria-label="Escanear"><ScanLine /></button>
+    <nav className="bottom">{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}</nav><button className="float-scan" onPointerDown={() => void preloadScanner()} onClick={() => openScanner("floating")} aria-label="Escanear"><ScanLine /></button>
     {scannerIntent && <Scanner onClose={() => setScannerIntent(null)} onCode={handleScannerCode} />}
     {openingStockOpen && pendingRestockProducts.length > 0 && <div className="modal" role="dialog" aria-modal="true" aria-label="Aviso de productos por abastecer"><div className="restock-card opening-stock-card"><div className="modal-head"><div><span className="eyebrow">Aviso de inventario</span><h2>Productos pendientes de compra</h2><p>{pendingRestockProducts.length} producto{pendingRestockProducts.length === 1 ? " necesita" : "s necesitan"} abastecimiento. Marcá Comprado para no repetir el aviso mientras llega el pedido.</p></div><button className="icon-btn" onClick={() => setOpeningStockOpen(false)} aria-label="Cerrar aviso"><X /></button></div><div className="restock-list">{pendingRestockProducts.map((product) => <article className={product.quantityAvailable === 0 ? "zero-stock" : ""} key={product.id}><div><b>{product.name}</b><small>{product.quantityAvailable === 0 ? "Stock 0" : `Llegó o bajó del mínimo (${product.minimumStock})`}</small></div><span><small>Disponible</small><b>{product.quantityAvailable}</b></span><button className="btn primary small purchased-btn" onClick={() => void markRestock(product, true)}><Check />Comprado</button></article>)}</div></div></div>}
     {restockOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos por abastecer" onPointerDown={() => setRestockOpen(false)}><div className="restock-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Lista de compra</span><h2>Productos por abastecer</h2><p>Incluye los productos en el mínimo y cualquiera que haya llegado a stock 0.</p></div><button className="icon-btn" onClick={() => setRestockOpen(false)} aria-label="Cerrar lista"><X /></button></div>{lowStockProducts.length ? <div className="restock-list">{lowStockProducts.map((product) => <article className={`${product.restockPurchasedAt ? "purchased" : "pending-purchase"} ${product.quantityAvailable === 0 ? "zero-stock" : ""}`} key={product.id}><div><b>{product.name}</b>{product.code && <small>{product.code}</small>}<small className="purchase-status">{product.restockPurchasedAt ? "Comprado" : "Pendiente de compra"}{product.quantityAvailable === 0 ? " · Stock 0" : ""}</small></div><span><small>Disponible</small><b>{product.quantityAvailable}</b></span><span><small>Mínimo</small><b>{product.minimumStockEnabled ? product.minimumStock : "-"}</b></span><div className="restock-actions"><button className={`btn small ${product.restockPurchasedAt ? "secondary" : "primary"}`} onClick={() => void markRestock(product, !product.restockPurchasedAt)}>{product.restockPurchasedAt ? <RotateCcw /> : <Check />}{product.restockPurchasedAt ? "Marcar pendiente" : "Comprado"}</button><button className="btn ghost small" onClick={() => editInProducts(product)}><Pencil />Actualizar</button></div></article>)}</div> : <div className="restock-empty"><Check /><h3>Todo abastecido</h3><p>No hay productos por debajo del mínimo ni con stock 0.</p></div>}</div></div>}
     {noInventoryOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos de No inventario" onPointerDown={() => setNoInventoryOpen(false)}><div className="restock-card recent-card no-inventory-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Cotizaciones separadas</span><h2>No inventario</h2><p>{quotes.length} producto{quotes.length === 1 ? "" : "s"} que no {quotes.length === 1 ? "aparece" : "aparecen"} en el catálogo principal.</p></div><button className="icon-btn" onClick={() => setNoInventoryOpen(false)} aria-label="Cerrar No inventario"><X /></button></div><div className="surface search-card no-inventory-search"><div className="input-icon grow"><Search /><input value={noInventoryQuery} onChange={(event) => setNoInventoryQuery(event.target.value)} placeholder="Buscar por nombre o código" /></div></div>{filteredNoInventory.length ? <div className="recent-list no-inventory-list">{filteredNoInventory.map((item) => { const prices = hasCompletePricing(item) ? calculatePrices(item.purchasePriceUsd, item.weightLb, settings) : null; return <article key={item.id}><div><b>{item.name}</b><small>{item.code || "Sin código"} · {importDate(item.updatedAt)}</small></div><span className="source-pill no_inventory">No inventario</span><span><small>GAM</small><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></span><button className="btn ghost small" onClick={() => editNoInventory(item)}><Pencil />Editar</button></article>; })}</div> : <p className="empty-summary">{noInventoryQuery ? "No hay coincidencias." : "Todavía no hay productos en No inventario."}</p>}</div></div>}
     {recentOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos guardados recientemente" onPointerDown={() => setRecentOpen(false)}><div className="restock-card recent-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Actividad reciente</span><h2>Guardados recientemente</h2><p>Se identifica si cada registro pertenece al Inventario o a No inventario.</p></div><button className="icon-btn" onClick={() => setRecentOpen(false)} aria-label="Cerrar recientes"><X /></button></div>{recentLoading ? <div className="recent-loading"><Loader2 className="spin" />Cargando…</div> : <div className="recent-list">{recentItems.map(({ source, item }) => { const prices = hasCompletePricing(item) ? calculatePrices(item.purchasePriceUsd, item.weightLb, settings) : null; return <article key={`${source}-${item.id}`}><div><b>{item.name}</b><small>{item.code || "Sin código"} · {importDate(item.updatedAt)}</small></div><span className={`source-pill ${source}`}>{source === "inventory" ? "Inventario" : "No inventario"}</span><span><small>GAM</small><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></span><button className="btn ghost small" onClick={() => source === "inventory" ? editInProducts(item as ProductRecord) : editNoInventory(item as NonInventoryRecord)}><Pencil />Editar</button></article>; })}</div>}</div></div>}
+    {quantitiesOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Cargar cantidades por código"><div className="confirm-card quantity-card"><div className="download-symbol"><Upload /></div><h2>Cargar cantidades</h2><p>Escribí un producto por línea en el formato <b>NP-001: 2</b>. Se acepta cualquier código de barras con letras o números.</p><textarea className="quantity-input" value={quantityText} onChange={(event) => setQuantityText(event.target.value)} placeholder={"NP-001: 2\n7501234567890: 5\nABC9: 0"} autoFocus />{parseQuantityText(quantityText).invalidLines.length > 0 && <p className="alert error"><AlertCircle />Revisá las líneas {parseQuantityText(quantityText).invalidLines.join(", ")}.</p>}<div className="confirm-actions"><button className="btn secondary" onClick={() => { setQuantitiesOpen(false); setQuantityText(""); }}>Cancelar</button><button className="btn primary" onClick={saveQuantities} disabled={!parseQuantityText(quantityText).entries.length}><Save />Guardar en segundo plano</button></div></div></div>}
     {installHelpOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Activar notificaciones en iPhone"><div className="confirm-card install-help"><Image src="/nutriplus-logo.jpg" alt="NutriPlus" width={78} height={78} /><h2>Activar en iPhone</h2><p>En Chrome tocá <b>Compartir</b> y luego <b>Agregar a pantalla de inicio</b>. Abrí NutriPlus desde el nuevo ícono y tocá nuevamente “Activar en el celular”.</p><button className="btn primary full" onClick={() => setInstallHelpOpen(false)}>Entendido</button></div></div>}
     {exportConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Elegir descarga del inventario"><div className="confirm-card export-card"><div className="download-symbol"><Download /></div><h2>Descargar inventario</h2><p>Incluye {products.length} productos del inventario y {quotes.length} de No inventario. El PDF también tendrá la sección No inventario.</p><div className="export-options"><button className={exportFormat === "pdf" ? "chosen" : ""} onClick={() => setExportFormat("pdf")}><b>PDF</b><small>Documento minimalista</small></button><button className={exportFormat === "excel" ? "chosen" : ""} onClick={() => setExportFormat("excel")}><b>Excel</b><small>Hojas editables</small></button><button className={exportFormat === "both" ? "chosen" : ""} onClick={() => setExportFormat("both")}><b>Ambos</b><small>Dos archivos separados</small></button></div><div className="confirm-actions"><button className="btn secondary" onClick={() => setExportConfirm(false)} disabled={exporting}>Cancelar</button><button className="btn primary" onClick={() => void downloadInventory(exportFormat)} disabled={exporting}>{exporting ? <Loader2 className="spin" /> : <Download />}Descargar</button></div></div></div>}
     {deleteTarget && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar producto?</h2><p>Vas a eliminar <b>{deleteTarget.name}</b>. Esta acción no se puede deshacer.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setDeleteTarget(null)} disabled={deleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeProduct()} disabled={deleting}>{deleting ? <Loader2 className="spin" /> : <Trash2 />}Sí, eliminar</button></div></div></div>}
+    {bulkDeleteConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación de productos seleccionados"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar {selectedProductIds.size} productos?</h2><p>Se eliminarán únicamente los productos seleccionados. Esta acción también puede completarse en segundo plano o sincronizarse al volver Internet.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setBulkDeleteConfirm(false)} disabled={bulkDeleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeSelectedProducts()} disabled={bulkDeleting}><Trash2 />Sí, eliminar seleccionados</button></div></div></div>}
     {toast && <div className={`toast ${toast.type} ${toast.sticky ? "sticky" : ""}`} role="status" aria-live="polite">{toast.type === "success" ? <Check /> : <AlertCircle />}<span>{toast.text}</span><button onClick={() => setToast(null)} aria-label="Cerrar notificación"><X /></button></div>}
   </main>;
 }

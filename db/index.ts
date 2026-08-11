@@ -101,6 +101,8 @@ export async function ensureDatabase() {
           has_quantity INTEGER NOT NULL DEFAULT 0,
           has_minimum_stock INTEGER NOT NULL DEFAULT 0,
           processed INTEGER NOT NULL DEFAULT 0,
+          claim_token TEXT,
+          claimed_at TEXT,
           outcome TEXT,
           message TEXT
         )`),
@@ -146,6 +148,8 @@ export async function ensureDatabase() {
           deletion_id INTEGER NOT NULL,
           product_id INTEGER NOT NULL,
           processed INTEGER NOT NULL DEFAULT 0,
+          claim_token TEXT,
+          claimed_at TEXT,
           outcome TEXT
         )`),
         db.prepare("CREATE INDEX IF NOT EXISTS product_deletion_rows_pending_idx ON product_deletion_rows (deletion_id, processed, id)"),
@@ -176,6 +180,25 @@ export async function ensureDatabase() {
       if (!backupColumnNames.has("zero_stock_since")) backupAdditions.push(db.prepare("ALTER TABLE import_backup_products ADD COLUMN zero_stock_since TEXT"));
       if (!backupColumnNames.has("version")) backupAdditions.push(db.prepare("ALTER TABLE import_backup_products ADD COLUMN version INTEGER NOT NULL DEFAULT 1"));
       if (backupAdditions.length) await db.batch(backupAdditions);
+
+      const importRowColumns = await db.prepare("PRAGMA table_info(import_job_rows)").all<{ name: string }>();
+      const importRowColumnNames = new Set(importRowColumns.results.map((column) => column.name));
+      const importRowAdditions = [];
+      if (!importRowColumnNames.has("claim_token")) importRowAdditions.push(db.prepare("ALTER TABLE import_job_rows ADD COLUMN claim_token TEXT"));
+      if (!importRowColumnNames.has("claimed_at")) importRowAdditions.push(db.prepare("ALTER TABLE import_job_rows ADD COLUMN claimed_at TEXT"));
+      if (importRowAdditions.length) await db.batch(importRowAdditions);
+
+      const deletionRowColumns = await db.prepare("PRAGMA table_info(product_deletion_rows)").all<{ name: string }>();
+      const deletionRowColumnNames = new Set(deletionRowColumns.results.map((column) => column.name));
+      const deletionRowAdditions = [];
+      if (!deletionRowColumnNames.has("claim_token")) deletionRowAdditions.push(db.prepare("ALTER TABLE product_deletion_rows ADD COLUMN claim_token TEXT"));
+      if (!deletionRowColumnNames.has("claimed_at")) deletionRowAdditions.push(db.prepare("ALTER TABLE product_deletion_rows ADD COLUMN claimed_at TEXT"));
+      if (deletionRowAdditions.length) await db.batch(deletionRowAdditions);
+
+      await db.batch([
+        db.prepare("CREATE INDEX IF NOT EXISTS import_job_rows_claim_idx ON import_job_rows (import_id, processed, claimed_at, id)"),
+        db.prepare("CREATE INDEX IF NOT EXISTS product_deletion_rows_claim_idx ON product_deletion_rows (deletion_id, processed, claimed_at, id)"),
+      ]);
     })().catch((error) => { initialization = null; throw error; });
   }
   await initialization;

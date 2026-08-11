@@ -12,36 +12,13 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
     await ensureDatabase();
     const db = getD1();
     const mutation = await runIdempotentMutation(db, request, payload, async () => {
-      const currentRow = await db.prepare("SELECT * FROM non_inventory_quotes WHERE id=? LIMIT 1")
-        .bind(id).first<Record<string, unknown>>();
-      if (!currentRow) return { body: { error: "No se encontró el producto de No inventario." }, status: 404 };
-
-      const current = nonInventoryFromRow(currentRow);
-      const requestedVersion = Number(payload.version ?? 0);
-      if (requestedVersion !== current.version) {
-        return {
-          body: { error: "Este producto cambió en otro dispositivo. Se conservó la versión más reciente.", current },
-          status: 409,
-        };
-      }
-
       const updated = await db.prepare(`UPDATE non_inventory_quotes SET
         name=?,code=?,purchase_price_usd_cents=?,weight_milli_lb=?,version=version+1,
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE id=? AND version=? RETURNING *`)
-        .bind(quote.name, quote.code, quote.purchasePriceUsdCents, quote.weightMilliLb, id, current.version)
+        WHERE id=? RETURNING *`)
+        .bind(quote.name, quote.code, quote.purchasePriceUsdCents, quote.weightMilliLb, id)
         .first<Record<string, unknown>>();
-      if (!updated) {
-        const latest = await db.prepare("SELECT * FROM non_inventory_quotes WHERE id=? LIMIT 1")
-          .bind(id).first<Record<string, unknown>>();
-        return {
-          body: {
-            error: "Otro cambio llegó al mismo tiempo. Se conservó la información más reciente.",
-            current: latest ? nonInventoryFromRow(latest) : current,
-          },
-          status: 409,
-        };
-      }
+      if (!updated) return { body: { deleted: true, quote: null } };
       return { body: { quote: nonInventoryFromRow(updated) } };
     });
     return Response.json(mutation.body, { status: mutation.status ?? 200 });

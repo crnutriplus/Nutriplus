@@ -55,14 +55,21 @@ export async function POST(request: Request) {
     await ensureDatabase();
     const db = getD1();
     const result = await runIdempotentMutation(db, request, payload, async () => {
-      const row = await db.prepare(`INSERT INTO products (
+      const row = await db.prepare(`INSERT OR IGNORE INTO products (
         name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,quantity_available,
         minimum_stock,minimum_stock_enabled,zero_stock_since,version,created_at,updated_at
       ) VALUES (?,?,?,?,?,?,?,?,CASE WHEN ?=0 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,1,
         strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now')) RETURNING *`)
         .bind(product.name, product.normalizedName, product.code, product.purchasePriceUsdCents, product.weightMilliLb,
           product.quantityAvailable, product.minimumStock, product.minimumStockEnabled ? 1 : 0, product.quantityAvailable).first();
-      if (!row) throw new Error("No se pudo guardar el producto.");
+      if (!row) {
+        const existing = await db.prepare(`SELECT * FROM products
+          WHERE normalized_name=? OR (? IS NOT NULL AND lower(replace(code,' ',''))=lower(replace(?,' ','')))
+          ORDER BY CASE WHEN normalized_name=? THEN 0 ELSE 1 END LIMIT 1`)
+          .bind(product.normalizedName, product.code, product.code, product.normalizedName).first();
+        if (existing) return { body: { product: productFromRow(existing), deduplicated: true } };
+        throw new Error("No se pudo guardar el producto.");
+      }
       return { body: { product: productFromRow(row) }, status: 201 };
     });
     return Response.json(result.body, { status: result.status ?? 200 });

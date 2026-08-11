@@ -1,7 +1,7 @@
 import type { NonInventoryRecord, PricingSettings, ProductRecord } from "./pricing";
 
 const DB_NAME = "nutriplus-offline-v1";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const SNAPSHOT_KEY = "app-snapshot";
 
 export type OfflineSnapshot = {
@@ -79,5 +79,24 @@ export async function removeQueuedMutation(id: string) {
   try {
     const transaction = db.transaction("mutations", "readwrite");
     await requestResult(transaction.objectStore("mutations").delete(id));
+  } finally { db.close(); }
+}
+
+export async function remapQueuedResource(entity: "product" | "quote", temporaryId: number, realId: number) {
+  if (temporaryId >= 0 || realId < 1) return;
+  const db = await openOfflineDb();
+  try {
+    const transaction = db.transaction("mutations", "readwrite");
+    const store = transaction.objectStore("mutations");
+    const items = await requestResult(store.getAll()) as QueuedMutation[];
+    const prefix = entity === "product" ? "/api/products" : "/api/quotes";
+    const temporaryPrefix = `${prefix}/${temporaryId}`;
+    for (const item of items) {
+      if (item.url !== temporaryPrefix && !item.url.startsWith(`${temporaryPrefix}/`)) continue;
+      await requestResult(store.put({
+        ...item,
+        url: `${prefix}/${realId}${item.url.slice(temporaryPrefix.length)}`,
+      }));
+    }
   } finally { db.close(); }
 }

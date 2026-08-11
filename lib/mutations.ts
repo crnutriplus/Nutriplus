@@ -15,17 +15,22 @@ export async function runIdempotentMutation(
   const mutationId = cleanMutationId(request, payload);
   if (!mutationId) return action();
 
-  const existing = await db.prepare("SELECT status,response_json FROM mutation_receipts WHERE id=? LIMIT 1")
-    .bind(mutationId).first<{ status: string; response_json: string | null }>();
-  if (existing?.status === "completed" && existing.response_json) {
-    return { body: JSON.parse(existing.response_json) as Record<string, unknown>, status: 200 };
-  }
-  if (existing?.status === "pending") {
-    throw new Error("La misma operación ya se está procesando. Intentá nuevamente en un momento.");
-  }
-
-  await db.prepare("INSERT INTO mutation_receipts (id,status,created_at) VALUES (?,'pending',strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
+  await db.prepare(`DELETE FROM mutation_receipts WHERE id=? AND status='pending'
+    AND julianday(replace(replace(created_at,'T',' '),'Z',''))<=julianday('now','-5 minutes')`)
     .bind(mutationId).run();
+  const claim = await db.prepare("INSERT OR IGNORE INTO mutation_receipts (id,status,created_at) VALUES (?,'pending',strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
+    .bind(mutationId).run();
+  if (Number(claim.meta?.changes ?? 0) === 0) {
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const existing = await db.prepare("SELECT status,response_json FROM mutation_receipts WHERE id=? LIMIT 1")
+        .bind(mutationId).first<{ status: string; response_json: string | null }>();
+      if (existing?.status === "completed" && existing.response_json) {
+        return { body: JSON.parse(existing.response_json) as Record<string, unknown>, status: 200 };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error("La operación sigue procesándose. Se volverá a intentar automáticamente.");
+  }
   try {
     const result = await action();
     await db.prepare("UPDATE mutation_receipts SET status='completed',response_json=?,completed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")

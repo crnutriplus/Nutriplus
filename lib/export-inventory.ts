@@ -171,7 +171,9 @@ async function createExcel(
         item.inventory && (product as ProductRecord).minimumStockEnabled ? (product as ProductRecord).minimumStock : null,
         parseUpdatedAt(product.updatedAt),
       ];
-      row.height = 27;
+      const nameLines = Math.max(1, Math.ceil(product.name.length / 52));
+      const codeLines = Math.max(1, Math.ceil((product.code || "").length / 25));
+      row.height = Math.max(27, Math.max(nameLines, codeLines) * 13 + 8);
       row.eachCell({ includeEmpty: true }, (cell, columnNumber) => {
         cell.font = { name: "Arial", size: 9.5, color: { argb: INK } };
         cell.alignment = { vertical: "middle", horizontal: columnNumber <= 2 ? "left" : "right", wrapText: columnNumber <= 2 };
@@ -262,21 +264,29 @@ async function createPdf(complete: InventoryRow[], incomplete: InventoryRow[], n
 
   function wrap(value: string, width: number, size: number, maxLines = 2) {
     const text = pdfSafe(value) || "-";
-    const words = text.split(" ");
     const lines: string[] = [];
     let current = "";
-    for (const word of words) {
-      const attempt = current ? `${current} ${word}` : word;
-      if (regular.widthOfTextAtSize(attempt, size) <= width) {
+    let consumed = 0;
+    for (const character of text) {
+      const attempt = `${current}${character}`;
+      if (!current || regular.widthOfTextAtSize(attempt, size) <= width) {
         current = attempt;
-      } else {
-        if (current) lines.push(current);
-        current = word;
-        if (lines.length === maxLines) break;
+        consumed += 1;
+        continue;
       }
+      const split = current.lastIndexOf(" ");
+      if (split > 0) {
+        lines.push(current.slice(0, split));
+        current = `${current.slice(split + 1)}${character}`;
+      } else {
+        lines.push(current);
+        current = character === " " ? "" : character;
+      }
+      consumed += 1;
+      if (lines.length >= maxLines) break;
     }
     if (current && lines.length < maxLines) lines.push(current);
-    if (lines.length === maxLines && words.join(" ") !== lines.join(" ")) {
+    if (Number.isFinite(maxLines) && lines.length === maxLines && consumed < text.length) {
       let last = lines[maxLines - 1];
       while (last.length && regular.widthOfTextAtSize(`${last}...`, size) > width) last = last.slice(0, -1);
       lines[maxLines - 1] = `${last.trim()}...`;
@@ -336,7 +346,7 @@ async function createPdf(complete: InventoryRow[], incomplete: InventoryRow[], n
     }
     rows.forEach((item, rowIndex) => {
       const values = rowValues(item);
-      const lineSets = values.map((value, index) => wrap(value, widths[index] - 6, 6.4, index < 2 ? 2 : 1));
+      const lineSets = values.map((value, index) => wrap(value, widths[index] - 6, 6.4, index < 2 ? Number.POSITIVE_INFINITY : 1));
       const rowHeight = Math.max(19, Math.max(...lineSets.map((lines) => lines.length)) * 7.2 + 7);
       if (state.y - rowHeight < 34) state = addPage(section, incompleteSection, false);
       const lowStock = item.inventory && (item.product as ProductRecord).minimumStockEnabled && (item.product as ProductRecord).quantityAvailable <= (item.product as ProductRecord).minimumStock;

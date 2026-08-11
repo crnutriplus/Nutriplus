@@ -26,9 +26,27 @@ function changes(result: unknown) {
   return Number((result as { meta?: { changes?: number } })?.meta?.changes ?? 0);
 }
 
+function claimToken() {
+  return globalThis.crypto?.randomUUID?.() || `import-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function finishIfReady(db: D1Database, id: number) {
+  const remaining = await db.prepare("SELECT COUNT(*) AS count FROM import_job_rows WHERE import_id=? AND processed<>1")
+    .bind(id).first<{ count: number }>();
+  if (Number(remaining?.count ?? 0) === 0) {
+    await db.prepare(`UPDATE import_jobs SET status='completed',
+      processed_rows=(SELECT COUNT(*) FROM import_job_rows WHERE import_id=? AND processed=1),
+      completed_at=COALESCE(completed_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id=?`)
+      .bind(id, id).run();
+  }
+  return db.prepare("SELECT * FROM import_jobs WHERE id=?").bind(id).first<Record<string, unknown>>();
+}
+
 export async function POST(_request: Request, context: { params: Promise<{ id: string }> }) {
+  let id = 0;
+  let token = "";
   try {
-    const id = Number((await context.params).id);
+    id = Number((await context.params).id);
     if (!Number.isInteger(id) || id < 1) return Response.json({ error: "Importación inválida." }, { status: 400 });
     await ensureDatabase();
     const db = getD1();
@@ -42,12 +60,23 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
 
     await createBackupForImport(db, id);
 
-    const pending = await db.prepare("SELECT * FROM import_job_rows WHERE import_id=? AND processed=0 ORDER BY id LIMIT 45").bind(id).all<ImportRow>();
-    const rows = pending.results;
+    token = claimToken();
+    const claimed = await db.prepare(`UPDATE import_job_rows SET
+      processed=2,claim_token=?,claimed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      WHERE id IN (
+        SELECT id FROM import_job_rows
+        WHERE import_id=? AND (
+          processed=0 OR (processed=2 AND (claimed_at IS NULL OR julianday(claimed_at)<=julianday('now','-30 seconds')))
+        ) ORDER BY id LIMIT 45
+      ) AND import_id=? AND (
+        processed=0 OR (processed=2 AND (claimed_at IS NULL OR julianday(claimed_at)<=julianday('now','-30 seconds')))
+      ) RETURNING *`)
+      .bind(token, id, id).all<ImportRow>();
+    const rows = claimed.results;
     if (!rows.length) {
-      await db.prepare("UPDATE import_jobs SET status='completed',processed_rows=total_rows,completed_at=COALESCE(completed_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id=?").bind(id).run();
-      const finished = await db.prepare("SELECT * FROM import_jobs WHERE id=?").bind(id).first<Record<string, unknown>>();
-      return Response.json({ job: importJobFromRow(finished!) });
+      const current = await finishIfReady(db, id);
+      const busy = current?.status !== "completed";
+      return Response.json({ job: importJobFromRow(current || job), busy });
     }
 
     const names = [...new Set(rows.map((row) => row.normalized_name))];
@@ -77,7 +106,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
         continue;
       }
       if (existing) {
-        operations.push(db.prepare(`UPDATE products SET
+        operations.push(db.prepare(`UPDATE OR IGNORE products SET
           name=?,normalized_name=?,
           code=CASE WHEN ?=1 THEN ? ELSE code END,
           purchase_price_usd_cents=CASE WHEN ?=1 THEN ? ELSE purchase_price_usd_cents END,
@@ -144,17 +173,21 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
     const serializedOutcomes = JSON.stringify(outcomeUpdates);
     await db.batch([
       db.prepare(`UPDATE import_job_rows SET
-        processed=1,
+        processed=1,claim_token=NULL,claimed_at=NULL,
         outcome=(SELECT json_extract(value,'$.outcome') FROM json_each(?) WHERE CAST(json_extract(value,'$.id') AS INTEGER)=import_job_rows.id),
         message=(SELECT json_extract(value,'$.message') FROM json_each(?) WHERE CAST(json_extract(value,'$.id') AS INTEGER)=import_job_rows.id)
-        WHERE import_id=? AND id IN (SELECT CAST(json_extract(value,'$.id') AS INTEGER) FROM json_each(?))`)
-        .bind(serializedOutcomes, serializedOutcomes, id, serializedOutcomes),
+        WHERE import_id=? AND claim_token=? AND processed=2
+        AND id IN (SELECT CAST(json_extract(value,'$.id') AS INTEGER) FROM json_each(?))`)
+        .bind(serializedOutcomes, serializedOutcomes, id, token, serializedOutcomes),
       db.prepare(`UPDATE import_jobs SET
-      status=CASE WHEN processed_rows+? >= total_rows THEN 'completed' ELSE 'running' END,
-      processed_rows=MIN(total_rows,processed_rows+?),imported_count=imported_count+?,updated_count=updated_count+?,
-      skipped_count=skipped_count+?,conflict_count=conflict_count+?,error_count=error_count+?,
-      completed_at=CASE WHEN processed_rows+? >= total_rows THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE completed_at END
-      WHERE id=?`).bind(rows.length, rows.length, imported, updated, skipped, conflicts, errors, rows.length, id),
+        status=CASE WHEN NOT EXISTS (SELECT 1 FROM import_job_rows WHERE import_id=? AND processed<>1) THEN 'completed' ELSE 'running' END,
+        processed_rows=(SELECT COUNT(*) FROM import_job_rows WHERE import_id=? AND processed=1),
+        imported_count=imported_count+?,updated_count=updated_count+?,
+        skipped_count=skipped_count+?,conflict_count=conflict_count+?,error_count=error_count+?,
+        completed_at=CASE WHEN NOT EXISTS (SELECT 1 FROM import_job_rows WHERE import_id=? AND processed<>1)
+          THEN COALESCE(completed_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')) ELSE NULL END
+        WHERE id=? AND status IN ('queued','running')`)
+        .bind(id, id, imported, updated, skipped, conflicts, errors, id, id),
     ]);
 
     const current = await db.prepare("SELECT * FROM import_jobs WHERE id=?").bind(id).first<Record<string, unknown>>();
@@ -169,8 +202,14 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
     return Response.json({ job: importJobFromRow(refreshed!) });
   } catch (error) {
     try {
-      const id = Number((await context.params).id);
-      if (Number.isInteger(id) && id > 0) await getD1().prepare("UPDATE import_jobs SET status='failed',error_count=error_count+1,completed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").bind(id).run();
+      if (id > 0 && token) {
+        await getD1().prepare("UPDATE import_job_rows SET processed=0,claim_token=NULL,claimed_at=NULL WHERE import_id=? AND claim_token=? AND processed=2")
+          .bind(id, token).run();
+      }
+      if (id > 0) {
+        await getD1().prepare("UPDATE import_jobs SET status='failed',error_count=error_count+1,completed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
+          .bind(id).run();
+      }
     } catch { /* Preserve the original error. */ }
     return errorResponse(error);
   }

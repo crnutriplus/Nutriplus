@@ -38,11 +38,8 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
     await ensureDatabase();
     const db = getD1();
     const mutation = await runIdempotentMutation(db, request, payload, async () => {
-      const currentRow = await db.prepare("SELECT * FROM products WHERE id=? LIMIT 1").bind(id).first<Record<string, unknown>>();
-      if (!currentRow) return { body: { error: "No se encontró el producto." }, status: 404 };
-      const current = productFromRow(currentRow);
       const requestedVersion = Number(payload.version ?? 0);
-      let nextInput: EditableProduct = {
+      const desiredInput: EditableProduct = {
         name: desiredParsed.name,
         code: desiredParsed.code || "",
         purchasePriceUsd: desiredParsed.purchasePriceUsdCents === null ? null : desiredParsed.purchasePriceUsdCents / 100,
@@ -51,51 +48,58 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
         minimumStock: desiredParsed.minimumStock,
         minimumStockEnabled: desiredParsed.minimumStockEnabled,
       };
-      const skippedFields: string[] = [];
-      let merged = false;
+      const base = payload.base && typeof payload.base === "object" ? payload.base as Partial<EditableProduct> : null;
 
-      if (requestedVersion !== current.version) {
-        const base = payload.base && typeof payload.base === "object" ? payload.base as Partial<EditableProduct> : null;
-        if (!base) return { body: { error: "Este producto cambió en otro dispositivo. Se cargó la versión más reciente.", current }, status: 409 };
-        const currentInput = editable(current);
-        const desiredInput = { ...nextInput };
-        nextInput = { ...currentInput };
-        const fields = Object.keys(currentInput) as Array<keyof EditableProduct>;
-        for (const field of fields) {
-          if (same(desiredInput[field], base[field])) continue;
-          if (!same(currentInput[field], base[field])) {
-            if (field === "quantityAvailable") {
-              const delta = Number(desiredInput.quantityAvailable) - Number(base.quantityAvailable ?? 0);
-              nextInput.quantityAvailable = Math.max(0, currentInput.quantityAvailable + delta);
-              merged = true;
-            } else {
-              skippedFields.push(field);
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const currentRow = await db.prepare("SELECT * FROM products WHERE id=? LIMIT 1").bind(id).first<Record<string, unknown>>();
+        if (!currentRow) return { body: { deleted: true, product: null, skippedFields: ["deleted"] } };
+        const current = productFromRow(currentRow);
+        let nextInput = { ...desiredInput };
+        const skippedFields: string[] = [];
+        let merged = false;
+
+        if (requestedVersion !== current.version) {
+          merged = true;
+          if (base) {
+            const currentInput = editable(current);
+            nextInput = { ...currentInput };
+            const fields = Object.keys(currentInput) as Array<keyof EditableProduct>;
+            for (const field of fields) {
+              if (same(desiredInput[field], base[field])) continue;
+              if (!same(currentInput[field], base[field])) {
+                if (field === "quantityAvailable") {
+                  const delta = Number(desiredInput.quantityAvailable) - Number(base.quantityAvailable ?? 0);
+                  nextInput.quantityAvailable = Math.max(0, currentInput.quantityAvailable + delta);
+                } else {
+                  skippedFields.push(field);
+                }
+              } else {
+                (nextInput as Record<string, unknown>)[field] = desiredInput[field];
+              }
             }
-          } else {
-            (nextInput as Record<string, unknown>)[field] = desiredInput[field];
-            merged = true;
           }
         }
+
+        const next = parseProductInput(nextInput as unknown as Record<string, unknown>, { allowPending: true });
+        const stillNeedsRestock = (next.minimumStockEnabled && next.quantityAvailable <= next.minimumStock) || next.quantityAvailable === 0;
+        const zeroStockSince = next.quantityAvailable === 0
+          ? current.zeroStockSince || new Date().toISOString()
+          : null;
+        const restockPurchasedAt = stillNeedsRestock ? current.restockPurchasedAt : null;
+        const update = await db.prepare(`UPDATE products SET
+          name=?,normalized_name=?,code=?,purchase_price_usd_cents=?,weight_milli_lb=?,quantity_available=?,
+          minimum_stock=?,minimum_stock_enabled=?,restock_purchased_at=?,zero_stock_since=?,version=version+1,
+          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=? RETURNING *`)
+          .bind(next.name, next.normalizedName, next.code, next.purchasePriceUsdCents, next.weightMilliLb,
+            next.quantityAvailable, next.minimumStock, next.minimumStockEnabled ? 1 : 0, restockPurchasedAt,
+            zeroStockSince, id, current.version).first<Record<string, unknown>>();
+        if (update) return { body: { product: productFromRow(update), merged, skippedFields } };
       }
 
-      const next = parseProductInput(nextInput as unknown as Record<string, unknown>, { allowPending: true });
-      const stillNeedsRestock = (next.minimumStockEnabled && next.quantityAvailable <= next.minimumStock) || next.quantityAvailable === 0;
-      const zeroStockSince = next.quantityAvailable === 0
-        ? current.zeroStockSince || new Date().toISOString()
-        : null;
-      const restockPurchasedAt = stillNeedsRestock ? current.restockPurchasedAt : null;
-      const update = await db.prepare(`UPDATE products SET
-        name=?,normalized_name=?,code=?,purchase_price_usd_cents=?,weight_milli_lb=?,quantity_available=?,
-        minimum_stock=?,minimum_stock_enabled=?,restock_purchased_at=?,zero_stock_since=?,version=version+1,
-        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=? RETURNING *`)
-        .bind(next.name, next.normalizedName, next.code, next.purchasePriceUsdCents, next.weightMilliLb,
-          next.quantityAvailable, next.minimumStock, next.minimumStockEnabled ? 1 : 0, restockPurchasedAt,
-          zeroStockSince, id, current.version).first<Record<string, unknown>>();
-      if (!update) {
-        const latest = await db.prepare("SELECT * FROM products WHERE id=? LIMIT 1").bind(id).first<Record<string, unknown>>();
-        return { body: { error: "Otro cambio llegó al mismo tiempo. Se conservó la información más reciente.", current: latest ? productFromRow(latest) : null }, status: 409 };
-      }
-      return { body: { product: productFromRow(update), merged, skippedFields } };
+      const latest = await db.prepare("SELECT * FROM products WHERE id=? LIMIT 1").bind(id).first<Record<string, unknown>>();
+      return latest
+        ? { body: { product: productFromRow(latest), merged: true, skippedFields: ["concurrentUpdate"] } }
+        : { body: { deleted: true, product: null, skippedFields: ["deleted"] } };
     });
     return Response.json(mutation.body, { status: mutation.status ?? 200 });
   } catch (error) { return errorResponse(error); }
@@ -109,16 +113,8 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     const db = getD1();
     const payload = { mutationId: request.headers.get("x-mutation-id") || "" };
     const mutation = await runIdempotentMutation(db, request, payload, async () => {
-      const existing = await db.prepare("SELECT * FROM products WHERE id=? LIMIT 1").bind(id).first<Record<string, unknown>>();
-      if (!existing) return { body: { deleted: true, alreadyDeleted: true } };
-      const expectedVersion = Number(request.headers.get("if-match") || 0);
-      if (expectedVersion && Number(existing.version ?? 1) !== expectedVersion) {
-        return { body: { error: "El producto cambió en otro dispositivo y no se eliminó.", current: productFromRow(existing) }, status: 409 };
-      }
-      const result = await db.prepare("DELETE FROM products WHERE id=? AND version=?").bind(id, Number(existing.version ?? 1)).run();
-      const deleted = Number(result.meta?.changes ?? 0) > 0;
-      if (!deleted) return { body: { error: "El producto cambió mientras se eliminaba y se conservó.", current: productFromRow(existing) }, status: 409 };
-      return { body: { deleted: true, name: String(existing.name) } };
+      const existing = await db.prepare("DELETE FROM products WHERE id=? RETURNING name").bind(id).first<{ name: string }>();
+      return { body: { deleted: true, alreadyDeleted: !existing, name: existing?.name || null } };
     });
     return Response.json(mutation.body, { status: mutation.status ?? 200 });
   } catch (error) { return errorResponse(error); }

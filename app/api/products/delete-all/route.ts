@@ -18,10 +18,6 @@ export async function POST() {
   try {
     await ensureDatabase();
     const db = getD1();
-    const active = await db.prepare("SELECT * FROM product_deletion_jobs WHERE status IN ('queued','running') ORDER BY id LIMIT 1")
-      .first<Record<string, unknown>>();
-    if (active) return Response.json({ job: productDeletionJobFromRow(active), alreadyRunning: true });
-
     const activeImport = await db.prepare("SELECT id FROM import_jobs WHERE status IN ('queued','running') AND strategy IN ('update','skip') ORDER BY id LIMIT 1")
       .first<{ id: number }>();
     if (activeImport) {
@@ -30,9 +26,16 @@ export async function POST() {
 
     const job = await db.prepare(`INSERT INTO product_deletion_jobs (
       status,total_products,processed_products,deleted_products,preserved_products,created_at
-    ) VALUES ('queued',0,0,0,0,strftime('%Y-%m-%dT%H:%M:%fZ','now')) RETURNING *`)
+    ) SELECT 'queued',0,0,0,0,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      WHERE NOT EXISTS (SELECT 1 FROM product_deletion_jobs WHERE status IN ('queued','running'))
+      RETURNING *`)
       .first<Record<string, unknown>>();
-    if (!job) throw new Error("No se pudo iniciar la eliminación.");
+    if (!job) {
+      const active = await db.prepare("SELECT * FROM product_deletion_jobs WHERE status IN ('queued','running') ORDER BY id LIMIT 1")
+        .first<Record<string, unknown>>();
+      if (active) return Response.json({ job: productDeletionJobFromRow(active), alreadyRunning: true });
+      throw new Error("No se pudo iniciar la eliminación.");
+    }
     jobId = Number(job.id);
 
     await db.prepare(`INSERT INTO product_deletion_rows (deletion_id,product_id,processed)

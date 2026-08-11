@@ -66,16 +66,22 @@ const documentMock = {
 const { exportInventoryFiles } = await import(new URL(`../dist/client/assets/${chunkName}`, import.meta.url));
 globalThis.document = documentMock;
 const now = new Date().toISOString();
-const product = (id, name, complete = true) => ({
-  id, name, code: `CODE-${id}`, purchasePriceUsd: complete ? 10 + id : null, weightLb: complete ? 0.4 : null,
+const product = (id, name, complete = true, code = `CODE-${id}`) => ({
+  id, name, code, purchasePriceUsd: complete ? 10 + id : null, weightLb: complete ? 0.4 : null,
   quantityAvailable: id, minimumStock: 2, minimumStockEnabled: true, restockPurchasedAt: null,
   zeroStockSince: null, version: 1, createdAt: now, updatedAt: now,
 });
 const quote = (id, name) => ({ id, name, code: `WEB-${id}`, purchasePriceUsd: 8 + id, weightLb: 0.25, version: 1, createdAt: now, updatedAt: now });
 const settings = { exchangeRateCrc: 520, courierRateUsd: 5.5, extraWeightLb: 0.1, deliveryCrc: 1000, correosCrc: 500, gamProfitCrc: 5000, puertoProfitCrc: 4000, roundingCrc: 100 };
 
-const result = await exportInventoryFiles([product(1, "Omega 3"), product(2, "Producto incompleto", false)], [quote(1, "Cotización web")], settings, "both");
-assert.deepEqual(result, { complete: 1, incomplete: 1, noInventory: 1 });
+const longName = "Suplemento multivitamínico de nombre excepcionalmente largo ".repeat(8).trim();
+const longCode = `CODIGO-${"EXTREMADAMENTE-LARGO-".repeat(7)}FINAL`;
+const result = await exportInventoryFiles([
+  product(1, "Omega 3"),
+  product(2, "Producto incompleto", false),
+  product(3, longName, true, longCode),
+], [quote(1, "Cotización web")], settings, "both");
+assert.deepEqual(result, { complete: 2, incomplete: 1, noInventory: 1 });
 assert.equal(captured.length, 2);
 
 const outputDir = "/tmp/nutriplus-export-test";
@@ -87,6 +93,9 @@ const workbook = new ExcelJS.Workbook();
 await workbook.xlsx.readFile(xlsxPath);
 assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["Productos completos", "Productos incompletos", "No inventario"]);
 assert.equal(workbook.getWorksheet("No inventario").getCell("A5").value, "Cotización web");
+assert.equal(workbook.getWorksheet("Productos completos").getCell("A6").value, longName);
+assert.equal(workbook.getWorksheet("Productos completos").getCell("B6").value, longCode);
+assert.ok(Number(workbook.getWorksheet("Productos completos").getRow(6).height) > 21);
 const pdf = await PDFDocument.load(await fs.readFile(pdfPath));
 assert.ok(pdf.getPageCount() >= 3);
 

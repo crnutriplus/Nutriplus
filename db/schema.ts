@@ -90,9 +90,14 @@ export const importJobRows = sqliteTable("import_job_rows", {
   hasQuantity: integer("has_quantity", { mode: "boolean" }).notNull().default(false),
   hasMinimumStock: integer("has_minimum_stock", { mode: "boolean" }).notNull().default(false),
   processed: integer("processed", { mode: "boolean" }).notNull().default(false),
+  claimToken: text("claim_token"),
+  claimedAt: text("claimed_at"),
   outcome: text("outcome"),
   message: text("message"),
-}, (table) => [index("import_job_rows_pending_idx").on(table.importId, table.processed, table.id)]);
+}, (table) => [
+  index("import_job_rows_pending_idx").on(table.importId, table.processed, table.id),
+  index("import_job_rows_claim_idx").on(table.importId, table.processed, table.claimedAt, table.id),
+]);
 
 export const importBackups = sqliteTable("import_backups", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -137,7 +142,10 @@ export const productDeletionRows = sqliteTable("product_deletion_rows", {
   deletionId: integer("deletion_id").notNull(),
   productId: integer("product_id").notNull(),
   processed: integer("processed", { mode: "boolean" }).notNull().default(false),
+  claimToken: text("claim_token"),
+  claimedAt: text("claimed_at"),
   outcome: text("outcome"),
 }, (table) => [
   index("product_deletion_rows_pending_idx").on(table.deletionId, table.processed, table.id),
+  index("product_deletion_rows_claim_idx").on(table.deletionId, table.processed, table.claimedAt, table.id),
 ]);
