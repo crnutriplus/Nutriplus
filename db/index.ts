@@ -2,7 +2,6 @@ import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./schema";
 
 let initialization: Promise<void> | null = null;
-const DATABASE_SCHEMA_VERSION = 12;
 
 export function getD1() {
   if (!globalThis.__NUTRIPLUS_DB__) throw new Error("La base de datos no está disponible.");
@@ -17,9 +16,6 @@ export async function ensureDatabase() {
   if (!initialization) {
     initialization = (async () => {
       const db = getD1();
-      const versionRow = await db.prepare("PRAGMA user_version").first<Record<string, unknown>>();
-      const currentVersion = Number(versionRow?.user_version ?? Object.values(versionRow || {})[0] ?? 0);
-      if (currentVersion >= DATABASE_SCHEMA_VERSION) return;
       await db.batch([
         db.prepare(`CREATE TABLE IF NOT EXISTS settings (
           id INTEGER PRIMARY KEY NOT NULL,
@@ -406,7 +402,6 @@ export async function ensureDatabase() {
         db.prepare("CREATE INDEX IF NOT EXISTS import_job_rows_claim_idx ON import_job_rows (import_id, processed, claimed_at, id)"),
         db.prepare("CREATE INDEX IF NOT EXISTS product_deletion_rows_claim_idx ON product_deletion_rows (deletion_id, processed, claimed_at, id)"),
       ]);
-      await db.prepare(`PRAGMA user_version = ${DATABASE_SCHEMA_VERSION}`).run();
     })().catch((error) => { initialization = null; throw error; });
   }
   await initialization;
