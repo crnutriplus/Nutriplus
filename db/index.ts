@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./schema";
 
 let initialization: Promise<void> | null = null;
+const DATABASE_SCHEMA_VERSION = 12;
 
 export function getD1() {
   if (!globalThis.__NUTRIPLUS_DB__) throw new Error("La base de datos no está disponible.");
@@ -16,6 +17,9 @@ export async function ensureDatabase() {
   if (!initialization) {
     initialization = (async () => {
       const db = getD1();
+      const versionRow = await db.prepare("PRAGMA user_version").first<Record<string, unknown>>();
+      const currentVersion = Number(versionRow?.user_version ?? Object.values(versionRow || {})[0] ?? 0);
+      if (currentVersion >= DATABASE_SCHEMA_VERSION) return;
       await db.batch([
         db.prepare(`CREATE TABLE IF NOT EXISTS settings (
           id INTEGER PRIMARY KEY NOT NULL,
@@ -184,6 +188,11 @@ export async function ensureDatabase() {
           shipment_number TEXT,
           document_date TEXT,
           page_count INTEGER NOT NULL DEFAULT 1,
+          file_count INTEGER NOT NULL DEFAULT 0,
+          processing_mode TEXT NOT NULL DEFAULT 'manual',
+          analysis_status TEXT NOT NULL DEFAULT 'not_requested',
+          active_analysis_id TEXT,
+          field_evidence_json TEXT NOT NULL DEFAULT '{}',
           status TEXT NOT NULL DEFAULT 'draft',
           warnings_json TEXT NOT NULL DEFAULT '[]',
           duplicate_of TEXT,
@@ -199,11 +208,13 @@ export async function ensureDatabase() {
           id TEXT PRIMARY KEY NOT NULL,
           document_id TEXT NOT NULL,
           line_key TEXT NOT NULL,
+          line_index INTEGER NOT NULL DEFAULT 0,
           page_number INTEGER,
           original_description TEXT NOT NULL,
           name TEXT NOT NULL,
           brand TEXT,
           presentation TEXT,
+          size TEXT,
           flavor TEXT,
           concentration TEXT,
           billed_quantity INTEGER,
@@ -217,6 +228,14 @@ export async function ensureDatabase() {
           secondary_type TEXT,
           barcode_method TEXT,
           barcode_source TEXT,
+          barcode_source_url TEXT,
+          barcode_source_title TEXT,
+          barcode_differences_json TEXT NOT NULL DEFAULT '[]',
+          barcode_lookup_status TEXT NOT NULL DEFAULT 'pending',
+          field_evidence_json TEXT NOT NULL DEFAULT '{}',
+          barcode_confirmed INTEGER NOT NULL DEFAULT 0,
+          selected_for_ingress INTEGER NOT NULL DEFAULT 1,
+          review_saved_at TEXT,
           confidence INTEGER NOT NULL DEFAULT 0,
           status TEXT NOT NULL DEFAULT 'requires_confirm_code',
           match_product_id INTEGER,
@@ -232,6 +251,43 @@ export async function ensureDatabase() {
         db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS inventory_document_lines_key_unique ON inventory_document_lines (document_id, line_key)"),
         db.prepare("CREATE INDEX IF NOT EXISTS inventory_document_lines_document_idx ON inventory_document_lines (document_id, status, id)"),
         db.prepare("CREATE INDEX IF NOT EXISTS inventory_document_lines_barcode_idx ON inventory_document_lines (canonical_barcode)"),
+        db.prepare(`CREATE TABLE IF NOT EXISTS inventory_document_files (
+          id TEXT PRIMARY KEY NOT NULL,
+          document_id TEXT NOT NULL,
+          file_index INTEGER NOT NULL,
+          storage_key TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          mime_type TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          file_sha256 TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`),
+        db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS inventory_document_files_order_unique ON inventory_document_files (document_id,file_index)"),
+        db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS inventory_document_files_storage_unique ON inventory_document_files (storage_key)"),
+        db.prepare("CREATE INDEX IF NOT EXISTS inventory_document_files_document_idx ON inventory_document_files (document_id,file_index)"),
+        db.prepare(`CREATE TABLE IF NOT EXISTS invoice_ai_analyses (
+          id TEXT PRIMARY KEY NOT NULL,
+          document_id TEXT NOT NULL,
+          file_fingerprint TEXT NOT NULL,
+          analysis_number INTEGER NOT NULL,
+          model TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'processing',
+          response_id TEXT,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          web_search_count INTEGER NOT NULL DEFAULT 0,
+          estimated_cost_microusd INTEGER NOT NULL DEFAULT 0,
+          extraction_json TEXT NOT NULL DEFAULT '{}',
+          error_code TEXT,
+          error_message TEXT,
+          reanalysis INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          completed_at TEXT
+        )`),
+        db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS invoice_ai_analyses_number_unique ON invoice_ai_analyses (document_id,analysis_number)"),
+        db.prepare("CREATE INDEX IF NOT EXISTS invoice_ai_analyses_document_idx ON invoice_ai_analyses (document_id,created_at)"),
+        db.prepare("CREATE INDEX IF NOT EXISTS invoice_ai_analyses_usage_idx ON invoice_ai_analyses (created_at,estimated_cost_microusd)"),
         db.prepare(`CREATE TABLE IF NOT EXISTS supplier_product_aliases (
           id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
           provider TEXT NOT NULL,
@@ -293,6 +349,37 @@ export async function ensureDatabase() {
         db.prepare("CREATE INDEX IF NOT EXISTS inventory_movements_operation_idx ON inventory_movements (operation_id, id)"),
       ]);
 
+      const intakeDocumentColumns = await db.prepare("PRAGMA table_info(inventory_documents)").all<{ name: string }>();
+      const intakeDocumentColumnNames = new Set(intakeDocumentColumns.results.map((column) => column.name));
+      const intakeDocumentAdditions = [];
+      if (!intakeDocumentColumnNames.has("file_count")) intakeDocumentAdditions.push(db.prepare("ALTER TABLE inventory_documents ADD COLUMN file_count INTEGER NOT NULL DEFAULT 0"));
+      if (!intakeDocumentColumnNames.has("processing_mode")) intakeDocumentAdditions.push(db.prepare("ALTER TABLE inventory_documents ADD COLUMN processing_mode TEXT NOT NULL DEFAULT 'manual'"));
+      if (!intakeDocumentColumnNames.has("analysis_status")) intakeDocumentAdditions.push(db.prepare("ALTER TABLE inventory_documents ADD COLUMN analysis_status TEXT NOT NULL DEFAULT 'not_requested'"));
+      if (!intakeDocumentColumnNames.has("active_analysis_id")) intakeDocumentAdditions.push(db.prepare("ALTER TABLE inventory_documents ADD COLUMN active_analysis_id TEXT"));
+      if (!intakeDocumentColumnNames.has("field_evidence_json")) intakeDocumentAdditions.push(db.prepare("ALTER TABLE inventory_documents ADD COLUMN field_evidence_json TEXT NOT NULL DEFAULT '{}'"));
+      if (intakeDocumentAdditions.length) await db.batch(intakeDocumentAdditions);
+
+      const intakeLineColumns = await db.prepare("PRAGMA table_info(inventory_document_lines)").all<{ name: string }>();
+      const intakeLineColumnNames = new Set(intakeLineColumns.results.map((column) => column.name));
+      if (!intakeLineColumnNames.has("barcode_confirmed")) {
+        await db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN barcode_confirmed INTEGER NOT NULL DEFAULT 0").run();
+      }
+      if (!intakeLineColumnNames.has("selected_for_ingress")) {
+        await db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN selected_for_ingress INTEGER NOT NULL DEFAULT 1").run();
+      }
+      if (!intakeLineColumnNames.has("review_saved_at")) {
+        await db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN review_saved_at TEXT").run();
+      }
+      const intakeLineAdditions = [];
+      if (!intakeLineColumnNames.has("line_index")) intakeLineAdditions.push(db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN line_index INTEGER NOT NULL DEFAULT 0"));
+      if (!intakeLineColumnNames.has("size")) intakeLineAdditions.push(db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN size TEXT"));
+      if (!intakeLineColumnNames.has("barcode_source_url")) intakeLineAdditions.push(db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN barcode_source_url TEXT"));
+      if (!intakeLineColumnNames.has("barcode_source_title")) intakeLineAdditions.push(db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN barcode_source_title TEXT"));
+      if (!intakeLineColumnNames.has("barcode_differences_json")) intakeLineAdditions.push(db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN barcode_differences_json TEXT NOT NULL DEFAULT '[]'"));
+      if (!intakeLineColumnNames.has("barcode_lookup_status")) intakeLineAdditions.push(db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN barcode_lookup_status TEXT NOT NULL DEFAULT 'pending'"));
+      if (!intakeLineColumnNames.has("field_evidence_json")) intakeLineAdditions.push(db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN field_evidence_json TEXT NOT NULL DEFAULT '{}'"));
+      if (intakeLineAdditions.length) await db.batch(intakeLineAdditions);
+
       const backupColumns = await db.prepare("PRAGMA table_info(import_backup_products)").all<{ name: string }>();
       const backupColumnNames = new Set(backupColumns.results.map((column) => column.name));
       const backupAdditions = [];
@@ -319,6 +406,7 @@ export async function ensureDatabase() {
         db.prepare("CREATE INDEX IF NOT EXISTS import_job_rows_claim_idx ON import_job_rows (import_id, processed, claimed_at, id)"),
         db.prepare("CREATE INDEX IF NOT EXISTS product_deletion_rows_claim_idx ON product_deletion_rows (deletion_id, processed, claimed_at, id)"),
       ]);
+      await db.prepare(`PRAGMA user_version = ${DATABASE_SCHEMA_VERSION}`).run();
     })().catch((error) => { initialization = null; throw error; });
   }
   await initialization;

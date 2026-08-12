@@ -30,6 +30,7 @@ export type IntakeLineDto = {
   name: string;
   brand: string;
   presentation: string;
+  size: string;
   flavor: string;
   concentration: string;
   billedQuantity: number | null;
@@ -43,7 +44,15 @@ export type IntakeLineDto = {
   secondaryType: string;
   barcodeMethod: string;
   barcodeSource: string;
+  barcodeSourceUrl: string;
+  barcodeSourceTitle: string;
+  barcodeDifferences: string[];
+  barcodeLookupStatus: "found_exact" | "suggestion" | "pending";
+  barcodeConfirmed: boolean;
+  selectedForIngress: boolean;
+  reviewSavedAt: string;
   confidence: number;
+  fieldEvidence: Record<string, { value: string; confidence: number; page: number; source: string }>;
   status: IntakeLineStatus;
   action: "existing" | "move" | "create" | "ignore" | "pending";
   barcodeLevel: "unit" | "package" | "distribution" | "set" | "";
@@ -242,6 +251,7 @@ export function resolveParsedLine(args: {
     name: line.name,
     brand: line.brand,
     presentation: line.presentation,
+    size: line.size,
     flavor: line.flavor,
     concentration: line.concentration,
     billedQuantity: line.billedQuantity,
@@ -253,9 +263,17 @@ export function resolveParsedLine(args: {
     barcodeType,
     secondaryId: line.secondaryId,
     secondaryType: line.secondaryType,
-    barcodeMethod: line.barcode ? "invoice" : secondary ? "saved_equivalence" : "",
-    barcodeSource: line.barcode ? "Factura" : secondary?.source ? String(secondary.source) : "",
+    barcodeMethod: line.barcode ? line.barcodeSourceUrl ? "web_search" : "invoice" : secondary ? "saved_equivalence" : "",
+    barcodeSource: line.barcode ? line.barcodeSourceTitle || (line.barcodeSourceUrl ? "Búsqueda web" : "Factura") : secondary?.source ? String(secondary.source) : "",
+    barcodeSourceUrl: line.barcodeSourceUrl,
+    barcodeSourceTitle: line.barcodeSourceTitle,
+    barcodeDifferences: line.barcodeDifferences,
+    barcodeLookupStatus: line.barcodeLookupStatus,
+    barcodeConfirmed: false,
+    selectedForIngress: action !== "ignore",
+    reviewSavedAt: "",
     confidence: line.confidence,
+    fieldEvidence: line.fieldEvidence,
     status,
     action,
     barcodeLevel,
@@ -277,6 +295,7 @@ export function lineFromRow(row: Record<string, unknown>): IntakeLineDto {
     name: String(row.name),
     brand: row.brand ? String(row.brand) : "",
     presentation: row.presentation ? String(row.presentation) : "",
+    size: row.size ? String(row.size) : "",
     flavor: row.flavor ? String(row.flavor) : "",
     concentration: row.concentration ? String(row.concentration) : "",
     billedQuantity: row.billed_quantity == null ? null : Number(row.billed_quantity),
@@ -290,7 +309,15 @@ export function lineFromRow(row: Record<string, unknown>): IntakeLineDto {
     secondaryType: row.secondary_type ? String(row.secondary_type) : "",
     barcodeMethod: row.barcode_method ? String(row.barcode_method) : "",
     barcodeSource: row.barcode_source ? String(row.barcode_source) : "",
+    barcodeSourceUrl: row.barcode_source_url ? String(row.barcode_source_url) : "",
+    barcodeSourceTitle: row.barcode_source_title ? String(row.barcode_source_title) : "",
+    barcodeDifferences: JSON.parse(String(row.barcode_differences_json || "[]")) as string[],
+    barcodeLookupStatus: (row.barcode_lookup_status ? String(row.barcode_lookup_status) : "pending") as IntakeLineDto["barcodeLookupStatus"],
+    barcodeConfirmed: Number(row.barcode_confirmed ?? 0) === 1,
+    selectedForIngress: Number(row.selected_for_ingress ?? 1) === 1,
+    reviewSavedAt: row.review_saved_at ? String(row.review_saved_at) : "",
     confidence: Number(row.confidence ?? 0),
+    fieldEvidence: JSON.parse(String(row.field_evidence_json || "{}")) as IntakeLineDto["fieldEvidence"],
     status: String(row.status) as IntakeLineStatus,
     action: String(row.action) as IntakeLineDto["action"],
     barcodeLevel: (row.barcode_level ? String(row.barcode_level) : "") as IntakeLineDto["barcodeLevel"],

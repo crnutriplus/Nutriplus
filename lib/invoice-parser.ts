@@ -1,4 +1,4 @@
-import { validateBarcode } from "./barcodes";
+import { validateBarcode } from "./barcodes.ts";
 
 export type InvoiceProvider = "amazon" | "iherb" | "other";
 
@@ -16,6 +16,7 @@ export type ParsedInvoiceLine = {
   name: string;
   brand: string;
   presentation: string;
+  size: string;
   flavor: string;
   concentration: string;
   billedQuantity: number | null;
@@ -23,10 +24,15 @@ export type ParsedInvoiceLine = {
   unitsPerPackage: number;
   barcode: string;
   barcodeType: string;
+  barcodeSourceUrl: string;
+  barcodeSourceTitle: string;
+  barcodeDifferences: string[];
+  barcodeLookupStatus: "found_exact" | "suggestion" | "pending";
   secondaryId: string;
   secondaryType: "asin" | "iherb" | "other" | "";
   productUrl: string;
   confidence: number;
+  fieldEvidence: Record<string, { value: string; confidence: number; page: number; source: string }>;
   warnings: string[];
   specialType: "sample" | "gift" | "promotion" | "canceled" | "refund" | "return" | "product";
 };
@@ -76,6 +82,35 @@ function capture(source: string, patterns: RegExp[]) {
     if (value) return value.slice(0, 160);
   }
   return "";
+}
+
+function orderNumberFrom(source: string) {
+  return capture(source, [
+    // Amazon en español. El OCR puede convertir “N.º” en “N.°”, “N.o” o “N.P”.
+    /(?:^|[^A-Z0-9])N(?:[.\s]*[º°oOpP])?[.\s]*(?:de\s+)?pedido\s*[:#-]?\s*([0-9]{3}-[0-9]{7}-[0-9]{7})\b/i,
+    /(?:^|[^A-Z0-9])N(?:[.\s]*[º°oOpP])?[.\s]*(?:de\s+)?(?:pedido|compra|orden)\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{3,})\b/i,
+    /\bn[úu]mero\s+de\s+(?:pedido|compra|orden)\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{3,})\b/i,
+    /\b(?:order|purchase)\s*(?:number|no\.?|#)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{3,})\b/i,
+  ]);
+}
+
+function purchaseDateFrom(source: string) {
+  return capture(source, [
+    /\bfecha\s+de\s+(?:la\s+)?(?:compra|pedido|orden)\s*[:#-]?\s*([^\n|]{4,40})/i,
+    /\bpedido\s+realizado\s+(?:el\s+)?([^\n|—-]{4,40})/i,
+    /\b(?:order|purchase)\s+date\s*[:#-]?\s*([^\n|]{4,40})/i,
+    /\bfecha\s*[:#-]\s*([^\n|]{4,40})/i,
+  ]).replace(/[\s|—-]+$/g, "").trim();
+}
+
+function shipmentNumberFrom(source: string) {
+  return capture(source, [
+    /\b(?:n[úu]mero\s+de\s+(?:rastreo|seguimiento|env[ií]o)|rastreo|seguimiento)\s*[:#-]\s*([A-Z0-9][A-Z0-9-]{5,})\b/i,
+    /\b(?:tracking|shipment|shipping)\s*(?:number|no\.?|#)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{5,})\b/i,
+    // En iHerb el servicio de envío ocupa una línea y el código aparece después de “/”.
+    /m[eé]todo\s+de\s+env[ií]o\s*\/\s*informaci[oó]n\s+de\s+seguimiento[\s\S]{0,160}?\/[ \t]*\r?\n[ \t]*([A-Z0-9][A-Z0-9-]{5,})\b/i,
+    /informaci[oó]n\s+de\s+seguimiento[\s\S]{0,160}?\/[ \t]*\r?\n[ \t]*([A-Z0-9][A-Z0-9-]{5,})\b/i,
+  ]);
 }
 
 function detectProvider(source: string): InvoiceProvider {
@@ -139,7 +174,8 @@ function lineFromCandidate(provider: InvoiceProvider, pageNumber: number, lines:
   const originalDescription = nearestDescription(lines, index, inline);
   const details = detailsFromDescription(originalDescription);
   const asin = context.match(/\b(?:ASIN\s*[:#-]?\s*)?(B[0-9A-Z]{9})\b/i)?.[1]?.toUpperCase() || "";
-  const iherbCode = context.match(/\b(?:SKU|Item\s*(?:No\.?|#)|Product\s*Code|C[oó]digo(?:\s+de\s+producto)?)\s*[:#-]?\s*([A-Z]{2,6}-?\d{3,9})\b/i)?.[1]?.toUpperCase() || "";
+  const iherbCode = (context.match(/\b(?:SKU|Item\s*(?:No\.?|#)|Product\s*Code|C[oó]digo(?:\s+de\s+producto)?)\s*[:#-]?\s*([A-Z]{2,6}-?\d{3,9})\b/i)?.[1]
+    || (provider === "iherb" ? context.match(/\b([A-Z]{2,6}-\d{3,9})\b/i)?.[1] : ""))?.toUpperCase() || "";
   const barcode = taggedBarcode(context);
   const productUrl = context.match(/https?:\/\/[^\s)\]}]+/i)?.[0] || "";
   const secondaryId = provider === "amazon" ? asin : provider === "iherb" ? iherbCode : asin || iherbCode;
@@ -159,6 +195,7 @@ function lineFromCandidate(provider: InvoiceProvider, pageNumber: number, lines:
     name: originalDescription,
     brand: details.brand,
     presentation: details.presentation,
+    size: details.presentation,
     flavor: details.flavor,
     concentration: details.concentration,
     billedQuantity: quantity,
@@ -166,16 +203,88 @@ function lineFromCandidate(provider: InvoiceProvider, pageNumber: number, lines:
     unitsPerPackage: details.unitsPerPackage,
     barcode: barcode?.normalized || "",
     barcodeType: barcode?.type || "",
+    barcodeSourceUrl: "",
+    barcodeSourceTitle: barcode ? "Factura" : "",
+    barcodeDifferences: [],
+    barcodeLookupStatus: barcode ? "found_exact" : "pending",
     secondaryId,
     secondaryType,
     productUrl,
     confidence,
+    fieldEvidence: {},
     warnings,
     specialType: special,
   };
 }
 
+function parseIherbTable(page: InvoicePageText) {
+  const allLines = page.text.split(/\r?\n/).map(cleanLine).filter(Boolean);
+  const headerIndex = allLines.findIndex((line) => /#\s*art[ií]culo\s+precio\s+cantidad/i.test(line));
+  if (headerIndex < 0) return [] as ParsedInvoiceLine[];
+  const endIndex = allLines.findIndex((line, index) => index > headerIndex && /^(?:descuentos adicionales|informaci[oó]n de contacto)/i.test(line));
+  const lines = allLines.slice(headerIndex + 1, endIndex < 0 ? undefined : endIndex);
+  const itemRows = lines.map((line, index) => {
+    const match = line.match(/^(\d{1,3})\s+(.*?)\$[\d,.]+\s+(\d+)\s+(?:-\$|\$)/i);
+    return match ? { index, item: Number(match[1]), inline: cleanLine(match[2]), quantity: Number(match[3]) } : null;
+  }).filter((row): row is { index: number; item: number; inline: string; quantity: number } => Boolean(row));
+  if (!itemRows.length) return [] as ParsedInvoiceLine[];
+
+  return itemRows.map((row, rowIndex) => {
+    const parts: string[] = [];
+    const before = lines[row.index - 1] || "";
+    if (isProductish(before)) parts.push(before);
+    if (row.inline && isProductish(row.inline)) parts.push(row.inline);
+    const hasNextItem = Boolean(itemRows[rowIndex + 1]);
+    const nextItemIndex = itemRows[rowIndex + 1]?.index ?? lines.length;
+    const continuationLimit = hasNextItem ? Math.max(row.index + 1, nextItemIndex - 1) : lines.length;
+    // La descripción de iHerb suele continuar justo debajo de la fila de precio.
+    // Se detiene antes de la línea que encabeza el siguiente artículo.
+    for (let index = row.index + 1; index < continuationLimit; index += 1) {
+      const candidate = lines[index];
+      if (!candidate || PRICE_WORDS.test(candidate)) continue;
+      if (MONEY_ONLY.test(candidate)) {
+        if (/^[0-9]{3,9}$/.test(candidate) && /-$/.test(parts.at(-1) || "")) parts.push(candidate);
+        continue;
+      }
+      parts.push(candidate);
+      if (/\b[A-Z]{2,6}-\s*\d{3,9}\b/i.test(parts.join(" "))) break;
+    }
+    const description = parts.join(" ")
+      .replace(/\b([A-Z]{2,6})-\s+(\d{3,9})\b/g, "$1-$2")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    return lineFromCandidate("iherb", page.pageNumber, [description], 0, row.quantity, description, page.confidence);
+  }).filter((line) => isProductish(line.name));
+}
+
+function parseAmazonOrderSummary(page: InvoicePageText) {
+  const lines = page.text.split(/\r?\n/).map(cleanLine).filter(Boolean);
+  const sellerIndexes = lines.map((line, index) => /vendido\s+por\s*:/i.test(line) ? index : -1).filter((index) => index >= 0);
+  if (!sellerIndexes.length) return [] as ParsedInvoiceLine[];
+  const boundary = /^(?:entregado|entrega\s+autom[aá]tica|devolver|reemplazar|proporcionado|vendido\s+por|US\$|U[sS]\$|resumen\s+del\s+pedido|enviar\s+a|m[eé]todo\s+de\s+pago)\b/i;
+  return sellerIndexes.map((sellerIndex) => {
+    const parts: string[] = [];
+    for (let index = sellerIndex - 1; index >= 0 && parts.length < 8; index -= 1) {
+      const candidate = lines[index];
+      if (boundary.test(candidate) || MONEY_ONLY.test(candidate)) break;
+      if (candidate.length >= 6) parts.unshift(candidate);
+    }
+    const description = parts.join(" ").replace(/\s{2,}/g, " ").trim();
+    const context = lines.slice(Math.max(0, sellerIndex - 3), Math.min(lines.length, sellerIndex + 5)).join(" ");
+    const explicitQuantity = context.match(/\b(?:cantidad|qty)\s*[:#-]?\s*(\d+)\b/i)?.[1];
+    return lineFromCandidate("amazon", page.pageNumber, [description], 0, explicitQuantity ? Number(explicitQuantity) : null, description, page.confidence);
+  }).filter((line) => isProductish(line.name));
+}
+
 function parsePageLines(provider: InvoiceProvider, page: InvoicePageText) {
+  if (provider === "iherb") {
+    const structured = parseIherbTable(page);
+    if (structured.length) return structured;
+  }
+  if (provider === "amazon") {
+    const structured = parseAmazonOrderSummary(page);
+    if (structured.length) return structured;
+  }
   const lines = page.text.split(/\r?\n/).map(cleanLine).filter(Boolean);
   const candidates: ParsedInvoiceLine[] = [];
   const seenIndexes = new Set<number>();
@@ -200,7 +309,10 @@ function parsePageLines(provider: InvoiceProvider, page: InvoicePageText) {
     if (seenIndexes.has(index)) return;
     const context = windowAround(lines, index);
     const hasSecondary = /\bB[0-9A-Z]{9}\b/i.test(context) || /\b(?:SKU|Product\s*Code|C[oó]digo)\s*[:#-]?\s*[A-Z]{2,6}-?\d{3,9}\b/i.test(context);
-    if (!hasSecondary || !isProductish(line)) return;
+    // A nearby ASIN/SKU must not turn order headers, tracking rows or other
+    // metadata into products. This fallback is intentionally limited to rows
+    // that also contain a concrete presentation/product hint.
+    if (!hasSecondary || !PRODUCT_HINT.test(line) || !isProductish(line)) return;
     const already = candidates.some((candidate) => candidate.originalDescription.toLowerCase() === cleanDescription(line).toLowerCase());
     if (!already) candidates.push(lineFromCandidate(provider, page.pageNumber, lines, index, null, line, page.confidence - 10));
   });
@@ -246,12 +358,20 @@ export function parseInvoicePages(pages: InvoicePageText[]): ParsedInvoice {
   });
   if (!unique.size) warnings.push("No se pudieron reconocer productos con seguridad. Agregalos manualmente antes de continuar.");
 
+  const orderNumber = orderNumberFrom(source);
+  const shipmentNumber = shipmentNumberFrom(source);
+  const documentDate = purchaseDateFrom(source);
+  if (!orderNumber) warnings.push("No se pudo leer el número de pedido, compra u orden. Revisalo antes de confirmar.");
+  if (!documentDate) warnings.push("No se pudo leer la fecha de la compra. Revisala antes de confirmar.");
+
   return {
     provider,
-    orderNumber: capture(source, [/(?:order|pedido)(?:\s*(?:number|no\.?|#))?\s*[:#-]\s*([A-Z0-9-]{4,})/i]),
-    invoiceNumber: capture(source, [/(?:invoice|factura)(?:\s*(?:number|no\.?|#))?\s*[:#-]\s*([A-Z0-9-]{3,})/i]),
-    shipmentNumber: capture(source, [/(?:shipment|shipping|env[ií]o)(?:\s*(?:number|no\.?|#))?\s*[:#-]\s*([A-Z0-9-]{4,})/i, /(?:tracking|seguimiento)(?:\s*(?:number|no\.?|#))?\s*[:#-]\s*([A-Z0-9-]{6,})/i]),
-    documentDate: capture(source, [/(?:invoice date|order date|fecha(?:\s+de\s+(?:factura|pedido))?)\s*[:#-]\s*([^\n]{4,30})/i]),
+    orderNumber,
+    // NutriPlus identifica estas compras por el número de pedido/compra/orden.
+    // El número de factura no se solicita ni se muestra en este flujo.
+    invoiceNumber: "",
+    shipmentNumber,
+    documentDate,
     status: isCredit ? "credit_note" : isReturn ? "return" : "draft",
     warnings: [...new Set(warnings)],
     lines: [...unique.values()],

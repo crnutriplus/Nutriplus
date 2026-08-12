@@ -1,12 +1,17 @@
 "use client";
 
+/* The invoice viewer must display the private original bytes without image optimization. */
+/* eslint-disable @next/next/no-img-element */
+
 import {
   AlertCircle,
   Barcode,
+  Bot,
   Camera,
   Check,
   ClipboardPaste,
   FileClock,
+  FileSearch,
   FileText,
   History,
   ImageUp,
@@ -17,6 +22,7 @@ import {
   Save,
   Search,
   ShieldCheck,
+  Sparkles,
   Upload,
   X,
 } from "lucide-react";
@@ -38,11 +44,78 @@ type IntakeDocument = {
   shipmentNumber: string;
   documentDate: string;
   pageCount: number;
+  fileCount: number;
+  processingMode: "ai" | "manual";
+  analysisStatus: string;
+  activeAnalysisId: string;
+  fieldEvidence: Record<string, { value?: string; confidence?: number; page?: number; source?: string }>;
   status: string;
   warnings: string[];
   duplicateOf: string;
   createdAt: string;
   confirmedAt: string;
+};
+
+type IntakeInvoiceFile = {
+  id: string;
+  index: number;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  viewUrl: string;
+};
+
+type InvoiceAnalysis = {
+  id: string;
+  model: string;
+  status: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  webSearchCount: number;
+  estimatedCostUsd: number;
+  reanalysis: boolean;
+  errorCode: string;
+  errorMessage: string;
+  createdAt: string;
+  completedAt: string;
+};
+
+type InvoiceUsage = {
+  cumulativeCostUsd: number;
+  currentMonthCostUsd: number;
+  billedAnalyses: number;
+  month: string;
+};
+
+type InvoiceAiConfig = {
+  aiEnabled: boolean;
+  aiAvailable: boolean;
+  keyConfigured: boolean;
+  model: string;
+  monthlyLimitUsd: number;
+  currentMonthCostUsd: number;
+  cumulativeCostUsd: number;
+  billedAnalyses: number;
+  month: string;
+  limitReached: boolean;
+};
+
+type IntakeLoadResult = {
+  document: IntakeDocument;
+  lines: IntakeLineDto[];
+  files: IntakeInvoiceFile[];
+  analysis: InvoiceAnalysis | null;
+  usage: InvoiceUsage;
+  duplicate: boolean;
+  exactDuplicate: boolean;
+  resumed?: boolean;
+  cachedAnalysis?: boolean;
+  manualFallback?: boolean;
+  aiErrorCode?: string;
+  aiErrorMessage?: string;
+  ocrFallbackApplied?: boolean;
 };
 
 type CodeCandidate = {
@@ -117,6 +190,34 @@ const STATUS_LABELS: Record<IntakeLineStatus, string> = {
 
 const CONFIRMABLE = new Set<IntakeLineStatus>(["confirmed", "new_product", "non_inventory"]);
 
+const EVIDENCE_LABELS: Record<string, string> = {
+  provider: "Proveedor",
+  order_number: "Pedido",
+  invoice_number: "Factura",
+  document_date: "Fecha",
+  shipment_number: "Rastreo",
+  name: "Producto",
+  brand: "Marca",
+  presentation: "Presentación",
+  size: "Tamaño",
+  flavor: "Sabor",
+  concentration: "Concentración",
+  quantity: "Cantidad",
+  package_units: "Unidades por paquete",
+  iherb_code: "Código iHerb",
+  asin: "ASIN",
+  barcode: "Código de barras",
+};
+
+function costLabel(value: number) {
+  if (!Number.isFinite(value)) return "$0.0000";
+  return `$${value.toFixed(value >= 1 ? 2 : 4)}`;
+}
+
+function evidenceEntries(evidence: IntakeDocument["fieldEvidence"] | IntakeLineDto["fieldEvidence"]) {
+  return Object.entries(evidence || {}).filter(([, item]) => item && typeof item === "object");
+}
+
 async function apiJson<T>(response: Response) {
   const raw = await response.text();
   let body: T & { error?: string; errors?: string[] };
@@ -160,7 +261,7 @@ function classifyLine(line: IntakeLineDto, products: ProductRecord[], quotes: No
   if (line.action === "ignore" || line.status === "processed") return line;
   const barcode = validateBarcode(line.barcode);
   if (!barcode.valid || !barcode.normalized || !barcode.canonical) {
-    return { ...line, status: "requires_confirm_code", action: "pending", canonicalBarcode: "", barcodeType: "", match: null, matchProductId: null, matchNonInventoryId: null };
+    return { ...line, barcodeConfirmed: false, status: "requires_confirm_code", action: "pending", canonicalBarcode: "", barcodeType: "", match: null, matchProductId: null, matchNonInventoryId: null };
   }
   const owners = equivalentOwners(barcode.normalized, products, quotes);
   let next: IntakeLineDto = { ...line, barcode: barcode.normalized, canonicalBarcode: barcode.canonical, barcodeType: barcode.type || "" };
@@ -187,6 +288,9 @@ function classifyLine(line: IntakeLineDto, products: ProductRecord[], quotes: No
   } else {
     next = { ...next, status: "new_product", action: "create", matchProductId: null, matchNonInventoryId: null, match: null };
   }
+  if (!next.barcodeConfirmed && !["ignored", "processed", "conflict_identifiers"].includes(next.status)) {
+    return { ...next, status: "requires_confirm_code" };
+  }
   if (next.receivedQuantity === null) return { ...next, status: "pending_receive", action: "pending" };
   if (next.unitsPerPackage > 1 && !next.barcodeLevel) return { ...next, status: "requires_conversion", action: "pending" };
   return { ...next, totalToAdd: Math.max(0, (next.receivedQuantity || 0) * Math.max(1, next.unitsPerPackage)) };
@@ -202,6 +306,7 @@ function emptyManualLine(): IntakeLineDto {
     name: "",
     brand: "",
     presentation: "",
+    size: "",
     flavor: "",
     concentration: "",
     billedQuantity: null,
@@ -215,7 +320,15 @@ function emptyManualLine(): IntakeLineDto {
     secondaryType: "",
     barcodeMethod: "manual",
     barcodeSource: "Confirmado por el usuario",
+    barcodeSourceUrl: "",
+    barcodeSourceTitle: "Confirmado por el usuario",
+    barcodeDifferences: [],
+    barcodeLookupStatus: "pending",
+    barcodeConfirmed: false,
+    selectedForIngress: true,
+    reviewSavedAt: "",
     confidence: 100,
+    fieldEvidence: {},
     status: "requires_confirm_code",
     action: "pending",
     barcodeLevel: "unit",
@@ -235,6 +348,13 @@ export function InventoryIntakeModal(props: Props) {
   } = props;
   const [tab, setTab] = useState<"invoice" | "quick" | "history">("invoice");
   const [document, setDocument] = useState<IntakeDocument | null>(null);
+  const [invoiceMode, setInvoiceMode] = useState<"ai" | "manual">("ai");
+  const [aiConfig, setAiConfig] = useState<InvoiceAiConfig | null>(null);
+  const [invoiceFiles, setInvoiceFiles] = useState<IntakeInvoiceFile[]>([]);
+  const [selectedFileIndex, setSelectedFileIndex] = useState(0);
+  const [analysis, setAnalysis] = useState<InvoiceAnalysis | null>(null);
+  const [usage, setUsage] = useState<InvoiceUsage | null>(null);
+  const uploadedFilesRef = useRef<File[]>([]);
   const [lines, setLines] = useState<IntakeLineDto[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [reading, setReading] = useState(false);
@@ -242,19 +362,44 @@ export function InventoryIntakeModal(props: Props) {
   const [confirming, setConfirming] = useState(false);
   const confirmingRef = useRef(false);
   const [savingDraft, setSavingDraft] = useState(false);
+  const savingDraftRef = useRef(false);
+  const [dirtyLineIds, setDirtyLineIds] = useState<Set<string>>(new Set());
+  const lineRevisionRef = useRef<Map<string, number>>(new Map());
+  const [deletedLineIds, setDeletedLineIds] = useState<Set<string>>(new Set());
+  const [metaDirty, setMetaDirty] = useState(false);
+  const metaRevisionRef = useRef(0);
+  const [removeLineTarget, setRemoveLineTarget] = useState<IntakeLineDto | null>(null);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const [savingLineId, setSavingLineId] = useState<string | null>(null);
+  const [confirmingLineId, setConfirmingLineId] = useState<string | null>(null);
+  const [removingLineId, setRemovingLineId] = useState<string | null>(null);
+  const [ocrReading, setOcrReading] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
+  const [reanalyzeConfirmOpen, setReanalyzeConfirmOpen] = useState(false);
   const [lookupLineId, setLookupLineId] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<Record<string, CodeCandidate[]>>({});
   const [lookupMessages, setLookupMessages] = useState<Record<string, string>>({});
-  const [pendingBarcode, setPendingBarcode] = useState<{ lineId: string; code: string; method: string; source: string } | null>(null);
+  const [pendingBarcode, setPendingBarcode] = useState<{
+    lineId: string;
+    code: string;
+    method: string;
+    source: string;
+    sourceUrl?: string;
+    sourceTitle?: string;
+    differences?: string[];
+  } | null>(null);
   const [manualCodeLine, setManualCodeLine] = useState<string | null>(null);
   const [history, setHistory] = useState<IntakeOperation[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [reverseTarget, setReverseTarget] = useState<IntakeOperation | null>(null);
   const [reverseReason, setReverseReason] = useState("");
   const [reversing, setReversing] = useState(false);
-  const [pendingVerification, setPendingVerification] = useState<{ operationId: string; documentId: string } | null>(null);
+  const [pendingVerification, setPendingVerification] = useState<{ operationId: string; documentId: string; lineIds?: string[] } | null>(null);
 
   const updateLine = useCallback((id: string, changes: Partial<IntakeLineDto>, reclassify = true) => {
+    lineRevisionRef.current.set(id, (lineRevisionRef.current.get(id) || 0) + 1);
+    setDirtyLineIds((current) => new Set(current).add(id));
     setLines((current) => current.map((line) => {
       if (line.id !== id) return line;
       const next = { ...line, ...changes };
@@ -262,6 +407,56 @@ export function InventoryIntakeModal(props: Props) {
       return reclassify ? classifyLine(next, products, quotes) : next;
     }));
   }, [products, quotes]);
+
+  const updateDocumentMeta = useCallback((changes: Partial<IntakeDocument>) => {
+    metaRevisionRef.current += 1;
+    setMetaDirty(true);
+    setDocument((current) => current ? { ...current, ...changes } : current);
+  }, []);
+
+  const resetInvoiceReview = useCallback(() => {
+    setDocument(null);
+    setInvoiceFiles([]);
+    setSelectedFileIndex(0);
+    setAnalysis(null);
+    setUsage(null);
+    uploadedFilesRef.current = [];
+    setLines([]);
+    setSelected(new Set());
+    setDirtyLineIds(new Set());
+    lineRevisionRef.current.clear();
+    setDeletedLineIds(new Set());
+    setMetaDirty(false);
+    metaRevisionRef.current = 0;
+    setCandidates({});
+    setLookupMessages({});
+    setPendingBarcode(null);
+    setManualCodeLine(null);
+    setRemoveLineTarget(null);
+    setCancelConfirmOpen(false);
+    setReanalyzeConfirmOpen(false);
+    setSavingLineId(null);
+    setConfirmingLineId(null);
+    setRemovingLineId(null);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void apiJson<InvoiceAiConfig>(fetch("/api/inventory-intake/config"))
+      .then((config) => {
+        if (!active) return;
+        setAiConfig(config);
+        if (!config.aiAvailable) setInvoiceMode("manual");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setAiConfig(null);
+        setInvoiceMode("manual");
+        onNotify({ type: "error", text: intakeErrorText(error, "No se pudo consultar el estado del análisis con IA. El modo Manual continúa disponible."), sticky: true });
+      });
+    return () => { active = false; };
+  }, [onNotify, open]);
 
   useEffect(() => {
     if (!scannedBarcode) return;
@@ -283,12 +478,53 @@ export function InventoryIntakeModal(props: Props) {
       const stored = localStorage.getItem("nutriplus-pending-intake-operation");
       // La comprobación pendiente se conserva fuera de React para sobrevivir una pérdida de conexión.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (stored) setPendingVerification(JSON.parse(stored) as { operationId: string; documentId: string });
+      if (stored) setPendingVerification(JSON.parse(stored) as { operationId: string; documentId: string; lineIds?: string[] });
     } catch { /* No hay comprobación pendiente válida. */ }
   }, [open]);
 
   const selectedLines = useMemo(() => lines.filter((line) => selected.has(line.id) && CONFIRMABLE.has(line.status) && line.action !== "pending" && line.totalToAdd > 0), [lines, selected]);
   const blockedSelected = useMemo(() => lines.filter((line) => selected.has(line.id) && !CONFIRMABLE.has(line.status)), [lines, selected]);
+  const hasProcessedLines = useMemo(() => lines.some((line) => Boolean(line.processedOperationId) || line.status === "processed"), [lines]);
+  const selectedInvoiceFile = invoiceFiles[selectedFileIndex] || invoiceFiles[0] || null;
+
+  const cancelDraftRequest = useCallback(async (documentId: string) => {
+    return apiJson<{ canceled: boolean }>(await fetch(`/api/inventory-intake/${encodeURIComponent(documentId)}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }));
+  }, []);
+
+  async function cancelInvoiceReview(closeAfter = false, showNotice = true) {
+    if (!document) {
+      resetInvoiceReview();
+      setTab("invoice");
+      if (closeAfter) onClose();
+      return true;
+    }
+    if (hasProcessedLines || document.confirmedAt) {
+      onNotify({ type: "error", text: "Este ingreso ya tiene movimientos confirmados y no puede borrarse. Podés cerrarlo o revertirlo desde el historial.", sticky: true });
+      return false;
+    }
+    if (pendingVerification) {
+      onNotify({ type: "error", text: "Primero comprobá el estado del ingreso pendiente antes de cancelar la factura.", sticky: true });
+      return false;
+    }
+    setCanceling(true);
+    try {
+      await cancelDraftRequest(document.id);
+      resetInvoiceReview();
+      setTab("invoice");
+      if (showNotice) onNotify({ type: "success", text: "La carga se canceló y el borrador de la factura fue eliminado." });
+      if (closeAfter) onClose();
+      return true;
+    } catch (error) {
+      onNotify({ type: "error", text: intakeErrorText(error, "No se pudo cancelar y borrar la factura."), sticky: true });
+      return false;
+    } finally {
+      setCanceling(false);
+    }
+  }
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -304,52 +540,206 @@ export function InventoryIntakeModal(props: Props) {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (open && tab === "history") void loadHistory(); }, [loadHistory, open, tab]);
 
+  function applyLoadedResult(result: IntakeLoadResult) {
+    const hydrated = (result.lines || []).map((line) => classifyLine(line, products, quotes));
+    setDocument(result.document);
+    setInvoiceFiles(result.files || []);
+    setSelectedFileIndex(0);
+    setAnalysis(result.analysis || null);
+    setUsage(result.usage || null);
+    setLines(hydrated);
+    setSelected(new Set(hydrated.filter((line) => line.selectedForIngress && line.action !== "ignore" && line.status !== "processed").map((line) => line.id)));
+    setDirtyLineIds(new Set());
+    lineRevisionRef.current.clear();
+    setDeletedLineIds(new Set());
+    setMetaDirty(false);
+    metaRevisionRef.current = 0;
+    setInvoiceMode(result.document.processingMode === "ai" && !result.manualFallback ? "ai" : "manual");
+  }
+
+  function addBlankManualLine() {
+    const blank = emptyManualLine();
+    setLines([blank]);
+    setSelected(new Set([blank.id]));
+    lineRevisionRef.current.set(blank.id, 1);
+    setDirtyLineIds(new Set([blank.id]));
+  }
+
+  async function storedFilesForOcr() {
+    if (uploadedFilesRef.current.length) return uploadedFilesRef.current;
+    const downloaded: File[] = [];
+    for (const file of invoiceFiles) {
+      const response = await fetch(file.viewUrl);
+      if (!response.ok) throw new Error(`No se pudo abrir “${file.fileName}” para la lectura de respaldo.`);
+      downloaded.push(new File([await response.blob()], file.fileName, { type: file.mimeType }));
+    }
+    return downloaded;
+  }
+
+  async function runOcrFallback(sourceFiles?: File[], documentId?: string, automatic = false) {
+    const targetId = documentId || document?.id;
+    if (!targetId || ocrReading) return false;
+    setOcrReading(true);
+    try {
+      const files = sourceFiles?.length ? sourceFiles : await storedFilesForOcr();
+      if (!files.length) throw new Error("No se encontró el archivo para la lectura de respaldo.");
+      const { readInvoiceFiles } = await import("@/lib/invoice-reader");
+      const read = await readInvoiceFiles(files, (progress) => setReadProgress({
+        current: progress.current,
+        total: Math.max(1, progress.total),
+        message: progress.message,
+      }));
+      const result = await apiJson<IntakeLoadResult>(await fetch(`/api/inventory-intake/${encodeURIComponent(targetId)}/fallback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pages: read.pages, warnings: read.warnings }),
+      }));
+      applyLoadedResult(result);
+      if (!result.lines.length) addBlankManualLine();
+      onNotify({
+        type: result.lines.length ? "success" : "warning",
+        text: result.lines.length
+          ? `La lectura de respaldo encontró ${result.lines.length} producto${result.lines.length === 1 ? "" : "s"}. Revisalos manualmente.`
+          : "La lectura de respaldo no encontró productos. La factura sigue guardada y podés agregarlos manualmente.",
+        sticky: !result.lines.length,
+      });
+      return true;
+    } catch (error) {
+      onNotify({
+        type: "error",
+        text: `${intakeErrorText(error, "No se pudo completar la lectura de respaldo.")} La factura y el progreso continúan guardados en modo Manual.`,
+        sticky: true,
+      });
+      if (automatic && !lines.length) addBlankManualLine();
+      return false;
+    } finally { setOcrReading(false); }
+  }
+
   async function analyzeFiles(event: ChangeEvent<HTMLInputElement>) {
     const files = [...(event.currentTarget.files || [])];
     if (!files.length) return;
-    setReadProgress({ current: 0, total: Math.max(1, files.length), message: `Preparando ${files.length === 1 ? files[0].name : `${files.length} archivos`}…` });
+    uploadedFilesRef.current = files;
+    setReadProgress({
+      current: 0,
+      total: 1,
+      message: invoiceMode === "ai" ? "Guardando y analizando la factura con IA…" : "Guardando la factura para revisión manual…",
+    });
     setReading(true);
-    setDocument(null);
-    setLines([]);
-    setSelected(new Set());
+    resetInvoiceReview();
+    uploadedFilesRef.current = files;
     try {
-      const { readInvoiceFiles } = await import("@/lib/invoice-reader");
-      const read = await readInvoiceFiles(files, (progress) => setReadProgress({ current: progress.current, total: Math.max(1, progress.total), message: progress.message }));
-      const result = await apiJson<{ document: IntakeDocument; lines: IntakeLineDto[]; duplicate: boolean; exactDuplicate: boolean }>(await fetch("/api/inventory-intake", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fingerprint: read.fingerprint, fileName: read.fileName, mimeTypes: read.mimeTypes, pages: read.pages, warnings: read.warnings }),
-      }));
-      const hydrated = result.lines.map((line) => classifyLine(line, products, quotes));
-      setDocument(result.document);
-      setLines(hydrated);
-      setSelected(new Set(hydrated.filter((line) => CONFIRMABLE.has(line.status) && line.totalToAdd > 0).map((line) => line.id)));
-      if (result.exactDuplicate) onNotify({ type: "warning", text: "Esta misma factura ya había sido cargada. Las líneas procesadas no se volverán a sumar.", sticky: true });
-      else if (!hydrated.length) onNotify({ type: "error", text: "La factura se abrió, pero no se reconoció ningún producto. Revisá que muestre nombres y cantidades legibles o agregá las líneas manualmente.", sticky: true });
-      else onNotify({ type: "success", text: `Factura leída: ${hydrated.length} producto${hydrated.length === 1 ? "" : "s"} para revisar.` });
+      const form = new FormData();
+      form.set("mode", invoiceMode);
+      files.forEach((file) => form.append("files", file, file.name));
+      const result = await apiJson<IntakeLoadResult>(await fetch("/api/inventory-intake", { method: "POST", body: form }));
+      applyLoadedResult(result);
+      if (result.exactDuplicate) {
+        onNotify({ type: "warning", text: "Esta misma factura ya había sido ingresada. Sus productos procesados permanecen bloqueados para evitar duplicados.", sticky: true });
+      } else if (result.cachedAnalysis) {
+        onNotify({ type: "success", text: "Se recuperó el análisis y el avance guardados sin volver a generar consumo de OpenAI.", sticky: true });
+      } else if (result.manualFallback) {
+        onNotify({ type: "error", text: result.aiErrorMessage || "El análisis con IA falló. La factura se conservó y cambió al modo Manual.", sticky: true });
+        await runOcrFallback(files, result.document.id, true);
+      } else if (invoiceMode === "manual") {
+        if (!result.lines.length) addBlankManualLine();
+        onNotify({ type: "success", text: "La factura quedó guardada en modo Manual. Podés completar los productos uno por uno." });
+      } else {
+        onNotify({
+          type: "success",
+          text: `Análisis completado: ${result.lines.length} producto${result.lines.length === 1 ? "" : "s"}. Revisá y confirmá cada código antes de ingresar inventario.`,
+          sticky: true,
+        });
+      }
     } catch (error) {
-      onNotify({ type: "error", text: intakeErrorText(error, "No se pudo leer la factura. Revisá el archivo e intentá nuevamente."), sticky: true });
+      onNotify({ type: "error", text: intakeErrorText(error, "No se pudo guardar o analizar la factura. Revisá el archivo e intentá nuevamente."), sticky: true });
     } finally { setReading(false); }
   }
 
-  async function saveDraft(showNotice = true) {
-    if (!document || savingDraft) return;
+  async function saveDraft(options: {
+    showNotice?: boolean;
+    reviewedLineIds?: Set<string>;
+    onlyLineId?: string;
+  } = {}) {
+    if (!document || savingDraftRef.current) return false;
+    const showNotice = options.showNotice !== false;
+    const requestedReviewedLineIds = options.reviewedLineIds || new Set<string>();
+    const lineIdsToSave = options.onlyLineId
+      ? new Set([options.onlyLineId])
+      : new Set([...dirtyLineIds, ...requestedReviewedLineIds]);
+    const savedLineRevisions = new Map([...lineIdsToSave].map((id) => [id, lineRevisionRef.current.get(id) || 0]));
+    const lineIdsToDelete = options.onlyLineId ? [] : [...deletedLineIds];
+    const linesToSave = lines.filter((line) => lineIdsToSave.has(line.id)).map((line) => ({
+      ...line,
+      lineIndex: lines.findIndex((candidate) => candidate.id === line.id),
+      selectedForIngress: selected.has(line.id),
+    }));
+    const reviewedLineIds = [...requestedReviewedLineIds].filter((id) => lineIdsToSave.has(id));
+    const metadataChanged = options.onlyLineId ? false : metaDirty;
+    const savedMetaRevision = metaRevisionRef.current;
+    if (!metadataChanged && !linesToSave.length && !lineIdsToDelete.length) {
+      if (showNotice) onNotify({ type: "success", text: "La revisión ya estaba guardada." });
+      return true;
+    }
+    savingDraftRef.current = true;
     setSavingDraft(true);
     try {
-      await apiJson(await fetch(`/api/inventory-intake/${document.id}`, {
+      const result = await apiJson<{ lines: IntakeLineDto[]; reviewedLineIds: string[] }>(await fetch(`/api/inventory-intake/${document.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...document, lines }),
+        body: JSON.stringify({ ...document, metadataChanged, lines: linesToSave, deletedLineIds: lineIdsToDelete, reviewedLineIds }),
       }));
+      const savedById = new Map(result.lines.map((line) => [line.id, line]));
+      setLines((current) => current.map((line) => {
+        const saved = savedById.get(line.id);
+        return saved ? {
+          ...line,
+          selectedForIngress: saved.selectedForIngress,
+          reviewSavedAt: saved.reviewSavedAt,
+        } : line;
+      }));
+      setDirtyLineIds((current) => {
+        const next = new Set(current);
+        lineIdsToSave.forEach((id) => {
+          if ((lineRevisionRef.current.get(id) || 0) === savedLineRevisions.get(id)) next.delete(id);
+        });
+        return next;
+      });
+      setDeletedLineIds((current) => {
+        const next = new Set(current);
+        lineIdsToDelete.forEach((id) => next.delete(id));
+        return next;
+      });
+      if (metadataChanged && metaRevisionRef.current === savedMetaRevision) setMetaDirty(false);
       if (showNotice) onNotify({ type: "success", text: "La revisión quedó guardada sin modificar el inventario." });
+      return true;
     } catch (error) {
       const message = intakeErrorText(error, "No se pudo guardar la revisión.");
       if (showNotice) {
         onNotify({ type: "error", text: message, sticky: true });
-        return;
+        return false;
       }
       throw new Error(message);
-    } finally { setSavingDraft(false); }
+    } finally {
+      savingDraftRef.current = false;
+      setSavingDraft(false);
+    }
+  }
+
+  async function saveOneLine(lineId: string) {
+    if (savingLineId || savingDraftRef.current) return;
+    setSavingLineId(lineId);
+    try {
+      const saved = await saveDraft({
+        showNotice: false,
+        reviewedLineIds: new Set([lineId]),
+        onlyLineId: lineId,
+      });
+      if (saved) onNotify({ type: "success", text: "Este producto quedó guardado. El inventario todavía no fue modificado." });
+    } catch (error) {
+      onNotify({ type: "error", text: intakeErrorText(error, "No se pudo guardar este producto."), sticky: true });
+    } finally {
+      setSavingLineId(null);
+    }
   }
 
   async function lookupCode(line: IntakeLineDto) {
@@ -383,11 +773,38 @@ export function InventoryIntakeModal(props: Props) {
       barcodeType: checked.type || "",
       barcodeMethod: pendingBarcode.method,
       barcodeSource: pendingBarcode.source,
+      barcodeSourceUrl: pendingBarcode.sourceUrl || "",
+      barcodeSourceTitle: pendingBarcode.sourceTitle || pendingBarcode.source,
+      barcodeDifferences: pendingBarcode.differences || [],
+      barcodeLookupStatus: pendingBarcode.differences?.length ? "suggestion" : "found_exact",
+      barcodeConfirmed: true,
       warnings: [],
     });
     setPendingBarcode(null);
     setManualCodeLine(null);
     onNotify({ type: "success", text: `Código ${checked.normalized} confirmado para la vista previa.` });
+  }
+
+  function toggleBarcodeConfirmation(line: IntakeLineDto) {
+    if (line.barcodeConfirmed) {
+      updateLine(line.id, { barcodeConfirmed: false });
+      onNotify({ type: "warning", text: `El código ${line.barcode} quedó como no confirmado.` });
+      return;
+    }
+    const checked = validateBarcode(line.barcode);
+    if (!checked.valid || !checked.normalized) {
+      onNotify({ type: "error", text: checked.error || "Ingresá un código de barras válido.", sticky: true });
+      return;
+    }
+    setPendingBarcode({
+      lineId: line.id,
+      code: checked.normalized,
+      method: line.barcodeMethod || "manual",
+      source: line.barcodeSource || "Escrito y confirmado manualmente",
+      sourceUrl: line.barcodeSourceUrl,
+      sourceTitle: line.barcodeSourceTitle,
+      differences: line.barcodeDifferences,
+    });
   }
 
   async function readLineImage(lineId: string, file: File) {
@@ -423,48 +840,92 @@ export function InventoryIntakeModal(props: Props) {
     else updateLine(line.id, { matchProductId: null, matchNonInventoryId: id, action: "move" });
   }
 
+  function toggleLineSelection(line: IntakeLineDto) {
+    const nextSelected = !selected.has(line.id);
+    setSelected((current) => {
+      const next = new Set(current);
+      if (nextSelected) next.add(line.id);
+      else next.delete(line.id);
+      return next;
+    });
+    updateLine(line.id, { selectedForIngress: nextSelected }, false);
+  }
+
   async function verifyPendingOperation(target = pendingVerification) {
     if (!target) return;
     try {
       const response = await fetch(`/api/inventory-intake/operations/${encodeURIComponent(target.operationId)}`);
-      const result = await apiJson<{ operation: { status: string }; products: ProductRecord[] }>(response);
+      const result = await apiJson<{ operation: { status: string }; products: ProductRecord[]; movements?: Array<{ documentLineId?: string }> }>(response);
       if (result.operation.status === "completed") {
         onProductsChanged(result.products);
         await onRefresh();
         localStorage.removeItem("nutriplus-pending-intake-operation");
         setPendingVerification(null);
         onNotify({ type: "success", text: "El ingreso sí había sido completado y quedó verificado en el historial.", sticky: true });
-        if (document?.id === target.documentId) setLines((current) => current.map((line) => selected.has(line.id) ? { ...line, status: "processed", processedOperationId: target.operationId } : line));
+        const confirmedLineIds = new Set((result.movements || []).map((movement) => movement.documentLineId).filter((value): value is string => Boolean(value)).concat(target.lineIds || []));
+        if (document?.id === target.documentId) {
+          setLines((current) => current.map((line) => confirmedLineIds.has(line.id) ? { ...line, status: "processed", processedOperationId: target.operationId } : line));
+          setSelected((current) => {
+            const next = new Set(current);
+            confirmedLineIds.forEach((lineId) => next.delete(lineId));
+            return next;
+          });
+        }
       }
     } catch (error) {
       onNotify({ type: "error", text: `El ingreso continúa pendiente de comprobación: ${intakeErrorText(error, "no fue posible consultar el servidor.")}`, sticky: true });
     }
   }
 
-  async function confirmIngreso() {
-    if (!document || confirmingRef.current || !selectedLines.length || blockedSelected.length) return;
+  async function confirmIngreso(onlyLineId?: string) {
+    const targetLines = onlyLineId ? selectedLines.filter((line) => line.id === onlyLineId) : selectedLines;
+    const targetBlocked = onlyLineId
+      ? lines.some((line) => line.id === onlyLineId && selected.has(line.id) && !CONFIRMABLE.has(line.status))
+      : blockedSelected.length > 0;
+    if (!document || confirmingRef.current || !targetLines.length || targetBlocked) return;
     confirmingRef.current = true;
     setConfirming(true);
+    setConfirmingLineId(onlyLineId || null);
     const id = operationId("ingress");
-    const pending = { operationId: id, documentId: document.id };
-    localStorage.setItem("nutriplus-pending-intake-operation", JSON.stringify(pending));
-    setPendingVerification(pending);
+    const pending = { operationId: id, documentId: document.id, lineIds: targetLines.map((line) => line.id) };
+    let confirmationSent = false;
     try {
-      await saveDraft(false);
+      const reviewSaved = await saveDraft({
+        showNotice: false,
+        reviewedLineIds: new Set(targetLines.map((line) => line.id)),
+        onlyLineId,
+      });
+      if (!reviewSaved) throw new Error("No se pudo guardar la revisión antes de confirmar el ingreso.");
+      localStorage.setItem("nutriplus-pending-intake-operation", JSON.stringify(pending));
+      setPendingVerification(pending);
+      confirmationSent = true;
       const result = await apiJson<{ operation: { id: string; status: string }; products: ProductRecord[] }>(await fetch(`/api/inventory-intake/${document.id}/confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Mutation-Id": id },
-        body: JSON.stringify({ operationId: id, lines: selectedLines.map((line) => ({ ...line, selected: true })) }),
+        body: JSON.stringify({ operationId: id, lines: targetLines.map((line) => ({ ...line, selected: true })) }),
       }));
       onProductsChanged(result.products);
       await onRefresh();
-      setLines((current) => current.map((line) => selected.has(line.id) ? { ...line, status: "processed", processedOperationId: id } : line));
-      setSelected(new Set());
+      const confirmedIds = new Set(targetLines.map((line) => line.id));
+      setLines((current) => current.map((line) => confirmedIds.has(line.id) ? { ...line, status: "processed", processedOperationId: id } : line));
+      setSelected((current) => {
+        const next = new Set(current);
+        confirmedIds.forEach((lineId) => next.delete(lineId));
+        return next;
+      });
       localStorage.removeItem("nutriplus-pending-intake-operation");
       setPendingVerification(null);
-      onNotify({ type: "success", text: `Ingreso confirmado: ${selectedLines.reduce((total, line) => total + line.totalToAdd, 0)} unidades agregadas. Ningún precio fue modificado.`, sticky: true });
+      onNotify({
+        type: "success",
+        text: `${onlyLineId ? "Producto ingresado" : "Ingreso confirmado"}: ${targetLines.reduce((total, line) => total + line.totalToAdd, 0)} unidades agregadas. Ningún precio fue modificado.`,
+        sticky: true,
+      });
       void loadHistory();
     } catch (error) {
+      if (!confirmationSent) {
+        onNotify({ type: "error", text: `${intakeErrorText(error, "No se pudo guardar la revisión.")} El ingreso no se inició y el inventario no cambió.`, sticky: true });
+        return;
+      }
       try {
         const response = await fetch(`/api/inventory-intake/operations/${encodeURIComponent(id)}`);
         if (response.ok) {
@@ -472,6 +933,13 @@ export function InventoryIntakeModal(props: Props) {
           if (checked.operation.status === "completed") {
             onProductsChanged(checked.products);
             await onRefresh();
+            const confirmedIds = new Set(targetLines.map((line) => line.id));
+            setLines((current) => current.map((line) => confirmedIds.has(line.id) ? { ...line, status: "processed", processedOperationId: id } : line));
+            setSelected((current) => {
+              const next = new Set(current);
+              confirmedIds.forEach((lineId) => next.delete(lineId));
+              return next;
+            });
             localStorage.removeItem("nutriplus-pending-intake-operation");
             setPendingVerification(null);
             onNotify({ type: "success", text: "El ingreso fue completado y verificado después del problema de conexión.", sticky: true });
@@ -483,7 +951,42 @@ export function InventoryIntakeModal(props: Props) {
     } finally {
       confirmingRef.current = false;
       setConfirming(false);
+      setConfirmingLineId(null);
     }
+  }
+
+  async function reanalyzeInvoice() {
+    if (!document || reanalyzing || document.analysisStatus === "processing") return;
+    setReanalyzing(true);
+    setReadProgress({ current: 0, total: 1, message: "Analizando nuevamente la factura completa con IA…" });
+    try {
+      const result = await apiJson<IntakeLoadResult>(await fetch(`/api/inventory-intake/${encodeURIComponent(document.id)}/reanalyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmed: true }),
+      }));
+      applyLoadedResult(result);
+      setReanalyzeConfirmOpen(false);
+      if (result.manualFallback) {
+        onNotify({
+          type: "error",
+          text: `${result.aiErrorMessage || "El nuevo análisis no pudo completarse."} La factura y todo el avance previo continúan guardados.`,
+          sticky: true,
+        });
+      } else {
+        onNotify({
+          type: "success",
+          text: `Nuevo análisis completado: ${result.lines.length} producto${result.lines.length === 1 ? "" : "s"}. Revisá los cambios antes de confirmar.`,
+          sticky: true,
+        });
+      }
+    } catch (error) {
+      onNotify({
+        type: "error",
+        text: `${intakeErrorText(error, "No se pudo analizar nuevamente la factura.")} El archivo y la revisión anterior continúan guardados.`,
+        sticky: true,
+      });
+    } finally { setReanalyzing(false); }
   }
 
   async function reverseOperation() {
@@ -507,12 +1010,58 @@ export function InventoryIntakeModal(props: Props) {
     } finally { setReversing(false); }
   }
 
-  function closeModal() {
-    if (document && lines.some((line) => !line.processedOperationId)) {
-      void saveDraft(false).catch((error) => onNotify({ type: "error", text: intakeErrorText(error, "No se pudo guardar la revisión antes de cerrar."), sticky: true }));
-    }
-    onClose();
+  function addManualLine() {
+    const line = emptyManualLine();
+    setLines((current) => [...current, line]);
+    setSelected((current) => new Set(current).add(line.id));
+    lineRevisionRef.current.set(line.id, 1);
+    setDirtyLineIds((current) => new Set(current).add(line.id));
   }
+
+  async function removeLineFromReview() {
+    if (!removeLineTarget) return;
+    const lineId = removeLineTarget.id;
+    setRemovingLineId(lineId);
+    try {
+      if (document) {
+        await apiJson(await fetch(`/api/inventory-intake/${document.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ metadataChanged: false, lines: [], deletedLineIds: [lineId], reviewedLineIds: [] }),
+        }));
+      }
+      setLines((current) => current.filter((line) => line.id !== lineId));
+      setSelected((current) => {
+        const next = new Set(current);
+        next.delete(lineId);
+        return next;
+      });
+      setDirtyLineIds((current) => {
+        const next = new Set(current);
+        next.delete(lineId);
+        return next;
+      });
+      lineRevisionRef.current.delete(lineId);
+      setCandidates((current) => {
+        const next = { ...current };
+        delete next[lineId];
+        return next;
+      });
+      setLookupMessages((current) => {
+        const next = { ...current };
+        delete next[lineId];
+        return next;
+      });
+      setRemoveLineTarget(null);
+      onNotify({ type: "success", text: "El producto se eliminó de esta factura." });
+    } catch (error) {
+      onNotify({ type: "error", text: intakeErrorText(error, "No se pudo eliminar este producto de la factura."), sticky: true });
+    } finally {
+      setRemovingLineId(null);
+    }
+  }
+
+  function closeModal() { onClose(); }
 
   if (!open) return null;
   return <div className="modal intake-modal" role="dialog" aria-modal="true" aria-label="Agregar inventario">
@@ -535,65 +1084,120 @@ export function InventoryIntakeModal(props: Props) {
       </section>}
 
       {tab === "invoice" && <section className="intake-pane invoice-intake">
-        {!document && !reading && <label className="surface invoice-upload"><span className="upload-icon"><Upload /></span><h3>Subir factura</h3><p>PDF, fotografías, capturas y documentos de varias páginas.</p><span className="btn primary"><FileText />Elegir archivos</span><input className="native-file-input" type="file" accept="application/pdf,image/*" multiple onChange={analyzeFiles} /></label>}
-        {reading && <div className="surface invoice-reading"><Loader2 className="spin" /><h3>Leyendo la factura</h3><p>{readProgress.message}</p><div className="progress"><span style={{ width: `${Math.round(readProgress.current / Math.max(1, readProgress.total) * 100)}%` }} /></div><b>{Math.round(readProgress.current / Math.max(1, readProgress.total) * 100)}%</b></div>}
+        {!document && !reading && <div className="invoice-start">
+          <div className="invoice-mode-picker" aria-label="Modo de lectura de factura">
+            <button type="button" className={invoiceMode === "ai" ? "active" : ""} onClick={() => setInvoiceMode("ai")} disabled={Boolean(aiConfig && !aiConfig.aiAvailable)}>
+              <span className="mode-icon"><Bot /></span>
+              <span><b>Automático con IA</b><small>Lee el PDF o las imágenes completas, identifica productos y busca códigos exactos en la web.</small></span>
+              <em>{!aiConfig ? "Consultando disponibilidad…" : aiConfig.aiAvailable ? `Disponible · ${aiConfig.model}` : aiConfig.limitReached ? "Límite mensual alcanzado" : aiConfig.aiEnabled ? "Clave no disponible" : "Desactivado"}</em>
+            </button>
+            <button type="button" className={invoiceMode === "manual" ? "active" : ""} onClick={() => setInvoiceMode("manual")}>
+              <span className="mode-icon"><FileSearch /></span>
+              <span><b>Manual</b><small>Guarda la factura sin llamar a OpenAI. Podés escribir cada producto o usar la lectura OCR de respaldo.</small></span>
+              <em>Sin consumo de IA</em>
+            </button>
+          </div>
+          {aiConfig && <div className="ai-budget-note"><Sparkles /><span>Consumo del mes: <b>{costLabel(aiConfig.currentMonthCostUsd)}</b> de {costLabel(aiConfig.monthlyLimitUsd)} · acumulado {costLabel(aiConfig.cumulativeCostUsd)}</span></div>}
+          <label className="surface invoice-upload"><span className="upload-icon"><Upload /></span><h3>Subir factura</h3><p>PDF, fotografías, capturas y documentos de varias páginas. Se guardan antes de iniciar cualquier análisis.</p><span className="btn primary"><FileText />Elegir archivos</span><input className="native-file-input" type="file" accept="application/pdf,image/*" multiple onChange={analyzeFiles} /></label>
+        </div>}
+        {reading && <div className="surface invoice-reading"><Loader2 className="spin" /><h3>{invoiceMode === "ai" ? "Analizando la factura" : "Guardando la factura"}</h3><p>{readProgress.message}</p>{ocrReading && <><div className="progress"><span style={{ width: `${Math.round(readProgress.current / Math.max(1, readProgress.total) * 100)}%` }} /></div><b>{Math.round(readProgress.current / Math.max(1, readProgress.total) * 100)}%</b></>}</div>}
         {document && !reading && <>
           <div className="surface invoice-summary">
-            <div className="invoice-summary-head"><div><span className="eyebrow">Vista previa obligatoria</span><h3>{document.fileName}</h3><p>{document.pageCount} página{document.pageCount === 1 ? "" : "s"} · {lines.length} línea{lines.length === 1 ? "" : "s"}</p></div><label className="btn secondary small"><Upload />Cambiar factura<input className="native-file-input" type="file" accept="application/pdf,image/*" multiple onChange={analyzeFiles} /></label></div>
-            <div className="invoice-meta-grid">
-              <label><span>Proveedor</span><select value={document.provider} onChange={(event) => setDocument({ ...document, provider: event.target.value as IntakeDocument["provider"] })}><option value="amazon">Amazon</option><option value="iherb">iHerb</option><option value="other">Otra tienda</option></select></label>
-              <label><span>N.º pedido</span><input value={document.orderNumber} onChange={(event) => setDocument({ ...document, orderNumber: event.target.value })} /></label>
-              <label><span>N.º factura</span><input value={document.invoiceNumber} onChange={(event) => setDocument({ ...document, invoiceNumber: event.target.value })} /></label>
-              <label><span>N.º envío</span><input value={document.shipmentNumber} onChange={(event) => setDocument({ ...document, shipmentNumber: event.target.value })} /></label>
-              <label><span>Fecha</span><input value={document.documentDate} onChange={(event) => setDocument({ ...document, documentDate: event.target.value })} /></label>
+            <div className="invoice-summary-head">
+              <div><span className="eyebrow">Vista previa obligatoria</span><h3>{document.fileName}</h3><p>{document.pageCount} página{document.pageCount === 1 ? "" : "s"} · {document.fileCount || invoiceFiles.length} archivo{(document.fileCount || invoiceFiles.length) === 1 ? "" : "s"} · {lines.length} producto{lines.length === 1 ? "" : "s"}</p></div>
+              <div className="invoice-summary-actions">
+                {document.processingMode === "manual" && <button className="btn secondary small" onClick={() => void runOcrFallback()} disabled={ocrReading || reanalyzing}><FileSearch />{ocrReading ? "Leyendo…" : "Extraer con OCR (sin IA)"}</button>}
+                <button className="btn secondary small" onClick={() => setReanalyzeConfirmOpen(true)} disabled={reanalyzing || !aiConfig?.aiAvailable || document.analysisStatus === "processing" || !invoiceFiles.length}><Sparkles />{reanalyzing ? "Analizando…" : "Analizar nuevamente"}</button>
+                <label className="btn secondary small"><Upload />Cambiar factura<input className="native-file-input" type="file" accept="application/pdf,image/*" multiple onChange={analyzeFiles} /></label>
+              </div>
             </div>
+
+            {selectedInvoiceFile && <div className="invoice-file-panel">
+              {invoiceFiles.length > 1 && <div className="invoice-file-tabs">{invoiceFiles.map((file, index) => <button type="button" className={selectedFileIndex === index ? "active" : ""} onClick={() => setSelectedFileIndex(index)} key={file.id}><FileText />{file.fileName}</button>)}</div>}
+              <div className="invoice-file-viewer">
+                {selectedInvoiceFile.mimeType === "application/pdf"
+                  ? <iframe src={selectedInvoiceFile.viewUrl} title={`Factura ${selectedInvoiceFile.fileName}`} />
+                  : <img src={selectedInvoiceFile.viewUrl} alt={`Factura ${selectedInvoiceFile.fileName}`} />}
+              </div>
+              <a className="invoice-open-file" href={selectedInvoiceFile.viewUrl} target="_blank" rel="noreferrer"><FileSearch />Abrir archivo completo</a>
+            </div>}
+
+            <div className={`analysis-overview ${document.processingMode}`}>
+              <div className="analysis-mode"><span>{document.processingMode === "ai" ? <Bot /> : <FileSearch />}</span><div><small>Modo actual</small><b>{document.processingMode === "ai" ? "Automático con IA" : "Manual"}</b></div></div>
+              {analysis ? <>
+                <div><small>Modelo</small><b>{analysis.model || "—"}</b></div>
+                <div><small>Tokens</small><b>{analysis.totalTokens.toLocaleString("es-CR")}</b><em>{analysis.cachedInputTokens.toLocaleString("es-CR")} en caché</em></div>
+                <div><small>Búsquedas web</small><b>{analysis.webSearchCount}</b></div>
+                <div><small>Costo estimado de este análisis</small><b>{costLabel(analysis.estimatedCostUsd)}</b></div>
+              </> : <div className="analysis-manual-note"><small>Análisis de OpenAI</small><b>No realizado</b></div>}
+              {usage && <div><small>Costo acumulado</small><b>{costLabel(usage.cumulativeCostUsd)}</b><em>{usage.billedAnalyses} análisis con consumo</em></div>}
+            </div>
+            <div className="invoice-meta-grid">
+              <label><span>Proveedor</span><select value={document.provider} onChange={(event) => updateDocumentMeta({ provider: event.target.value as IntakeDocument["provider"] })}><option value="amazon">Amazon</option><option value="iherb">iHerb</option><option value="other">Otra tienda</option></select></label>
+              <label><span>Número de pedido</span><input value={document.orderNumber} onChange={(event) => updateDocumentMeta({ orderNumber: event.target.value })} placeholder="Pedido, compra u orden" /></label>
+              <label><span>Fecha</span><input value={document.documentDate} onChange={(event) => updateDocumentMeta({ documentDate: event.target.value })} placeholder="Fecha de compra o pedido" /></label>
+              <label><span>Número de rastreo o envío</span><input value={document.shipmentNumber} onChange={(event) => updateDocumentMeta({ shipmentNumber: event.target.value })} placeholder="Si aparece en la factura" /></label>
+            </div>
+            {evidenceEntries(document.fieldEvidence).length > 0 && <div className="evidence-strip"><span><FileSearch />Evidencia del documento</span><div>{evidenceEntries(document.fieldEvidence).map(([field, item]) => <small key={field}><b>{EVIDENCE_LABELS[field] || field}</b>{item.page ? `p. ${item.page}` : "sin página"} · {item.confidence ?? 0}%</small>)}</div></div>}
             <div className="alert success"><ShieldCheck /><span>Los precios, costos, peso, courier, entrega, Correos, ganancias y tipo de cambio están excluidos de esta pantalla y de la actualización.</span></div>
             {document.warnings.map((warning) => <div className="alert warning" key={warning}><AlertCircle />{warning}</div>)}
           </div>
 
-          <div className="invoice-lines-head"><div><h3>Productos reconocidos</h3><p>Confirmá código, producto, presentación y cantidad físicamente recibida.</p></div><button className="btn secondary small" onClick={() => { const line = emptyManualLine(); setLines((current) => [...current, line]); setSelected((current) => new Set(current).add(line.id)); }}><Plus />Agregar línea</button></div>
+          <div className="invoice-lines-head"><div><h3>Productos reconocidos</h3><p>Confirmá código, producto, presentación y cantidad físicamente recibida.</p></div><button className="btn secondary small" onClick={addManualLine}><Plus />Agregar línea</button></div>
           <div className="invoice-preview-table" role="table" aria-label="Vista previa del ingreso de inventario">
             {lines.map((line, index) => {
               const currentQuantity = line.match?.quantityAvailable ?? 0;
               const resultingQuantity = currentQuantity + line.totalToAdd;
               const lineCandidates = candidates[line.id] || [];
               const isSelected = selected.has(line.id);
-              return <article className={`invoice-line status-${line.status} ${isSelected ? "selected" : ""}`} key={line.id}>
-                <div className="invoice-line-top"><label className="product-selector"><input type="checkbox" checked={isSelected} disabled={line.status === "processed" || line.action === "ignore"} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(line.id)) next.delete(line.id); else next.add(line.id); return next; })} /><span><Check /></span></label><div><span className={`status-pill ${line.status}`}>{STATUS_LABELS[line.status]}</span><small>Línea {index + 1}{line.pageNumber ? ` · página ${line.pageNumber}` : " · manual"}</small></div><button className="icon-btn" onClick={() => updateLine(line.id, { action: "ignore", status: "ignored" }, false)} aria-label="Ignorar línea"><X /></button></div>
+              return <article className={`invoice-line status-${line.status} ${isSelected ? "selected" : "excluded"}`} key={line.id}>
+                <div className="invoice-line-top"><label className="product-selector"><input type="checkbox" checked={isSelected} disabled={line.status === "processed"} onChange={() => toggleLineSelection(line)} /><span><Check /></span></label><div><div className="line-statuses"><span className={`status-pill ${line.status}`}>{isSelected ? STATUS_LABELS[line.status] : "No se agregará"}</span>{line.reviewSavedAt && <span className="review-saved-pill"><Save />Progreso guardado</span>}</div><small>Línea {index + 1}{line.pageNumber ? ` · página ${line.pageNumber}` : " · manual"}</small></div><button className="icon-btn danger" onClick={() => setRemoveLineTarget(line)} aria-label="Eliminar producto de la revisión" disabled={line.status === "processed" || removingLineId === line.id}><X /></button></div>
                 <div className="invoice-line-grid">
                   <label className="wide"><span>Producto de la factura</span><input value={line.name} onChange={(event) => updateLine(line.id, { name: event.target.value }, false)} /></label>
                   <label><span>Marca</span><input value={line.brand} onChange={(event) => updateLine(line.id, { brand: event.target.value }, false)} /></label>
                   <label><span>Presentación</span><input value={line.presentation} onChange={(event) => updateLine(line.id, { presentation: event.target.value }, false)} /></label>
+                  <label><span>Tamaño / contenido</span><input value={line.size} onChange={(event) => updateLine(line.id, { size: event.target.value }, false)} /></label>
                   <label><span>{document.provider === "amazon" ? "ASIN" : document.provider === "iherb" ? "Código iHerb" : "Identificador proveedor"}</span><input value={line.secondaryId} onChange={(event) => updateLine(line.id, { secondaryId: event.target.value, secondaryType: document.provider === "amazon" ? "asin" : document.provider === "iherb" ? "iherb" : "other" }, false)} /></label>
                   <label className="wide"><span>Producto de NutriPlus</span><select value={line.matchProductId ? `inventory:${line.matchProductId}` : line.matchNonInventoryId ? `no_inventory:${line.matchNonInventoryId}` : ""} onChange={(event) => chooseMatch(line, event.target.value)}><option value="">Seleccionar o crear producto nuevo</option><optgroup label="Inventario">{products.map((product) => <option value={`inventory:${product.id}`} key={`p-${product.id}`}>{product.name}{product.code ? ` · ${product.code}` : ""}</option>)}</optgroup><optgroup label="No inventario">{quotes.map((quote) => <option value={`no_inventory:${quote.id}`} key={`q-${quote.id}`}>{quote.name}{quote.code ? ` · ${quote.code}` : ""}</option>)}</optgroup></select></label>
                   <label><span>Cantidad facturada</span><input inputMode="numeric" value={line.billedQuantity ?? ""} onChange={(event) => updateLine(line.id, { billedQuantity: event.target.value === "" ? null : Number(event.target.value) }, false)} /></label>
                   <label><span>Cantidad recibida</span><input inputMode="numeric" value={line.receivedQuantity ?? ""} onChange={(event) => updateLine(line.id, { receivedQuantity: event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0) })} /></label>
                   <label><span>Unidades por paquete</span><input inputMode="numeric" value={line.unitsPerPackage} onChange={(event) => updateLine(line.id, { unitsPerPackage: Math.max(1, Number(event.target.value) || 1), barcodeLevel: Number(event.target.value) > 1 ? line.barcodeLevel : "unit" })} /></label>
                   {line.unitsPerPackage > 1 && <label><span>Nivel del código</span><select value={line.barcodeLevel} onChange={(event) => updateLine(line.id, { barcodeLevel: event.target.value as IntakeLineDto["barcodeLevel"] })}><option value="">Confirmar nivel</option><option value="unit">Unidad individual</option><option value="package">Paquete completo</option><option value="distribution">Caja de distribución</option><option value="set">Set de productos</option></select></label>}
-                  <label className="wide barcode-field"><span>UPC / EAN / GTIN</span><div><input value={line.barcode} inputMode="numeric" onChange={(event) => updateLine(line.id, { barcode: event.target.value }, false)} placeholder="Código pendiente" /><button className="btn ghost small" onClick={() => { const checked = validateBarcode(line.barcode); if (!checked.valid || !checked.normalized) return onNotify({ type: "error", text: checked.error || "Ingresá un código válido." }); setPendingBarcode({ lineId: line.id, code: checked.normalized, method: "manual", source: "Escrito y confirmado manualmente" }); }}><Check />Confirmar</button></div></label>
+                  <label className="wide barcode-field"><span>UPC / EAN / GTIN</span><div><input value={line.barcode} inputMode="numeric" onChange={(event) => updateLine(line.id, { barcode: event.target.value, barcodeConfirmed: false })} placeholder="Código pendiente" /><button className={`btn small ${line.barcodeConfirmed ? "primary" : "danger-outline"}`} onClick={() => toggleBarcodeConfirmation(line)}><Check />{line.barcodeConfirmed ? "Código confirmado" : "Confirmar código de barras"}</button></div></label>
                 </div>
-                {(!line.barcode || ["requires_confirm_code", "conflict_identifiers"].includes(line.status)) && <div className="code-pending-box"><p><b>No fue posible confirmar el código de barras de este producto.</b> Selecciona una opción para continuar.</p><div><button className="btn secondary small" onClick={() => onRequestScan(line.id)}><Camera />Escanear código</button><label className="btn secondary small"><ImageUp />Subir imagen<input className="native-file-input" type="file" accept="image/*" onChange={(event) => { const input = event.currentTarget; const file = input.files?.[0]; if (file) void readLineImage(line.id, file).finally(() => { input.value = ""; }); }} /></label><button className="btn secondary small" onClick={() => void pasteLineCode(line.id)}><ClipboardPaste />Pegar código</button><button className="btn secondary small" onClick={() => setManualCodeLine(manualCodeLine === line.id ? null : line.id)}><Barcode />Escribir código</button><button className="btn ghost small" onClick={() => void lookupCode(line)} disabled={lookupLineId === line.id}>{lookupLineId === line.id ? <Loader2 className="spin" /> : <Search />}Buscar código</button></div>{manualCodeLine === line.id && <div className="manual-code-row"><input value={line.barcode} inputMode="numeric" onChange={(event) => updateLine(line.id, { barcode: event.target.value }, false)} placeholder="Escribí 8, 12, 13 o 14 dígitos" /><button className="btn primary small" onClick={() => { const checked = validateBarcode(line.barcode); if (!checked.valid || !checked.normalized) return onNotify({ type: "error", text: checked.error || "Código inválido." }); setPendingBarcode({ lineId: line.id, code: checked.normalized, method: "manual", source: "Escrito y confirmado manualmente" }); }}>Revisar</button></div>}</div>}
-                {lookupMessages[line.id] && <div className={`lookup-results ${lineCandidates.length ? "has-results" : ""}`}><p>{lookupMessages[line.id]}</p>{lineCandidates.map((candidate) => <button key={`${candidate.code}-${candidate.source}`} onClick={() => setPendingBarcode({ lineId: line.id, code: candidate.code, method: "external_source", source: `${candidate.source}: ${candidate.sourceUrl}` })}><span><b>{candidate.code} · {candidate.type}</b><small>{candidate.title}{candidate.presentation ? ` · ${candidate.presentation}` : ""}</small>{candidate.differences.map((difference) => <em key={difference}>{difference}</em>)}</span><strong>{candidate.confidence}%<small>Confirmar</small></strong></button>)}</div>}
+                {(!line.barcodeConfirmed || ["requires_confirm_code", "conflict_identifiers"].includes(line.status)) && <div className="code-pending-box"><p><b>El código de barras está pendiente de confirmación.</b> Seleccioná una opción para continuar.</p><div><button className="btn secondary small" onClick={() => onRequestScan(line.id)}><Camera />Escanear código</button><label className="btn secondary small"><ImageUp />Subir imagen<input className="native-file-input" type="file" accept="image/*" onChange={(event) => { const input = event.currentTarget; const file = input.files?.[0]; if (file) void readLineImage(line.id, file).finally(() => { input.value = ""; }); }} /></label><button className="btn secondary small" onClick={() => void pasteLineCode(line.id)}><ClipboardPaste />Pegar código</button><button className="btn secondary small" onClick={() => setManualCodeLine(manualCodeLine === line.id ? null : line.id)}><Barcode />Escribir código</button><button className="btn ghost small" onClick={() => void lookupCode(line)} disabled={lookupLineId === line.id}>{lookupLineId === line.id ? <Loader2 className="spin" /> : <Search />}Buscar código</button></div>{manualCodeLine === line.id && <div className="manual-code-row"><input value={line.barcode} inputMode="numeric" onChange={(event) => updateLine(line.id, { barcode: event.target.value, barcodeConfirmed: false })} placeholder="Escribí 8, 12, 13 o 14 dígitos" /><button className="btn primary small" onClick={() => toggleBarcodeConfirmation(line)}>Revisar</button></div>}</div>}
+                {lookupMessages[line.id] && <div className={`lookup-results ${lineCandidates.length ? "has-results" : ""}`}><p>{lookupMessages[line.id]}</p>{lineCandidates.map((candidate) => <button key={`${candidate.code}-${candidate.source}`} onClick={() => setPendingBarcode({ lineId: line.id, code: candidate.code, method: "external_source", source: candidate.source, sourceUrl: candidate.sourceUrl, sourceTitle: candidate.title, differences: candidate.differences })}><span><b>{candidate.code} · {candidate.type}</b><small>{candidate.title}{candidate.presentation ? ` · ${candidate.presentation}` : ""}</small>{candidate.differences.map((difference) => <em key={difference}>{difference}</em>)}</span><strong>{candidate.confidence}%<small>Confirmar</small></strong></button>)}</div>}
+                {(line.barcodeSource || line.barcodeSourceUrl) && <div className={`barcode-source-card ${line.barcodeDifferences.length ? "warning" : ""}`}><FileSearch /><div><small>Fuente del código de barras</small>{line.barcodeSourceUrl ? <a href={line.barcodeSourceUrl} target="_blank" rel="noreferrer">{line.barcodeSourceTitle || line.barcodeSource || "Abrir fuente consultada"}</a> : <b>{line.barcodeSourceTitle || line.barcodeSource}</b>}{line.barcodeDifferences.map((difference) => <em key={difference}>{difference}</em>)}</div><span>{line.barcodeLookupStatus === "found_exact" ? "Coincidencia exacta" : line.barcodeLookupStatus === "suggestion" ? "Revisar diferencias" : "Pendiente"}</span></div>}
+                {evidenceEntries(line.fieldEvidence).length > 0 && <div className="evidence-strip line-evidence"><span><FileSearch />Evidencia de extracción</span><div>{evidenceEntries(line.fieldEvidence).map(([field, item]) => <small key={field}><b>{EVIDENCE_LABELS[field] || field}</b>{item.page ? `p. ${item.page}` : "sin página"} · {item.confidence ?? 0}%</small>)}</div></div>}
                 {line.warnings.map((warning) => <div className="alert warning line-warning" key={warning}><AlertCircle />{warning}</div>)}
                 <div className="quantity-preview"><span><small>Existencia actual</small><b>{line.match?.source === "inventory" ? currentQuantity : line.action === "move" || line.action === "create" ? 0 : "—"}</b></span><span><small>Se agregará</small><b>+{line.totalToAdd}</b></span><span><small>Existencia resultante</small><b>{line.match?.source === "inventory" || ["move", "create"].includes(line.action) ? resultingQuantity : "—"}</b></span></div>
                 {line.status === "non_inventory" && <div className="alert success"><PackagePlus />Al confirmar: Mover a inventario y agregar cantidad. Sus precios y demás datos permanecerán sin cambios.</div>}
-                {line.status === "new_product" && <div className="new-product-choice"><button className={`btn small ${line.action === "create" ? "primary" : "secondary"}`} onClick={() => updateLine(line.id, { action: "create", matchProductId: null, matchNonInventoryId: null })}><Plus />Crear producto sin precios</button></div>}
+                {line.status !== "processed" && <div className="line-save-actions">
+                  <div>{line.status === "new_product" && <p><b>Producto nuevo:</b> se creará en Inventario sin precios únicamente cuando confirmés el ingreso.</p>}{line.reviewSavedAt && !dirtyLineIds.has(line.id) && <small>Si cerrás la página, este avance se recuperará al volver a subir la factura.</small>}</div>
+                  <div className="line-action-buttons">
+                    <button className={`btn small ${line.reviewSavedAt && !dirtyLineIds.has(line.id) ? "success-static" : "secondary"}`} onClick={() => void saveOneLine(line.id)} disabled={!isSelected || savingDraft || confirming || line.reviewSavedAt !== "" && !dirtyLineIds.has(line.id)}>{savingLineId === line.id ? <Loader2 className="spin" /> : line.reviewSavedAt && !dirtyLineIds.has(line.id) ? <Check /> : <Save />}{line.reviewSavedAt && !dirtyLineIds.has(line.id) ? "Producto guardado" : line.reviewSavedAt ? "Guardar cambios" : "Guardar producto"}</button>
+                    <button className="btn primary small" onClick={() => void confirmIngreso(line.id)} disabled={!isSelected || confirming || savingDraft || !CONFIRMABLE.has(line.status) || line.action === "pending" || line.totalToAdd <= 0 || Boolean(pendingVerification)}>{confirmingLineId === line.id ? <Loader2 className="spin" /> : <ShieldCheck />}{confirmingLineId === line.id ? "Ingresando…" : `Ingresar este producto (+${line.totalToAdd})`}</button>
+                  </div>
+                </div>}
               </article>;
             })}
           </div>
-          <p className="split-help">Para distribuir un set entre productos diferentes, agregá una línea por componente y marcá la línea original como Ignorada.</p>
+          <p className="split-help">Para distribuir un set entre productos diferentes, agregá una línea por componente y eliminá la línea original con la X.</p>
           {blockedSelected.length > 0 && <div className="alert error"><AlertCircle />{blockedSelected.length} línea{blockedSelected.length === 1 ? " seleccionada necesita" : "s seleccionadas necesitan"} revisión antes de confirmar.</div>}
-          <div className="intake-footer"><button className="btn secondary" onClick={() => void saveDraft()} disabled={savingDraft}>{savingDraft ? <Loader2 className="spin" /> : <Save />}Guardar revisión</button><button className="btn primary" onClick={() => void confirmIngreso()} disabled={confirming || !selectedLines.length || blockedSelected.length > 0 || Boolean(pendingVerification)}>{confirming ? <Loader2 className="spin" /> : <ShieldCheck />}Confirmar ingreso ({selectedLines.reduce((total, line) => total + line.totalToAdd, 0)} unidades)</button></div>
+          <div className="intake-footer"><button className="btn danger-outline" onClick={() => setCancelConfirmOpen(true)} disabled={canceling || confirming || Boolean(pendingVerification)}><X />Cancelar todo</button><button className="btn secondary" onClick={() => void saveDraft({ reviewedLineIds: new Set(lines.filter((line) => selected.has(line.id) && line.status !== "processed").map((line) => line.id)) })} disabled={savingDraft || confirming}>{savingDraft && !savingLineId ? <Loader2 className="spin" /> : <Save />}Guardar toda la revisión</button><button className="btn primary" onClick={() => void confirmIngreso()} disabled={confirming || savingDraft || !selectedLines.length || blockedSelected.length > 0 || Boolean(pendingVerification)}>{confirming ? <Loader2 className="spin" /> : <ShieldCheck />}Confirmar ingreso ({selectedLines.reduce((total, line) => total + line.totalToAdd, 0)} unidades)</button></div>
         </>}
       </section>}
 
       {tab === "history" && <section className="intake-pane intake-history">
         <div className="intake-intro"><FileClock /><div><h3>Historial de movimientos</h3><p>Cada ingreso conserva la existencia anterior, la cantidad agregada y la existencia resultante.</p></div><button className="btn secondary small" onClick={() => void loadHistory()} disabled={historyLoading}>{historyLoading ? <Loader2 className="spin" /> : <RotateCcw />}Actualizar</button></div>
-        {historyLoading && !history.length ? <div className="recent-loading"><Loader2 className="spin" />Cargando historial…</div> : !history.length ? <p className="empty-summary">Todavía no hay ingresos registrados.</p> : <div className="operation-list">{history.map((operation) => <article className={operation.operationType === "reversal" ? "reversal" : ""} key={operation.id}><header><div><b>{operation.operationType === "reversal" ? "Reversión" : operation.fileName}</b><small>{new Date(operation.confirmedAt).toLocaleString("es-CR")} · {operation.confirmedBy || "Usuario"}</small></div><span>{operation.totalUnits > 0 ? "+" : ""}{operation.totalUnits} unidades</span></header>{operation.invoiceNumber && <p>Factura {operation.invoiceNumber}{operation.shipmentNumber ? ` · envío ${operation.shipmentNumber}` : ""}</p>}<div className="movement-list">{operation.movements.map((movement) => <div key={movement.id}><span><b>{movement.productName}</b><small>{movement.barcode || "Sin código"}</small></span><span>{movement.previousQuantity} <b>{movement.quantityChange >= 0 ? "+" : "−"} {Math.abs(movement.quantityChange)}</b> = {movement.resultingQuantity}</span></div>)}</div>{operation.operationType !== "reversal" && !operation.reversed && <button className="btn danger-outline small" onClick={() => { setReverseTarget(operation); setReverseReason(""); }}><RotateCcw />Revertir ingreso</button>}{operation.reversed && <small className="reversed-label">Este ingreso ya fue revertido mediante un movimiento contrario.</small>}</article>)}</div>}
+        {historyLoading && !history.length ? <div className="recent-loading"><Loader2 className="spin" />Cargando historial…</div> : !history.length ? <p className="empty-summary">Todavía no hay ingresos registrados.</p> : <div className="operation-list">{history.map((operation) => <article className={operation.operationType === "reversal" ? "reversal" : ""} key={operation.id}><header><div><b>{operation.operationType === "reversal" ? "Reversión" : operation.fileName}</b><small>{new Date(operation.confirmedAt).toLocaleString("es-CR")} · {operation.confirmedBy || "Usuario"}</small></div><span>{operation.totalUnits > 0 ? "+" : ""}{operation.totalUnits} unidades</span></header>{(operation.orderNumber || operation.shipmentNumber) && <p>{operation.orderNumber ? `Pedido ${operation.orderNumber}` : "Pedido sin número"}{operation.shipmentNumber ? ` · rastreo ${operation.shipmentNumber}` : ""}</p>}<div className="movement-list">{operation.movements.map((movement) => <div key={movement.id}><span><b>{movement.productName}</b><small>{movement.barcode || "Sin código"}</small></span><span>{movement.previousQuantity} <b>{movement.quantityChange >= 0 ? "+" : "−"} {Math.abs(movement.quantityChange)}</b> = {movement.resultingQuantity}</span></div>)}</div>{operation.operationType !== "reversal" && !operation.reversed && <button className="btn danger-outline small" onClick={() => { setReverseTarget(operation); setReverseReason(""); }}><RotateCcw />Revertir ingreso</button>}{operation.reversed && <small className="reversed-label">Este ingreso ya fue revertido mediante un movimiento contrario.</small>}</article>)}</div>}
       </section>}
     </div>
 
-    {pendingBarcode && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card barcode-confirm"><div className="download-symbol"><Barcode /></div><h2>Confirmar código detectado</h2><p>Verificá el número antes de guardarlo. No se utilizará hasta que lo confirmés.</p><strong>{pendingBarcode.code}</strong><small>{validateBarcode(pendingBarcode.code).type}</small><div className="confirm-actions"><button className="btn secondary" onClick={() => setPendingBarcode(null)}>Cancelar</button><button className="btn primary" onClick={confirmPendingBarcode}><Check />Confirmar código</button></div></div></div>}
+    {removeLineTarget && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card"><div className="delete-symbol"><X /></div><h2>¿Eliminar este producto?</h2><p>Se quitará <b>{removeLineTarget.name || "este producto"}</b> de la revisión. Ya no aparecerá en esta factura ni será necesario completar sus datos.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setRemoveLineTarget(null)} disabled={Boolean(removingLineId)}>No, conservar</button><button className="btn danger-solid" onClick={() => void removeLineFromReview()} disabled={Boolean(removingLineId)}>{removingLineId ? <Loader2 className="spin" /> : <X />}Sí, eliminar</button></div></div></div>}
+    {cancelConfirmOpen && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card"><div className="delete-symbol"><X /></div><h2>¿Cancelar toda la carga?</h2><p>Se borrará el borrador completo, incluido el progreso guardado producto por producto. No quedará registrado como ingresado y volverás a la pantalla para cargar otra factura.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setCancelConfirmOpen(false)} disabled={canceling}>No, continuar</button><button className="btn danger-solid" onClick={() => void cancelInvoiceReview(false, true)} disabled={canceling}>{canceling ? <Loader2 className="spin" /> : <X />}Sí, cancelar y borrar</button></div></div></div>}
+    {reanalyzeConfirmOpen && document && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card reanalyze-card"><div className="download-symbol"><Sparkles /></div><h2>¿Analizar nuevamente con IA?</h2><p>Esto enviará otra vez todos los archivos de esta factura a OpenAI y <b>generará un nuevo consumo</b>. No se usa el análisis en caché. Los productos ya confirmados y el progreso guardado se conservan.</p>{analysis && <div className="reanalyze-cost"><span>Último análisis</span><b>{costLabel(analysis.estimatedCostUsd)}</b><small>Referencia estimada; el nuevo costo puede variar según páginas y búsquedas.</small></div>}<div className="confirm-actions"><button className="btn secondary" onClick={() => setReanalyzeConfirmOpen(false)} disabled={reanalyzing}>No, conservar análisis</button><button className="btn primary" onClick={() => void reanalyzeInvoice()} disabled={reanalyzing || !aiConfig?.aiAvailable}>{reanalyzing ? <Loader2 className="spin" /> : <Sparkles />}Sí, generar nuevo consumo</button></div></div></div>}
+    {pendingBarcode && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card barcode-confirm"><div className="download-symbol"><Barcode /></div><h2>Confirmar código detectado</h2><p>Verificá el número y la presentación antes de guardarlo. No se utilizará hasta que lo confirmés.</p><strong>{pendingBarcode.code}</strong><small>{validateBarcode(pendingBarcode.code).type}</small>{pendingBarcode.sourceUrl && <a className="pending-source-link" href={pendingBarcode.sourceUrl} target="_blank" rel="noreferrer">{pendingBarcode.sourceTitle || pendingBarcode.source}</a>}{pendingBarcode.differences?.map((difference) => <div className="alert warning" key={difference}><AlertCircle />{difference}</div>)}<div className="confirm-actions"><button className="btn secondary" onClick={() => setPendingBarcode(null)}>Cancelar</button><button className="btn primary" onClick={confirmPendingBarcode}><Check />Confirmar código</button></div></div></div>}
     {reverseTarget && <div className="nested-modal" role="dialog" aria-modal="true"><div className="confirm-card reverse-card"><div className="delete-symbol"><RotateCcw /></div><h2>Revertir ingreso</h2><p>Se creará un movimiento contrario sin borrar el historial original. Si ya se vendieron unidades y no hay suficiente inventario, la operación se bloqueará.</p><label className="field"><span>Razón de la reversión</span><textarea value={reverseReason} onChange={(event) => setReverseReason(event.target.value)} placeholder="Ej. cantidad ingresada incorrectamente" /></label><div className="confirm-actions"><button className="btn secondary" onClick={() => setReverseTarget(null)} disabled={reversing}>Cancelar</button><button className="btn danger-solid" onClick={() => void reverseOperation()} disabled={reversing || reverseReason.trim().length < 3}>{reversing ? <Loader2 className="spin" /> : <RotateCcw />}Crear reversión</button></div></div></div>}
   </div>;
 }

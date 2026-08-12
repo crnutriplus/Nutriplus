@@ -5,6 +5,11 @@ import handler from "vinext/server/app-router-entry";
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  BUCKET: R2Bucket;
+  OPENAI_API_KEY?: string;
+  INVOICE_AI_ENABLED?: string;
+  INVOICE_AI_MODEL?: string;
+  INVOICE_AI_MONTHLY_LIMIT_USD?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -28,6 +33,11 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     globalThis.__NUTRIPLUS_DB__ = env.DB;
+    globalThis.__NUTRIPLUS_BUCKET__ = env.BUCKET;
+    globalThis.__NUTRIPLUS_OPENAI_API_KEY__ = env.OPENAI_API_KEY;
+    globalThis.__NUTRIPLUS_INVOICE_AI_ENABLED__ = env.INVOICE_AI_ENABLED;
+    globalThis.__NUTRIPLUS_INVOICE_AI_MODEL__ = env.INVOICE_AI_MODEL;
+    globalThis.__NUTRIPLUS_INVOICE_AI_MONTHLY_LIMIT_USD__ = env.INVOICE_AI_MONTHLY_LIMIT_USD;
     const url = new URL(request.url);
 
     if (url.pathname === "/_vinext/image") {

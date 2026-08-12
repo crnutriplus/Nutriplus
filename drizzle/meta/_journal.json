@@ -64,6 +64,27 @@
       "when": 1786476289059,
       "tag": "0008_sad_ares",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1786500040147,
+      "tag": "0009_friendly_naoko",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1786515531139,
+      "tag": "0010_odd_cannonball",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1786516276245,
+      "tag": "0011_smart_reavers",
+      "breakpoints": true
     }
   ]
 }

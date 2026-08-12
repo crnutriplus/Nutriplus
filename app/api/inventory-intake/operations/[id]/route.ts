@@ -29,6 +29,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       products: products.results.map(productFromRow),
       movements: movements.results.map((movement) => ({
         id: String(movement.id),
+        documentLineId: movement.document_line_id ? String(movement.document_line_id) : "",
         productId: Number(movement.product_id),
         productName: String(movement.product_name),
         previousQuantity: Number(movement.previous_quantity),

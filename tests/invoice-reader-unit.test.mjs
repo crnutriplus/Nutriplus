@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { invoiceFileKind, invoiceReadErrorMessage, sha256Fallback } from "../lib/invoice-reader.ts";
+import { parseInvoicePages } from "../lib/invoice-parser.ts";
 
 test("recognizes PDFs even when the phone omits or generalizes the MIME type", () => {
   assert.equal(invoiceFileKind({ name: "factura.pdf", type: "" }), "pdf");
@@ -34,4 +35,61 @@ test("keeps selected invoice files available and renders errors above the intake
   assert.doesNotMatch(analyzeSource, /(?:currentTarget|target)\.value\s*=/);
   assert.match(styles, /\.toast\s*\{[^}]*z-index:\s*240\b/s);
   assert.match(styles, /\.intake-modal\s*\{\s*z-index:\s*130\b/);
+  assert.match(intakeSource, /Confirmar código de barras/);
+  assert.match(intakeSource, /No se agregará/);
+  assert.match(intakeSource, /¿Eliminar este producto\?/);
+  assert.match(intakeSource, /¿Cancelar toda la carga\?/);
+  assert.match(intakeSource, /deletedLineIds/);
+});
+
+test("reads the exact iHerb Spanish order, date, and tracking labels", () => {
+  const parsed = parseInvoicePages([{ pageNumber: 1, confidence: 100, source: "pdf_text", text: `
+www.iHerb.com
+Número de compra: 945586803
+Fecha de la compra: 03 Julio 2026
+Método de envío / Información
+de seguimiento
+Envío acelerado /
+1LSCXLZ0066WJ4P
+Cantidad 1 Centrum, suplemento multivitamínico para mujeres, 65 comprimidos CEM-75565
+` }]);
+  assert.equal(parsed.provider, "iherb");
+  assert.equal(parsed.orderNumber, "945586803");
+  assert.equal(parsed.documentDate, "03 Julio 2026");
+  assert.equal(parsed.shipmentNumber, "1LSCXLZ0066WJ4P");
+});
+
+test("reads Amazon Spanish order labels including common OCR variants", () => {
+  for (const label of ["N.º de pedido", "N.° de pedido", "N.P de pedido"]) {
+    const parsed = parseInvoicePages([{ pageNumber: 1, confidence: 90, source: "ocr", text: `
+Amazon Resumen del pedido
+Pedido realizado 25 de julio de 2026 — ${label} 112-7504724-5768234
+Cantidad 1 Vitamin B9 gotas líquidas 500 mcg
+` }]);
+    assert.equal(parsed.provider, "amazon");
+    assert.equal(parsed.orderNumber, "112-7504724-5768234");
+    assert.equal(parsed.documentDate, "25 de julio de 2026");
+  }
+});
+
+test("reads metadata extracted from both user-provided invoices", async () => {
+  const [amazonText, iherbText] = await Promise.all([
+    readFile(new URL("./fixtures/amazon-real-ocr.txt", import.meta.url), "utf8"),
+    readFile(new URL("./fixtures/iherb-real-text.txt", import.meta.url), "utf8"),
+  ]);
+  const amazon = parseInvoicePages([{ pageNumber: 1, confidence: 90, source: "ocr", text: amazonText }]);
+  assert.equal(amazon.provider, "amazon");
+  assert.equal(amazon.orderNumber, "112-7504724-5768234");
+  assert.equal(amazon.documentDate, "25 de julio de 2026");
+  assert.equal(amazon.lines.length, 4);
+  assert.match(amazon.lines[0].name, /Scent Fill Ambientador/i);
+  assert.match(amazon.lines[3].name, /Amazon Basics Gel Eliminador/i);
+
+  const iherb = parseInvoicePages([{ pageNumber: 1, confidence: 100, source: "pdf_text", text: iherbText }]);
+  assert.equal(iherb.provider, "iherb");
+  assert.equal(iherb.orderNumber, "945586803");
+  assert.equal(iherb.documentDate, "03 Julio 2026");
+  assert.equal(iherb.shipmentNumber, "1LSCXLZ0066WJ4P");
+  assert.deepEqual(iherb.lines.map((line) => line.billedQuantity), [1, 1, 2, 1]);
+  assert.deepEqual(iherb.lines.map((line) => line.secondaryId), ["CEM-75565", "NOW-03773", "SNS-02782", "NOR-56780"]);
 });

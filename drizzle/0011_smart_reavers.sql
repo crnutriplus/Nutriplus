@@ -1,0 +1,1 @@
+ALTER TABLE `inventory_document_lines` ADD `line_index` integer DEFAULT 0 NOT NULL;

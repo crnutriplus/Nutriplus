@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
-import { Miniflare } from "miniflare";
+import { LocalD1Database } from "./helpers/local-bindings.mjs";
 
-const mf = new Miniflare({
-  modules: true,
-  script: "export default { fetch() { return new Response('ok') } }",
-  d1Databases: { DB: "nutriplus-concurrency-test" },
-});
-const DB = await mf.getD1Database("DB");
+const DB = new LocalD1Database();
 const workerUrl = new URL("../dist/server/index.js", import.meta.url);
 workerUrl.searchParams.set("concurrency", `${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
@@ -226,5 +221,5 @@ assert.equal(restored.body.products, deletionJob.totalProducts);
 assert.equal((await call("/api/products?limit=5000")).body.products.length, deletionJob.totalProducts);
 assert.equal((await call("/api/products?code=POST-DELETE-001")).body.product, null);
 
-await mf.dispose();
+DB.close();
 console.log("Concurrency, queued imports, restore, bulk quantities, and bulk deletion checks passed");

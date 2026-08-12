@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
-import { Miniflare } from "miniflare";
+import { LocalD1Database } from "./helpers/local-bindings.mjs";
 
-const mf = new Miniflare({
-  modules: true,
-  script: "export default { fetch() { return new Response('ok') } }",
-  d1Databases: { DB: "nutriplus-test" },
-});
-const DB = await mf.getD1Database("DB");
+const DB = new LocalD1Database();
 const workerUrl = new URL("../dist/server/index.js", import.meta.url);
 workerUrl.searchParams.set("integration", `${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
@@ -178,5 +173,5 @@ assert.equal(savedSettings.body.verification.inventory, 3);
 assert.equal(savedSettings.body.verification.noInventory, 1);
 assert.equal(savedSettings.body.verification.failed.length, 0);
 
-await mf.dispose();
+DB.close();
 console.log("API integration checks passed");

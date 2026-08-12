@@ -11,6 +11,7 @@ type ConfirmLine = {
   name?: unknown;
   brand?: unknown;
   presentation?: unknown;
+  size?: unknown;
   flavor?: unknown;
   concentration?: unknown;
   originalDescription?: unknown;
@@ -22,6 +23,12 @@ type ConfirmLine = {
   secondaryType?: unknown;
   barcodeMethod?: unknown;
   barcodeSource?: unknown;
+  barcodeSourceUrl?: unknown;
+  barcodeSourceTitle?: unknown;
+  barcodeDifferences?: unknown;
+  barcodeLookupStatus?: unknown;
+  fieldEvidence?: unknown;
+  barcodeConfirmed?: unknown;
   barcodeLevel?: unknown;
   action?: unknown;
   matchProductId?: unknown;
@@ -32,9 +39,11 @@ type ConfirmLine = {
 type CleanLine = {
   id: string;
   lineKey: string;
+  lineIndex: number;
   name: string;
   brand: string;
   presentation: string;
+  size: string;
   flavor: string;
   concentration: string;
   originalDescription: string;
@@ -49,6 +58,12 @@ type CleanLine = {
   secondaryType: string;
   barcodeMethod: string;
   barcodeSource: string;
+  barcodeSourceUrl: string;
+  barcodeSourceTitle: string;
+  barcodeDifferences: string[];
+  barcodeLookupStatus: string;
+  fieldEvidence: Record<string, unknown>;
+  barcodeConfirmed: boolean;
   barcodeLevel: string;
   action: "existing" | "move" | "create";
   matchProductId: number | null;
@@ -156,6 +171,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       const billedQuantity = billedRaw == null || billedRaw === "" ? null : cleanInteger(billedRaw, `La cantidad facturada de la línea ${index + 1}`, 0, 100000);
       const barcode = validateBarcode(source.barcode);
       if (!barcode.valid || !barcode.normalized || !barcode.canonical) errors.push(`Línea ${index + 1}: ${barcode.error || "el código de barras no es válido"}`);
+      const barcodeConfirmed = source.barcodeConfirmed === true;
+      if (!barcodeConfirmed) errors.push(`El código de barras de la línea ${index + 1} todavía no está confirmado.`);
       const action = cleanText(source.action, 20) as CleanLine["action"];
       if (!["existing", "move", "create"].includes(action)) errors.push(`La línea ${index + 1} todavía no tiene una acción confirmada.`);
       const barcodeLevel = cleanText(source.barcodeLevel, 30) || (unitsPerPackage === 1 ? "unit" : "");
@@ -163,9 +180,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       return {
         id,
         lineKey,
+        lineIndex: stored ? Number(stored.line_index || 0) : storedLines.results.length + index,
         name,
         brand: cleanText(source.brand, 200),
         presentation: cleanText(source.presentation, 250),
+        size: cleanText(source.size, 200),
         flavor: cleanText(source.flavor, 150),
         concentration: cleanText(source.concentration, 100),
         originalDescription,
@@ -180,6 +199,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         secondaryType: cleanText(source.secondaryType, 40),
         barcodeMethod: cleanText(source.barcodeMethod, 80) || "manual",
         barcodeSource: cleanText(source.barcodeSource, 500) || "Confirmado por el usuario",
+        barcodeSourceUrl: cleanText(source.barcodeSourceUrl, 2000),
+        barcodeSourceTitle: cleanText(source.barcodeSourceTitle, 500),
+        barcodeDifferences: Array.isArray(source.barcodeDifferences) ? source.barcodeDifferences.map((item) => cleanText(item, 500)).filter(Boolean).slice(0, 20) : [],
+        barcodeLookupStatus: ["found_exact", "suggestion", "pending"].includes(cleanText(source.barcodeLookupStatus, 30)) ? cleanText(source.barcodeLookupStatus, 30) : "pending",
+        fieldEvidence: source.fieldEvidence && typeof source.fieldEvidence === "object" && !Array.isArray(source.fieldEvidence) ? source.fieldEvidence as Record<string, unknown> : {},
+        barcodeConfirmed,
         barcodeLevel,
         action,
         matchProductId: Number.isInteger(Number(source.matchProductId)) && Number(source.matchProductId) > 0 ? Number(source.matchProductId) : null,
@@ -250,30 +275,38 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     ];
 
     lines.forEach((line) => {
+      const barcodeAuditSource = [line.barcodeSource, line.barcodeSourceTitle, line.barcodeSourceUrl].filter(Boolean).join(" · ").slice(0, 2500);
       const stored = storedById.get(line.id);
       if (!stored) {
         statements.push(db.prepare(`INSERT INTO inventory_document_lines (
-          id,document_id,line_key,original_description,name,brand,presentation,flavor,concentration,billed_quantity,
+          id,document_id,line_key,line_index,original_description,name,brand,presentation,size,flavor,concentration,billed_quantity,
           received_quantity,units_per_package,total_to_add,barcode,canonical_barcode,barcode_type,secondary_id,
-          secondary_type,barcode_method,barcode_source,confidence,status,match_product_id,match_non_inventory_id,
+          secondary_type,barcode_method,barcode_source,barcode_source_url,barcode_source_title,barcode_differences_json,
+          barcode_lookup_status,field_evidence_json,barcode_confirmed,selected_for_ingress,review_saved_at,confidence,status,match_product_id,match_non_inventory_id,
           action,barcode_level,warnings_json,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,100,'confirmed',?,?,?,?,'[]',?,?)`).bind(
-          line.id, documentId, line.lineKey, line.originalDescription, line.name, line.brand || null, line.presentation || null,
-          line.flavor || null, line.concentration || null, line.billedQuantity, line.receivedQuantity, line.unitsPerPackage,
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+          line.id, documentId, line.lineKey, line.lineIndex, line.originalDescription, line.name, line.brand || null, line.presentation || null,
+          line.size || null, line.flavor || null, line.concentration || null, line.billedQuantity, line.receivedQuantity, line.unitsPerPackage,
           line.totalToAdd, line.barcode, line.canonicalBarcode, line.barcodeType, line.secondaryId || null,
-          line.secondaryType || null, line.barcodeMethod, line.barcodeSource, line.matchProductId, line.matchNonInventoryId,
-          line.action, line.barcodeLevel, now, now,
+          line.secondaryType || null, line.barcodeMethod, line.barcodeSource, line.barcodeSourceUrl || null,
+          line.barcodeSourceTitle || null, JSON.stringify(line.barcodeDifferences), line.barcodeLookupStatus,
+          JSON.stringify(line.fieldEvidence), line.barcodeConfirmed ? 1 : 0, 1, now,
+          100, "confirmed", line.matchProductId, line.matchNonInventoryId, line.action, line.barcodeLevel, "[]", now, now,
         ));
       } else {
         statements.push(db.prepare(`UPDATE inventory_document_lines SET
-          original_description=?,name=?,brand=?,presentation=?,flavor=?,concentration=?,billed_quantity=?,received_quantity=?,
+          original_description=?,name=?,brand=?,presentation=?,size=?,flavor=?,concentration=?,billed_quantity=?,received_quantity=?,
           units_per_package=?,total_to_add=?,barcode=?,canonical_barcode=?,barcode_type=?,secondary_id=?,secondary_type=?,
-          barcode_method=?,barcode_source=?,status='confirmed',match_product_id=?,match_non_inventory_id=?,action=?,barcode_level=?,
+          barcode_method=?,barcode_source=?,barcode_source_url=?,barcode_source_title=?,barcode_differences_json=?,
+          barcode_lookup_status=?,field_evidence_json=?,barcode_confirmed=1,selected_for_ingress=1,review_saved_at=COALESCE(review_saved_at,?),
+          status='confirmed',match_product_id=?,match_non_inventory_id=?,action=?,barcode_level=?,
           updated_at=? WHERE id=? AND document_id=? AND processed_operation_id IS NULL`).bind(
-          line.originalDescription, line.name, line.brand || null, line.presentation || null, line.flavor || null,
+          line.originalDescription, line.name, line.brand || null, line.presentation || null, line.size || null, line.flavor || null,
           line.concentration || null, line.billedQuantity, line.receivedQuantity, line.unitsPerPackage, line.totalToAdd,
           line.barcode, line.canonicalBarcode, line.barcodeType, line.secondaryId || null, line.secondaryType || null,
-          line.barcodeMethod, line.barcodeSource, line.matchProductId, line.matchNonInventoryId, line.action, line.barcodeLevel,
+          line.barcodeMethod, line.barcodeSource, line.barcodeSourceUrl || null, line.barcodeSourceTitle || null,
+          JSON.stringify(line.barcodeDifferences), line.barcodeLookupStatus, JSON.stringify(line.fieldEvidence), now,
+          line.matchProductId, line.matchNonInventoryId, line.action, line.barcodeLevel,
           now, line.id, documentId,
         ));
       }
@@ -316,7 +349,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         movementId, operationId, line.id,
         productLookupValue, productLookupValue, line.barcode, line.canonicalBarcode, line.secondaryId || null, line.secondaryType || null,
         productLookupValue, line.totalToAdd, line.unitsPerPackage, line.totalToAdd, productLookupValue,
-        line.barcodeMethod, line.barcodeSource, user, now,
+        line.barcodeMethod, barcodeAuditSource, user, now,
       ));
       statements.push(db.prepare(`UPDATE products SET quantity_available=quantity_available+?,zero_stock_since=NULL,
         restock_purchased_at=CASE WHEN quantity_available+?>0 AND (minimum_stock_enabled=0 OR quantity_available+?>minimum_stock) THEN NULL ELSE restock_purchased_at END,
@@ -337,7 +370,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           confirmed_by=excluded.confirmed_by,updated_at=excluded.updated_at`).bind(
           String(document.provider), line.secondaryType || "other", line.secondaryId, line.barcode, line.canonicalBarcode,
           productLookupValue, descriptionSignature(line.name), presentationSignature(line.name, line.presentation, line.flavor, line.concentration),
-          line.unitsPerPackage, line.barcodeLevel, line.barcodeSource, now, user, now,
+          line.unitsPerPackage, line.barcodeLevel, barcodeAuditSource, now, user, now,
         ));
       }
     });
