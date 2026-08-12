@@ -7,7 +7,7 @@ function evidence(field, value, page = 1, confidence = 95, source = "invoice_vis
 }
 
 test("estimates model, cached-token, output, and web-search consumption", () => {
-  assert.equal(estimateInvoiceAiCostMicrousd("gpt-5.6-terra-2026-08-01", 10_000, 2_000, 2_000, 4), 60_200);
+  assert.equal(estimateInvoiceAiCostMicrousd("gpt-5.6-terra-2026-08-01", 10_000, 2_000, 2_000, 4), 80_400);
   assert.equal(estimateInvoiceAiCostMicrousd("gpt-5.6-terra", 0, 0, 0, 0), 0);
 });
 

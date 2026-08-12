@@ -379,9 +379,9 @@ function sanitizeAnalysis(value: unknown, sources: Array<{ title: string; url: s
 }
 
 const MODEL_PRICING_USD_PER_MILLION: Record<string, { input: number; cached: number; output: number }> = {
-  "gpt-5.6-sol": { input: 2.5, cached: 0.25, output: 15 },
-  "gpt-5.6-terra": { input: 1, cached: 0.1, output: 6 },
-  "gpt-5.6-luna": { input: 0.1, cached: 0.01, output: 0.6 },
+  "gpt-5.6-sol": { input: 5, cached: 0.5, output: 30 },
+  "gpt-5.6-terra": { input: 2, cached: 0.2, output: 12 },
+  "gpt-5.6-luna": { input: 0.2, cached: 0.02, output: 1.2 },
   "gpt-5.4-mini": { input: 0.75, cached: 0.075, output: 4.5 },
 };
 
@@ -471,7 +471,7 @@ export async function analyzeStoredInvoice(files: StoredInvoiceFileRow[]): Promi
       body: JSON.stringify({
         model: config.model,
         reasoning: { effort: "low" },
-        tools: [{ type: "web_search", external_web_access: true }],
+        tools: [{ type: "web_search", external_web_access: true, search_context_size: "medium" }],
         tool_choice: "auto",
         include: ["web_search_call.action.sources"],
         input: [{ role: "user", content }],
