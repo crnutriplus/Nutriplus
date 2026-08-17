@@ -8,6 +8,7 @@ import {
   deleteStoredInvoiceFiles,
   prepareInvoiceUploads,
   storePreparedInvoiceFiles,
+  type PreparedInvoiceFile,
 } from "@/lib/invoice-storage";
 
 type LegacyAnalyzePayload = {
@@ -20,6 +21,69 @@ type LegacyAnalyzePayload = {
 
 function safeJsonArray(value: unknown) {
   return Array.isArray(value) ? value.map(String).slice(0, 100) : [];
+}
+
+function storedWarnings(value: unknown) {
+  try {
+    const parsed = JSON.parse(String(value || "[]"));
+    return Array.isArray(parsed) ? parsed.map(String).slice(0, 100) : [];
+  } catch { return []; }
+}
+
+function storedFilesMatch(rows: Record<string, unknown>[], files: PreparedInvoiceFile[]) {
+  return rows.length === files.length && files.every((file) => rows.some((row) => (
+    Number(row.file_index) === file.index && String(row.file_sha256) === file.sha256
+  )));
+}
+
+async function restoreMissingFiles(
+  db: D1Database,
+  existing: Record<string, unknown>,
+  files: PreparedInvoiceFile[],
+) {
+  const documentId = String(existing.id);
+  const currentFiles = await db.prepare(
+    "SELECT file_index,file_sha256 FROM inventory_document_files WHERE document_id=? ORDER BY file_index",
+  ).bind(documentId).all<Record<string, unknown>>();
+  if (currentFiles.results.length) return;
+
+  const stored = await storePreparedInvoiceFiles(documentId, files);
+  const now = new Date().toISOString();
+  const warnings = storedWarnings(existing.warnings_json)
+    .filter((warning) => !/No se encontr[oó] el archivo guardado/i.test(warning));
+  try {
+    const statements: D1PreparedStatement[] = [
+      db.prepare(`UPDATE inventory_documents SET
+        file_name=?,mime_types_json=?,page_count=?,file_count=?,warnings_json=?,updated_at=?
+        WHERE id=?`).bind(
+        files.map((file) => file.fileName).join(" + "),
+        JSON.stringify([...new Set(files.map((file) => file.mimeType))]),
+        Math.max(1, files.length), files.length, JSON.stringify(warnings), now, documentId,
+      ),
+    ];
+    stored.forEach((file) => statements.push(db.prepare(`INSERT OR IGNORE INTO inventory_document_files (
+      id,document_id,file_index,storage_key,file_name,mime_type,size_bytes,file_sha256,created_at
+    ) VALUES (?,?,?,?,?,?,?,?,?)`).bind(
+      file.id, documentId, file.file_index, file.storage_key, file.file_name, file.mime_type,
+      file.size_bytes, file.file_sha256, now,
+    )));
+    await db.batch(statements);
+  } catch (error) {
+    const racedFiles = await db.prepare(
+      "SELECT file_index,file_sha256 FROM inventory_document_files WHERE document_id=? ORDER BY file_index",
+    ).bind(documentId).all<Record<string, unknown>>();
+    if (storedFilesMatch(racedFiles.results, files)) return;
+    if (!racedFiles.results.length) await deleteStoredInvoiceFiles(stored);
+    throw error;
+  }
+
+  const restoredFiles = await db.prepare(
+    "SELECT file_index,file_sha256 FROM inventory_document_files WHERE document_id=? ORDER BY file_index",
+  ).bind(documentId).all<Record<string, unknown>>();
+  if (!storedFilesMatch(restoredFiles.results, files)) {
+    if (!restoredFiles.results.length) await deleteStoredInvoiceFiles(stored);
+    throw new Error("No se pudo volver a guardar el archivo de la factura.");
+  }
 }
 
 async function historyResponse(db: D1Database) {
@@ -72,9 +136,18 @@ export async function GET(request: Request) {
   } catch (error) { return errorResponse(error); }
 }
 
-async function existingUploadResponse(db: D1Database, existing: Record<string, unknown>, requestedMode: "ai" | "manual") {
+async function existingUploadResponse(
+  db: D1Database,
+  existing: Record<string, unknown>,
+  requestedMode: "ai" | "manual",
+  uploadedFiles?: PreparedInvoiceFile[],
+) {
   const documentId = String(existing.id);
   const operation = await db.prepare("SELECT id FROM inventory_operations WHERE document_id=? LIMIT 1").bind(documentId).first<Record<string, unknown>>();
+  if (!operation && !["partial", "processed"].includes(String(existing.status)) && uploadedFiles?.length) {
+    await restoreMissingFiles(db, existing, uploadedFiles);
+    existing = await db.prepare("SELECT * FROM inventory_documents WHERE id=?").bind(documentId).first<Record<string, unknown>>() || existing;
+  }
   const loaded = await loadIntakeDocument(db, documentId);
   if (!loaded) throw new Error("No se pudo recuperar la factura guardada.");
   if (operation || ["partial", "processed"].includes(String(existing.status))) {
@@ -109,7 +182,7 @@ async function uploadInvoice(request: Request) {
   const db = getD1();
   const existing = await db.prepare("SELECT * FROM inventory_documents WHERE file_fingerprint=? LIMIT 1")
     .bind(prepared.fingerprint).first<Record<string, unknown>>();
-  if (existing) return existingUploadResponse(db, existing, mode);
+  if (existing) return existingUploadResponse(db, existing, mode, prepared.files);
 
   const documentId = `doc-${crypto.randomUUID()}`;
   const stored = await storePreparedInvoiceFiles(documentId, prepared.files);
@@ -137,7 +210,7 @@ async function uploadInvoice(request: Request) {
     await deleteStoredInvoiceFiles(stored);
     const raced = await db.prepare("SELECT * FROM inventory_documents WHERE file_fingerprint=? LIMIT 1")
       .bind(prepared.fingerprint).first<Record<string, unknown>>();
-    if (raced) return existingUploadResponse(db, raced, mode);
+    if (raced) return existingUploadResponse(db, raced, mode, prepared.files);
     throw error;
   }
 

@@ -1,27 +1,30 @@
 import assert from "node:assert/strict";
-import { LocalD1Database } from "./helpers/local-bindings.mjs";
+import { createHash } from "node:crypto";
+import { LocalD1Database, LocalR2Bucket } from "./helpers/local-bindings.mjs";
 
 const DB = new LocalD1Database();
+const BUCKET = new LocalR2Bucket();
 const workerUrl = new URL("../dist/server/index.js", import.meta.url);
 workerUrl.searchParams.set("inventory-intake", `${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
 const env = {
   DB,
+  BUCKET,
   ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
   IMAGES: { input() { throw new Error("Images are not used in API tests."); } },
 };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
 
+async function request(path, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set("accept", "application/json");
+  headers.set("oai-authenticated-user-email", "inventario@nutriplus.test");
+  if (typeof init.body === "string" && !headers.has("content-type")) headers.set("content-type", "application/json");
+  return worker.fetch(new Request(`http://local.test${path}`, { ...init, headers }), env, ctx);
+}
+
 async function call(path, init = {}) {
-  const response = await worker.fetch(new Request(`http://local.test${path}`, {
-    ...init,
-    headers: {
-      accept: "application/json",
-      "oai-authenticated-user-email": "inventario@nutriplus.test",
-      ...(init.body ? { "content-type": "application/json" } : {}),
-      ...(init.headers || {}),
-    },
-  }), env, ctx);
+  const response = await request(path, init);
   const body = await response.json();
   return { response, body };
 }
@@ -42,6 +45,39 @@ async function analyze({ id, fileName, text }) {
 }
 
 await call("/api/settings");
+
+const recoveredPdf = new TextEncoder().encode("%PDF-1.4\n% NutriPlus legacy upload recovery\n%%EOF");
+const recoveredFileSha = createHash("sha256").update(recoveredPdf).digest("hex");
+const recoveredFingerprint = createHash("sha256").update(`0:${recoveredFileSha}`).digest("hex");
+const legacyDraft = await call("/api/inventory-intake", {
+  method: "POST",
+  body: JSON.stringify({
+    fingerprint: recoveredFingerprint,
+    fileName: "amazon-legacy.pdf",
+    mimeTypes: ["application/pdf"],
+    pages: page("Amazon · borrador legado sin archivo"),
+    warnings: ["No se encontró el archivo guardado. Podés continuar agregando los productos manualmente."],
+  }),
+});
+assert.equal(legacyDraft.response.status, 201);
+assert.equal(legacyDraft.body.document.fileCount, 0);
+assert.equal(legacyDraft.body.files.length, 0);
+
+const recoveryForm = new FormData();
+recoveryForm.set("mode", "manual");
+recoveryForm.append("files", new File([recoveredPdf], "amazon-recovered.pdf", { type: "application/pdf" }));
+const recoveredDraft = await call("/api/inventory-intake", { method: "POST", body: recoveryForm });
+assert.equal(recoveredDraft.response.status, 200);
+assert.equal(recoveredDraft.body.resumed, true);
+assert.equal(recoveredDraft.body.document.id, legacyDraft.body.document.id);
+assert.equal(recoveredDraft.body.document.fileCount, 1);
+assert.equal(recoveredDraft.body.files.length, 1);
+assert.equal(recoveredDraft.body.document.warnings.some((warning) => /archivo guardado/i.test(warning)), false);
+const recoveredView = await request(recoveredDraft.body.files[0].viewUrl);
+assert.equal(recoveredView.status, 200);
+assert.deepEqual(Buffer.from(await recoveredView.arrayBuffer()), Buffer.from(recoveredPdf));
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_operations").first()).total), 0);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_movements").first()).total), 0);
 
 const baseProduct = (await call("/api/products", {
   method: "POST",

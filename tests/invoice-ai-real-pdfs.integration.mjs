@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { readFile } from "node:fs/promises";
 import { LocalD1Database, LocalR2Bucket } from "./helpers/local-bindings.mjs";
@@ -173,10 +174,29 @@ async function uploadPdf(path, bytes, mode) {
 try {
   await callJson("/api/settings");
 
+  const amazonFileSha = createHash("sha256").update(amazonBytes).digest("hex");
+  const amazonFingerprint = createHash("sha256").update(`0:${amazonFileSha}`).digest("hex");
+  const amazonLegacy = await callJson("/api/inventory-intake", {
+    method: "POST",
+    body: JSON.stringify({
+      fingerprint: amazonFingerprint,
+      fileName: basename(amazonPath),
+      mimeTypes: ["application/pdf"],
+      pages: [{ pageNumber: 1, text: "Amazon · borrador legado sin archivo", confidence: 80, source: "ocr" }],
+      warnings: ["No se encontró el archivo guardado. Podés continuar agregando los productos manualmente."],
+    }),
+  });
+  assert.equal(amazonLegacy.response.status, 201);
+  assert.equal(amazonLegacy.body.document.fileCount, 0);
+  assert.equal(amazonLegacy.body.files.length, 0);
+
   const amazonManual = await uploadPdf(amazonPath, amazonBytes, "manual");
-  assert.equal(amazonManual.response.status, 201);
+  assert.equal(amazonManual.response.status, 200);
+  assert.equal(amazonManual.body.resumed, true);
+  assert.equal(amazonManual.body.document.id, amazonLegacy.body.document.id);
   assert.equal(amazonManual.body.document.processingMode, "manual");
-  assert.equal(amazonManual.body.lines.length, 0);
+  assert.equal(amazonManual.body.document.fileCount, 1);
+  assert.equal(amazonManual.body.files.length, 1);
   assert.equal(openAiCalls, 0);
   const amazonView = await workerRequest(amazonManual.body.files[0].viewUrl);
   assert.equal(amazonView.status, 200);
