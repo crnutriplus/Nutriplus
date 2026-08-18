@@ -1,5 +1,6 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { errorResponse } from "@/lib/api-helpers";
+import { SOL_INVOICE_AI_MODEL } from "@/lib/invoice-ai";
 import { processDocumentWithAi } from "@/lib/invoice-ai-service";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -16,7 +17,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (String(document.analysis_status) === "processing") {
       return Response.json({ error: "Esta factura ya tiene un análisis en curso. No se inició otro consumo." }, { status: 409 });
     }
-    const result = await processDocumentWithAi(db, documentId, { reanalysis: true });
+    const requestedModel = payload.model === "sol" ? SOL_INVOICE_AI_MODEL : undefined;
+    const result = await processDocumentWithAi(db, documentId, { reanalysis: true, model: requestedModel });
     return Response.json(result, { status: result?.manualFallback ? 202 : 200 });
   } catch (error) { return errorResponse(error); }
 }

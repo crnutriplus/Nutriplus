@@ -128,16 +128,19 @@ function invoiceAnalysis(provider) {
 
 let openAiCalls = 0;
 let failNextCall = false;
-const originalFetch = globalThis.fetch;
-globalThis.fetch = async (input, init) => {
+let invalidNextCall = false;
+let semanticReviewNextCall = false;
+const requestedModels = [];
+globalThis.__NUTRIPLUS_INVOICE_AI_TEST_FETCH__ = async (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-  if (url !== "https://api.openai.com/v1/responses") return originalFetch(input, init);
+  if (url !== "https://api.openai.com/v1/responses") throw new Error(`Unexpected AI test URL: ${url}`);
   openAiCalls += 1;
+  const requestBody = JSON.parse(String(init?.body || "{}"));
+  requestedModels.push(requestBody.model);
   if (failNextCall) {
     failNextCall = false;
     return Response.json({ error: { type: "server_error", code: "server_error" } }, { status: 503 });
   }
-  const requestBody = JSON.parse(String(init?.body || "{}"));
   assert.equal(requestBody.tools[0].type, "web_search");
   assert.equal(requestBody.text.format.type, "json_schema");
   assert.equal(requestBody.text.format.strict, true);
@@ -147,9 +150,23 @@ globalThis.fetch = async (input, init) => {
   assert.equal(fileInputs[0].detail, "high");
   const provider = /iherb/i.test(fileInputs[0].filename) ? "iherb" : "amazon";
   const { analysis, sources } = invoiceAnalysis(provider);
+  if (semanticReviewNextCall) {
+    semanticReviewNextCall = false;
+    analysis.products[0].package_units = 3;
+  }
+  if (invalidNextCall) {
+    invalidNextCall = false;
+    return Response.json({
+      id: `resp-test-${openAiCalls}`,
+      model: "gpt-5.6-terra-2026-08-01",
+      status: "completed",
+      output: [{ id: "message-invalid", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "{resultado-incompleto", annotations: [] }] }],
+      usage: { input_tokens: 10_000, input_tokens_details: { cached_tokens: 2_000 }, output_tokens: 100, total_tokens: 10_100 },
+    });
+  }
   return Response.json({
     id: `resp-test-${openAiCalls}`,
-    model: "gpt-5.6-terra-2026-08-01",
+    model: requestBody.model === "gpt-5.6-sol" ? "gpt-5.6-sol-2026-08-01" : "gpt-5.6-terra-2026-08-01",
     status: "completed",
     output: [
       ...sources.map((sourceUrl, index) => ({
@@ -215,6 +232,8 @@ try {
   assert.equal(amazonAi.body.lines.length, 4);
   assert.equal(amazonAi.body.analysis.webSearchCount, 4);
   assert.ok(amazonAi.body.analysis.estimatedCostUsd > 0);
+  assert.equal(amazonAi.body.analysis.reviewRequired, false);
+  assert.equal(requestedModels.at(-1), "gpt-5.6-terra");
 
   const iherbAi = await uploadPdf(iherbPath, iherbBytes, "ai");
   assert.equal(iherbAi.response.status, 201);
@@ -223,6 +242,8 @@ try {
   assert.deepEqual(iherbAi.body.lines.map((line) => line.billedQuantity), [1, 1, 2, 1]);
   assert.deepEqual(iherbAi.body.lines.map((line) => line.secondaryId), ["CEM-75565", "NOW-03773", "SNS-02782", "NOR-56780"]);
   assert.ok(iherbAi.body.lines.every((line) => line.barcodeSourceUrl.startsWith("https://catalogo.example.test/")));
+  assert.equal(iherbAi.body.analysis.reviewRequired, false);
+  assert.equal(requestedModels.at(-1), "gpt-5.6-terra");
   const iherbView = await workerRequest(iherbAi.body.files[0].viewUrl, { headers: { range: "bytes=0-31" } });
   assert.equal(iherbView.status, 206);
   assert.equal((await iherbView.arrayBuffer()).byteLength, 32);
@@ -233,13 +254,69 @@ try {
   assert.equal(cachedIherb.body.cachedAnalysis, true);
   assert.equal(openAiCalls, callsBeforeCache);
 
+  const callsBeforeUnconfirmedSol = openAiCalls;
+  const unconfirmedSol = await callJson(`/api/inventory-intake/${iherbAi.body.document.id}/reanalyze`, {
+    method: "POST",
+    body: JSON.stringify({ confirmed: false, model: "sol" }),
+  });
+  assert.equal(unconfirmedSol.response.status, 400);
+  assert.equal(openAiCalls, callsBeforeUnconfirmedSol);
+
   const iherbReanalysis = await callJson(`/api/inventory-intake/${iherbAi.body.document.id}/reanalyze`, {
     method: "POST",
-    body: JSON.stringify({ confirmed: true }),
+    body: JSON.stringify({ confirmed: true, model: "sol" }),
   });
   assert.equal(iherbReanalysis.response.status, 200);
   assert.equal(iherbReanalysis.body.analysis.reanalysis, true);
+  assert.match(iherbReanalysis.body.analysis.model, /^gpt-5\.6-sol/);
+  assert.equal(requestedModels.at(-1), "gpt-5.6-sol");
+  assert.equal(iherbReanalysis.body.analyses.length, 2);
+  assert.match(iherbReanalysis.body.analyses[0].model, /^gpt-5\.6-terra/);
+  assert.match(iherbReanalysis.body.analyses[1].model, /^gpt-5\.6-sol/);
+  assert.ok(iherbReanalysis.body.analyses[0].estimatedCostUsd > 0);
+  assert.ok(iherbReanalysis.body.analyses[1].estimatedCostUsd > iherbReanalysis.body.analyses[0].estimatedCostUsd);
+  assert.ok(Math.abs(
+    iherbReanalysis.body.analysis.cumulativeCostUsd
+      - iherbReanalysis.body.analyses.reduce((total, item) => total + item.estimatedCostUsd, 0),
+  ) < 0.000001);
   assert.equal(openAiCalls, callsBeforeCache + 1);
+
+  semanticReviewNextCall = true;
+  const semanticReviewAmazon = await callJson(`/api/inventory-intake/${amazonManual.body.document.id}/reanalyze`, {
+    method: "POST",
+    body: JSON.stringify({ confirmed: true, model: "primary" }),
+  });
+  assert.equal(semanticReviewAmazon.response.status, 200);
+  assert.equal(semanticReviewAmazon.body.manualFallback, false);
+  assert.equal(semanticReviewAmazon.body.reviewRequired, true);
+  assert.equal(semanticReviewAmazon.body.document.processingMode, "ai");
+  assert.equal(semanticReviewAmazon.body.document.analysisStatus, "review_required");
+  assert.equal(semanticReviewAmazon.body.analysis.status, "review_required");
+  assert.equal(semanticReviewAmazon.body.analysis.reviewRequired, true);
+  assert.match(semanticReviewAmazon.body.analysis.errorMessage, /set con componentes distintos/);
+  assert.equal(semanticReviewAmazon.body.lines[0].unitsPerPackage, 3);
+
+  const callsBeforeReviewCache = openAiCalls;
+  const cachedReviewAmazon = await uploadPdf(amazonPath, amazonBytes, "ai");
+  assert.equal(cachedReviewAmazon.response.status, 200);
+  assert.equal(cachedReviewAmazon.body.cachedAnalysis, true);
+  assert.equal(cachedReviewAmazon.body.document.analysisStatus, "review_required");
+  assert.equal(openAiCalls, callsBeforeReviewCache);
+
+  invalidNextCall = true;
+  const reviewRequiredAmazon = await callJson(`/api/inventory-intake/${amazonManual.body.document.id}/reanalyze`, {
+    method: "POST",
+    body: JSON.stringify({ confirmed: true, model: "primary" }),
+  });
+  assert.equal(reviewRequiredAmazon.response.status, 200);
+  assert.equal(reviewRequiredAmazon.body.manualFallback, false);
+  assert.equal(reviewRequiredAmazon.body.reviewRequired, true);
+  assert.equal(reviewRequiredAmazon.body.document.processingMode, "ai");
+  assert.equal(reviewRequiredAmazon.body.document.analysisStatus, "review_required");
+  assert.equal(reviewRequiredAmazon.body.analysis.status, "review_required");
+  assert.equal(reviewRequiredAmazon.body.analysis.reviewRequired, true);
+  assert.equal(reviewRequiredAmazon.body.lines.length, 4);
+  assert.equal(reviewRequiredAmazon.body.analyses.length, 3);
 
   failNextCall = true;
   const failedAmazonReanalysis = await callJson(`/api/inventory-intake/${amazonManual.body.document.id}/reanalyze`, {
@@ -250,6 +327,7 @@ try {
   assert.equal(failedAmazonReanalysis.body.manualFallback, true);
   assert.equal(failedAmazonReanalysis.body.document.processingMode, "manual");
   assert.equal(failedAmazonReanalysis.body.lines.length, 4);
+  assert.equal(requestedModels.at(-1), "gpt-5.6-terra");
   const callsAfterFailure = openAiCalls;
   const noAutomaticRetry = await uploadPdf(amazonPath, amazonBytes, "ai");
   assert.equal(noAutomaticRetry.response.status, 200);
@@ -263,11 +341,11 @@ try {
   assert.equal(Number(operations.total), 0);
   assert.equal(Number(movements.total), 0);
   const usage = await callJson("/api/inventory-intake/config");
-  assert.equal(usage.body.billedAnalyses, 3);
+  assert.equal(usage.body.billedAnalyses, 5);
   assert.ok(usage.body.cumulativeCostUsd > 0);
 
   console.log("Real iHerb/Amazon PDFs: storage, full-file AI contract, web sources, cache, reanalysis, failover, and zero inventory writes passed");
 } finally {
-  globalThis.fetch = originalFetch;
+  delete globalThis.__NUTRIPLUS_INVOICE_AI_TEST_FETCH__;
   DB.close();
 }

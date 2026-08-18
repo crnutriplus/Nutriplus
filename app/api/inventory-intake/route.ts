@@ -153,7 +153,7 @@ async function existingUploadResponse(
   if (operation || ["partial", "processed"].includes(String(existing.status))) {
     return Response.json({ ...loaded, duplicate: true, exactDuplicate: true, cachedAnalysis: true });
   }
-  if (String(existing.analysis_status) === "completed") {
+  if (["completed", "review_required"].includes(String(existing.analysis_status))) {
     return Response.json({ ...loaded, duplicate: false, exactDuplicate: false, resumed: true, cachedAnalysis: true });
   }
   if (requestedMode === "ai" && String(existing.analysis_status) === "not_requested") {

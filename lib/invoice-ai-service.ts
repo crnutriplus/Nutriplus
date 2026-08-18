@@ -18,7 +18,7 @@ function warningList(value: unknown) {
 }
 
 function cleanSuccessfulWarnings(value: unknown) {
-  return warningList(value).filter((warning) => !/(?:OpenAI|modo Manual|análisis con IA|clave de OpenAI|límite mensual)/i.test(warning));
+  return warningList(value).filter((warning) => !/(?:OpenAI|modo Manual|análisis con IA|clave de OpenAI|límite mensual|Revisión requerida)/i.test(warning));
 }
 
 async function manualFallback(
@@ -38,7 +38,7 @@ async function manualFallback(
 export async function processDocumentWithAi(
   db: D1Database,
   documentId: string,
-  options: { reanalysis?: boolean } = {},
+  options: { reanalysis?: boolean; model?: string } = {},
 ) {
   const config = invoiceAiConfig();
   if (!config.enabled) {
@@ -55,6 +55,7 @@ export async function processDocumentWithAi(
 
   const document = await db.prepare("SELECT * FROM inventory_documents WHERE id=?").bind(documentId).first<Record<string, unknown>>();
   if (!document) throw new Error("No se encontró la factura para analizar.");
+  const requestedModel = options.model?.trim() || config.model;
   const fileRows = await db.prepare("SELECT * FROM inventory_document_files WHERE document_id=? ORDER BY file_index")
     .bind(documentId).all<StoredInvoiceFileRow>();
   if (!fileRows.results.length) return manualFallback(db, documentId, "missing_file", "No se encontró el archivo guardado. Podés continuar agregando los productos manualmente.");
@@ -68,54 +69,80 @@ export async function processDocumentWithAi(
     db.prepare(`INSERT INTO invoice_ai_analyses (
       id,document_id,file_fingerprint,analysis_number,model,status,reanalysis,created_at
     ) VALUES (?,?,?,?,?,'processing',?,?)`).bind(
-      analysisId, documentId, String(document.file_fingerprint), analysisNumber, config.model, options.reanalysis ? 1 : 0, startedAt,
+      analysisId, documentId, String(document.file_fingerprint), analysisNumber, requestedModel, options.reanalysis ? 1 : 0, startedAt,
     ),
     db.prepare(`UPDATE inventory_documents SET processing_mode='ai',analysis_status='processing',active_analysis_id=?,updated_at=? WHERE id=?`)
       .bind(analysisId, startedAt, documentId),
   ]);
 
   try {
-    const run = await analyzeStoredInvoice(fileRows.results);
+    const run = await analyzeStoredInvoice(fileRows.results, { model: requestedModel });
     const parsed = parsedInvoiceFromAi(run.analysis);
     const duplicate = await duplicateForParsedInvoice(db, documentId, parsed);
     await replaceDocumentLinesFromParsed(db, documentId, parsed, { preserveReviewed: true });
+    const reviewWarning = run.quality.reviewRequired
+      ? `Revisión requerida: ${run.quality.issues.join(" ")}`
+      : "";
     const warnings = [...new Set([
       ...cleanSuccessfulWarnings(document.warnings_json),
       ...parsed.warnings,
+      ...(reviewWarning ? [reviewWarning] : []),
       ...(duplicate.warning ? [duplicate.warning] : []),
     ])];
     const completedAt = new Date().toISOString();
+    const analysisStatus = run.quality.reviewRequired ? "review_required" : "completed";
     await db.batch([
       db.prepare(`UPDATE invoice_ai_analyses SET
-        model=?,status='completed',response_id=?,input_tokens=?,cached_input_tokens=?,output_tokens=?,web_search_count=?,
-        estimated_cost_microusd=?,extraction_json=?,completed_at=? WHERE id=?`).bind(
-        run.model, run.responseId || null, run.usage.inputTokens, run.usage.cachedInputTokens, run.usage.outputTokens,
-        run.usage.webSearchCount, run.usage.estimatedCostMicrousd, JSON.stringify(run.analysis), completedAt, analysisId,
+        model=?,status=?,response_id=?,input_tokens=?,cached_input_tokens=?,output_tokens=?,web_search_count=?,
+        estimated_cost_microusd=?,extraction_json=?,error_code=?,error_message=?,completed_at=? WHERE id=?`).bind(
+        run.model, analysisStatus, run.responseId || null, run.usage.inputTokens, run.usage.cachedInputTokens,
+        run.usage.outputTokens, run.usage.webSearchCount, run.usage.estimatedCostMicrousd, JSON.stringify(run.analysis),
+        run.quality.reviewRequired ? "review_required" : null,
+        run.quality.reviewRequired ? run.quality.issues.join(" ") : null,
+        completedAt, analysisId,
       ),
       db.prepare(`UPDATE inventory_documents SET
         provider=?,order_number=?,invoice_number=?,shipment_number=?,document_date=?,processing_mode='ai',
-        analysis_status='completed',active_analysis_id=?,field_evidence_json=?,
+        analysis_status=?,active_analysis_id=?,field_evidence_json=?,
         status=CASE WHEN status IN ('partial','processed') THEN status ELSE ? END,
         warnings_json=?,duplicate_of=?,updated_at=? WHERE id=?`).bind(
         parsed.provider, parsed.orderNumber || null, parsed.invoiceNumber || null, parsed.shipmentNumber || null,
-        parsed.documentDate || null, analysisId, JSON.stringify(metadataEvidenceFromAi(run.analysis)), parsed.status,
+        parsed.documentDate || null, analysisStatus, analysisId, JSON.stringify(metadataEvidenceFromAi(run.analysis)), parsed.status,
         JSON.stringify(warnings), duplicate.duplicateOf || null, completedAt, documentId,
       ),
     ]);
     const loaded = await loadIntakeDocument(db, documentId);
-    return { ...loaded, manualFallback: false, cachedAnalysis: false };
+    return { ...loaded, manualFallback: false, cachedAnalysis: false, reviewRequired: run.quality.reviewRequired };
   } catch (error) {
     const aiError = error instanceof InvoiceAiError
       ? error
       : new InvoiceAiError("analysis_failed", "No se pudo completar el análisis con OpenAI. La factura continúa en modo Manual.");
     const completedAt = new Date().toISOString();
+    if (aiError.reviewRequired) {
+      const message = aiError.message || "El resultado de OpenAI requiere revisión.";
+      const warnings = [...new Set([...cleanSuccessfulWarnings(document.warnings_json), `Revisión requerida: ${message}`])];
+      const failedUsage = aiError.usage;
+      await db.batch([
+        db.prepare(`UPDATE invoice_ai_analyses SET
+          model=?,status='review_required',response_id=?,input_tokens=?,cached_input_tokens=?,output_tokens=?,web_search_count=?,
+          estimated_cost_microusd=?,extraction_json=?,error_code=?,error_message=?,completed_at=? WHERE id=?`).bind(
+          aiError.model || requestedModel, aiError.responseId || null, failedUsage?.inputTokens || 0,
+          failedUsage?.cachedInputTokens || 0, failedUsage?.outputTokens || 0, failedUsage?.webSearchCount || 0,
+          failedUsage?.estimatedCostMicrousd || 0, aiError.extractionJson || "{}", aiError.code, message, completedAt, analysisId,
+        ),
+        db.prepare(`UPDATE inventory_documents SET processing_mode='ai',analysis_status='review_required',active_analysis_id=?,warnings_json=?,updated_at=? WHERE id=?`)
+          .bind(analysisId, JSON.stringify(warnings), completedAt, documentId),
+      ]);
+      const loaded = await loadIntakeDocument(db, documentId);
+      return { ...loaded, manualFallback: false, cachedAnalysis: false, reviewRequired: true, aiErrorCode: aiError.code, aiErrorMessage: message };
+    }
     const warnings = [...new Set([...warningList(document.warnings_json), aiError.message])];
     const failedUsage = aiError.usage;
     await db.batch([
       db.prepare(`UPDATE invoice_ai_analyses SET
         model=?,status='failed',response_id=?,input_tokens=?,cached_input_tokens=?,output_tokens=?,web_search_count=?,
         estimated_cost_microusd=?,error_code=?,error_message=?,completed_at=? WHERE id=?`).bind(
-        aiError.model || config.model, aiError.responseId || null, failedUsage?.inputTokens || 0,
+        aiError.model || requestedModel, aiError.responseId || null, failedUsage?.inputTokens || 0,
         failedUsage?.cachedInputTokens || 0, failedUsage?.outputTokens || 0, failedUsage?.webSearchCount || 0,
         failedUsage?.estimatedCostMicrousd || 0, aiError.code, aiError.message, completedAt, analysisId,
       ),

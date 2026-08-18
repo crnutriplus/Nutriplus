@@ -549,7 +549,7 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .invoice-file-viewer { height: 360px; display: grid; place-items: center; background: #e5ebe3; }
 .invoice-file-viewer iframe, .invoice-file-viewer img { width: 100%; height: 100%; border: 0; object-fit: contain; background: #fff; }
 .invoice-open-file { padding: 8px 10px; display: inline-flex; align-items: center; gap: 6px; color: var(--g800); font-size: 8px; font-weight: 850; text-decoration: none; }
-.analysis-overview { margin-bottom: 13px; padding: 11px; display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap: 8px; border: 1px solid #dce5da; border-radius: 12px; background: #f5f8f3; }
+.analysis-overview { margin-bottom: 13px; padding: 11px; display: grid; grid-template-columns: repeat(auto-fit,minmax(112px,1fr)); gap: 8px; border: 1px solid #dce5da; border-radius: 12px; background: #f5f8f3; }
 .analysis-overview > div { min-width: 0; padding: 7px 8px; display: flex; flex-direction: column; gap: 3px; border-radius: 8px; background: #fff; }
 .analysis-overview small { color: var(--muted); font-size: 7px; }
 .analysis-overview b { overflow-wrap: anywhere; color: var(--g950); font-size: 10px; }
@@ -558,6 +558,32 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .analysis-mode > span { width: 29px; height: 29px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 8px; background: var(--g100); color: var(--g800); }
 .analysis-mode svg { width: 16px; height: 16px; }
 .analysis-mode > div { display: flex; flex-direction: column; gap: 2px; }
+.analysis-status-text.completed { color: var(--g800); }
+.analysis-status-text.review_required { color: #8a5200; }
+.analysis-status-text.failed { color: #a13b32; }
+.analysis-review-alert { margin: 0 0 12px; padding: 11px 12px; display: flex; align-items: flex-start; gap: 9px; border: 1px solid #e8c678; border-radius: 11px; background: #fff8df; color: #6f4700; }
+.analysis-review-alert > svg { width: 18px; height: 18px; flex: 0 0 auto; }
+.analysis-review-alert b { font-size: 10px; }
+.analysis-review-alert p { margin: 3px 0 0; font-size: 8px; line-height: 1.5; }
+.analysis-history { margin: 0 0 12px; overflow: hidden; border: 1px solid #dce5da; border-radius: 11px; background: #fafcf9; }
+.analysis-history > summary { padding: 10px 12px; display: flex; align-items: center; gap: 7px; cursor: pointer; color: var(--g800); font-size: 9px; font-weight: 900; list-style: none; }
+.analysis-history > summary::-webkit-details-marker { display: none; }
+.analysis-history > summary svg { width: 14px; height: 14px; }
+.analysis-history-list { padding: 0 9px 9px; display: flex; flex-direction: column; gap: 8px; }
+.analysis-history-list > article { padding: 10px; border: 1px solid #e1e8df; border-radius: 9px; background: #fff; }
+.analysis-history-list article > header { margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.analysis-history-list article > header > span:first-child { display: flex; flex-direction: column; gap: 2px; }
+.analysis-history-list article > header b { color: var(--g950); font-size: 9px; }
+.analysis-history-list article small { color: var(--muted); font-size: 7px; }
+.analysis-history-list article > div { display: grid; grid-template-columns: repeat(auto-fit,minmax(115px,1fr)); gap: 7px; }
+.analysis-history-list article > div > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.analysis-history-list article > div b { overflow-wrap: anywhere; color: var(--g950); font-size: 9px; }
+.analysis-history-list article > p { margin: 8px 0 0; color: #85520d; font-size: 8px; }
+.analysis-status-pill { padding: 4px 7px; flex: 0 0 auto; border-radius: 99px; background: #eef3ec; color: var(--g800); font-size: 7px; font-weight: 900; }
+.analysis-status-pill.review_required { background: #fff0c7; color: #805000; }
+.analysis-status-pill.failed { background: #fde7e4; color: #9d372f; }
+.analysis-status-pill.processing { background: #e7effb; color: #315d8f; }
+.sol-reanalysis-button { border-color: #c7b8e6; background: #f8f4ff; color: #563890; }
 .evidence-strip { margin: 0 0 12px; padding: 9px 10px; border: 1px solid #e0e7de; border-radius: 10px; background: #fafcf9; }
 .evidence-strip > span { display: flex; align-items: center; gap: 5px; color: var(--g800); font-size: 8px; font-weight: 900; }
 .evidence-strip > span svg { width: 13px; height: 13px; }

@@ -41,10 +41,11 @@ export function intakeDocumentFromRow(row: Record<string, unknown>) {
   };
 }
 
-export function invoiceAnalysisFromRow(row: Record<string, unknown> | null | undefined) {
+export function invoiceAnalysisFromRow(row: Record<string, unknown> | null | undefined, cumulativeCostUsd = 0) {
   if (!row) return null;
   return {
     id: String(row.id),
+    analysisNumber: Number(row.analysis_number || 0),
     model: String(row.model),
     status: String(row.status),
     inputTokens: Number(row.input_tokens || 0),
@@ -53,7 +54,9 @@ export function invoiceAnalysisFromRow(row: Record<string, unknown> | null | und
     totalTokens: Number(row.input_tokens || 0) + Number(row.output_tokens || 0),
     webSearchCount: Number(row.web_search_count || 0),
     estimatedCostUsd: Number(row.estimated_cost_microusd || 0) / 1_000_000,
+    cumulativeCostUsd,
     reanalysis: Number(row.reanalysis || 0) === 1,
+    reviewRequired: String(row.status) === "review_required" || String(row.error_code || "") === "review_required",
     errorCode: row.error_code ? String(row.error_code) : "",
     errorMessage: row.error_message ? String(row.error_message) : "",
     createdAt: String(row.created_at),
@@ -95,15 +98,20 @@ export async function attachInventoryMatches(db: D1Database, lines: IntakeLineDt
 export async function loadIntakeDocument(db: D1Database, documentId: string) {
   const documentRow = await db.prepare("SELECT * FROM inventory_documents WHERE id=?").bind(documentId).first<Record<string, unknown>>();
   if (!documentRow) return null;
-  const [lineRows, fileRows, analysisRow, usage] = await Promise.all([
+  const [lineRows, fileRows, analysisRows, usage] = await Promise.all([
     db.prepare("SELECT * FROM inventory_document_lines WHERE document_id=? ORDER BY line_index,page_number,id").bind(documentId).all<Record<string, unknown>>(),
     db.prepare("SELECT * FROM inventory_document_files WHERE document_id=? ORDER BY file_index").bind(documentId).all<Record<string, unknown>>(),
-    documentRow.active_analysis_id
-      ? db.prepare("SELECT * FROM invoice_ai_analyses WHERE id=?").bind(String(documentRow.active_analysis_id)).first<Record<string, unknown>>()
-      : Promise.resolve(null),
+    db.prepare("SELECT * FROM invoice_ai_analyses WHERE document_id=? ORDER BY analysis_number,created_at,id")
+      .bind(documentId).all<Record<string, unknown>>(),
     invoiceAiUsageSummary(db),
   ]);
   const lines = await attachInventoryMatches(db, lineRows.results.map(lineFromRow));
+  let documentAnalysisCostUsd = 0;
+  const analyses = analysisRows.results.map((row) => {
+    documentAnalysisCostUsd += Number(row.estimated_cost_microusd || 0) / 1_000_000;
+    return invoiceAnalysisFromRow(row, documentAnalysisCostUsd);
+  }).filter((row): row is NonNullable<ReturnType<typeof invoiceAnalysisFromRow>> => Boolean(row));
+  const activeAnalysis = analyses.find((row) => row.id === String(documentRow.active_analysis_id || "")) || analyses.at(-1) || null;
   return {
     document: intakeDocumentFromRow(documentRow),
     lines,
@@ -115,7 +123,8 @@ export async function loadIntakeDocument(db: D1Database, documentId: string) {
       sizeBytes: Number(row.size_bytes),
       viewUrl: `/api/inventory-intake/${encodeURIComponent(documentId)}/file?index=${Number(row.file_index)}`,
     })),
-    analysis: invoiceAnalysisFromRow(analysisRow),
+    analysis: activeAnalysis,
+    analyses,
     usage: {
       cumulativeCostUsd: usage.cumulativeMicrousd / 1_000_000,
       currentMonthCostUsd: usage.currentMonthMicrousd / 1_000_000,

@@ -67,6 +67,7 @@ type IntakeInvoiceFile = {
 
 type InvoiceAnalysis = {
   id: string;
+  analysisNumber: number;
   model: string;
   status: string;
   inputTokens: number;
@@ -75,7 +76,9 @@ type InvoiceAnalysis = {
   totalTokens: number;
   webSearchCount: number;
   estimatedCostUsd: number;
+  cumulativeCostUsd: number;
   reanalysis: boolean;
+  reviewRequired: boolean;
   errorCode: string;
   errorMessage: string;
   createdAt: string;
@@ -107,6 +110,7 @@ type IntakeLoadResult = {
   lines: IntakeLineDto[];
   files: IntakeInvoiceFile[];
   analysis: InvoiceAnalysis | null;
+  analyses: InvoiceAnalysis[];
   usage: InvoiceUsage;
   duplicate: boolean;
   exactDuplicate: boolean;
@@ -115,6 +119,7 @@ type IntakeLoadResult = {
   manualFallback?: boolean;
   aiErrorCode?: string;
   aiErrorMessage?: string;
+  reviewRequired?: boolean;
   ocrFallbackApplied?: boolean;
 };
 
@@ -212,6 +217,20 @@ const EVIDENCE_LABELS: Record<string, string> = {
 function costLabel(value: number) {
   if (!Number.isFinite(value)) return "$0.0000";
   return `$${value.toFixed(value >= 1 ? 2 : 4)}`;
+}
+
+function analysisStatusLabel(status: string) {
+  if (status === "completed") return "Completado";
+  if (status === "review_required") return "Revisión requerida";
+  if (status === "failed") return "Fallido";
+  if (status === "processing") return "Procesando";
+  return status || "Sin estado";
+}
+
+function analysisDateLabel(value: string) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("es-CR");
 }
 
 function evidenceEntries(evidence: IntakeDocument["fieldEvidence"] | IntakeLineDto["fieldEvidence"]) {
@@ -353,6 +372,7 @@ export function InventoryIntakeModal(props: Props) {
   const [invoiceFiles, setInvoiceFiles] = useState<IntakeInvoiceFile[]>([]);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [analysis, setAnalysis] = useState<InvoiceAnalysis | null>(null);
+  const [analyses, setAnalyses] = useState<InvoiceAnalysis[]>([]);
   const [usage, setUsage] = useState<InvoiceUsage | null>(null);
   const uploadedFilesRef = useRef<File[]>([]);
   const [lines, setLines] = useState<IntakeLineDto[]>([]);
@@ -377,6 +397,7 @@ export function InventoryIntakeModal(props: Props) {
   const [ocrReading, setOcrReading] = useState(false);
   const [reanalyzing, setReanalyzing] = useState(false);
   const [reanalyzeConfirmOpen, setReanalyzeConfirmOpen] = useState(false);
+  const [reanalyzeTarget, setReanalyzeTarget] = useState<"primary" | "sol">("primary");
   const [lookupLineId, setLookupLineId] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<Record<string, CodeCandidate[]>>({});
   const [lookupMessages, setLookupMessages] = useState<Record<string, string>>({});
@@ -419,6 +440,7 @@ export function InventoryIntakeModal(props: Props) {
     setInvoiceFiles([]);
     setSelectedFileIndex(0);
     setAnalysis(null);
+    setAnalyses([]);
     setUsage(null);
     uploadedFilesRef.current = [];
     setLines([]);
@@ -546,6 +568,7 @@ export function InventoryIntakeModal(props: Props) {
     setInvoiceFiles(result.files || []);
     setSelectedFileIndex(0);
     setAnalysis(result.analysis || null);
+    setAnalyses(result.analyses || (result.analysis ? [result.analysis] : []));
     setUsage(result.usage || null);
     setLines(hydrated);
     setSelected(new Set(hydrated.filter((line) => line.selectedForIngress && line.action !== "ignore" && line.status !== "processed").map((line) => line.id)));
@@ -643,6 +666,12 @@ export function InventoryIntakeModal(props: Props) {
       } else if (invoiceMode === "manual") {
         if (!result.lines.length) addBlankManualLine();
         onNotify({ type: "success", text: "La factura quedó guardada en modo Manual. Podés completar los productos uno por uno." });
+      } else if (result.reviewRequired || result.analysis?.reviewRequired) {
+        onNotify({
+          type: "warning",
+          text: `Revisión requerida: Terra conservó ${result.lines.length} producto${result.lines.length === 1 ? "" : "s"}, pero detectó datos incompletos o inconsistentes. Revisalos antes de confirmar.`,
+          sticky: true,
+        });
       } else {
         onNotify({
           type: "success",
@@ -958,12 +987,16 @@ export function InventoryIntakeModal(props: Props) {
   async function reanalyzeInvoice() {
     if (!document || reanalyzing || document.analysisStatus === "processing") return;
     setReanalyzing(true);
-    setReadProgress({ current: 0, total: 1, message: "Analizando nuevamente la factura completa con IA…" });
+    setReadProgress({
+      current: 0,
+      total: 1,
+      message: reanalyzeTarget === "sol" ? "Reanalizando la factura completa con Sol…" : "Analizando nuevamente la factura completa con IA…",
+    });
     try {
       const result = await apiJson<IntakeLoadResult>(await fetch(`/api/inventory-intake/${encodeURIComponent(document.id)}/reanalyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirmed: true }),
+        body: JSON.stringify({ confirmed: true, model: reanalyzeTarget }),
       }));
       applyLoadedResult(result);
       setReanalyzeConfirmOpen(false);
@@ -973,10 +1006,16 @@ export function InventoryIntakeModal(props: Props) {
           text: `${result.aiErrorMessage || "El nuevo análisis no pudo completarse."} La factura y todo el avance previo continúan guardados.`,
           sticky: true,
         });
+      } else if (result.reviewRequired || result.analysis?.reviewRequired) {
+        onNotify({
+          type: "warning",
+          text: `Revisión requerida: ${result.analysis?.model || "el modelo"} conservó el resultado, pero detectó datos incompletos o inconsistentes. Revisá cada campo antes de confirmar.`,
+          sticky: true,
+        });
       } else {
         onNotify({
           type: "success",
-          text: `Nuevo análisis completado: ${result.lines.length} producto${result.lines.length === 1 ? "" : "s"}. Revisá los cambios antes de confirmar.`,
+          text: `Nuevo análisis completado con ${result.analysis?.model || "IA"}: ${result.lines.length} producto${result.lines.length === 1 ? "" : "s"}. Revisá los cambios antes de confirmar.`,
           sticky: true,
         });
       }
@@ -1107,7 +1146,8 @@ export function InventoryIntakeModal(props: Props) {
               <div><span className="eyebrow">Vista previa obligatoria</span><h3>{document.fileName}</h3><p>{document.pageCount} página{document.pageCount === 1 ? "" : "s"} · {document.fileCount || invoiceFiles.length} archivo{(document.fileCount || invoiceFiles.length) === 1 ? "" : "s"} · {lines.length} producto{lines.length === 1 ? "" : "s"}</p></div>
               <div className="invoice-summary-actions">
                 {document.processingMode === "manual" && <button className="btn secondary small" onClick={() => void runOcrFallback()} disabled={ocrReading || reanalyzing}><FileSearch />{ocrReading ? "Leyendo…" : "Extraer con OCR (sin IA)"}</button>}
-                <button className="btn secondary small" onClick={() => setReanalyzeConfirmOpen(true)} disabled={reanalyzing || !aiConfig?.aiAvailable || document.analysisStatus === "processing" || !invoiceFiles.length}><Sparkles />{reanalyzing ? "Analizando…" : "Analizar nuevamente"}</button>
+                <button className="btn secondary small" onClick={() => { setReanalyzeTarget("primary"); setReanalyzeConfirmOpen(true); }} disabled={reanalyzing || !aiConfig?.aiAvailable || document.analysisStatus === "processing" || !invoiceFiles.length}><Sparkles />{reanalyzing ? "Analizando…" : "Analizar nuevamente"}</button>
+                {(analysis?.reviewRequired || document.analysisStatus === "review_required") && !analysis?.model.startsWith("gpt-5.6-sol") && <button className="btn secondary small sol-reanalysis-button" onClick={() => { setReanalyzeTarget("sol"); setReanalyzeConfirmOpen(true); }} disabled={reanalyzing || !aiConfig?.aiAvailable || document.analysisStatus === "processing" || !invoiceFiles.length}><Sparkles />Reanalizar con Sol</button>}
                 <label className="btn secondary small"><Upload />Cambiar factura<input className="native-file-input" type="file" accept="application/pdf,image/*" multiple onChange={analyzeFiles} /></label>
               </div>
             </div>
@@ -1126,12 +1166,23 @@ export function InventoryIntakeModal(props: Props) {
               <div className="analysis-mode"><span>{document.processingMode === "ai" ? <Bot /> : <FileSearch />}</span><div><small>Modo actual</small><b>{document.processingMode === "ai" ? "Automático con IA" : "Manual"}</b></div></div>
               {analysis ? <>
                 <div><small>Modelo</small><b>{analysis.model || "—"}</b></div>
-                <div><small>Tokens</small><b>{analysis.totalTokens.toLocaleString("es-CR")}</b><em>{analysis.cachedInputTokens.toLocaleString("es-CR")} en caché</em></div>
+                <div><small>Estado</small><b className={`analysis-status-text ${analysis.status}`}>{analysisStatusLabel(analysis.status)}</b></div>
+                <div><small>Tokens</small><b>{analysis.totalTokens.toLocaleString("es-CR")}</b><em>{analysis.inputTokens.toLocaleString("es-CR")} entrada · {analysis.outputTokens.toLocaleString("es-CR")} salida · {analysis.cachedInputTokens.toLocaleString("es-CR")} en caché</em></div>
                 <div><small>Búsquedas web</small><b>{analysis.webSearchCount}</b></div>
                 <div><small>Costo estimado de este análisis</small><b>{costLabel(analysis.estimatedCostUsd)}</b></div>
+                <div><small>Fecha y hora</small><b>{analysisDateLabel(analysis.completedAt || analysis.createdAt)}</b></div>
               </> : <div className="analysis-manual-note"><small>Análisis de OpenAI</small><b>No realizado</b></div>}
               {usage && <div><small>Costo acumulado</small><b>{costLabel(usage.cumulativeCostUsd)}</b><em>{usage.billedAnalyses} análisis con consumo</em></div>}
             </div>
+            {analysis?.reviewRequired && <div className="analysis-review-alert"><AlertCircle /><div><b>Revisión requerida</b><p>El resultado se conservó, pero Terra detectó datos incompletos o inconsistentes. Revisá la factura y cada producto. No se ejecutará Sol automáticamente.</p></div></div>}
+            {analyses.length > 0 && <details className="analysis-history" defaultOpen={Boolean(analysis?.reviewRequired || analyses.length > 1)}>
+              <summary><History />Historial de análisis ({analyses.length})</summary>
+              <div className="analysis-history-list">{analyses.slice().reverse().map((item) => <article key={item.id}>
+                <header><span><b>Análisis #{item.analysisNumber}</b><small>{item.reanalysis ? "Reanálisis" : "Análisis inicial"}</small></span><span className={`analysis-status-pill ${item.status}`}>{analysisStatusLabel(item.status)}</span></header>
+                <div><span><small>Modelo utilizado</small><b>{item.model || "—"}</b></span><span><small>Fecha y hora</small><b>{analysisDateLabel(item.completedAt || item.createdAt)}</b></span><span><small>Tokens</small><b>{item.totalTokens.toLocaleString("es-CR")}</b><small>{item.inputTokens.toLocaleString("es-CR")} entrada · {item.outputTokens.toLocaleString("es-CR")} salida · {item.cachedInputTokens.toLocaleString("es-CR")} caché</small></span><span><small>Búsquedas web</small><b>{item.webSearchCount}</b></span><span><small>Costo individual</small><b>{costLabel(item.estimatedCostUsd)}</b></span><span><small>Acumulado de esta factura</small><b>{costLabel(item.cumulativeCostUsd)}</b></span></div>
+                {item.errorMessage && <p>{item.errorMessage}</p>}
+              </article>)}</div>
+            </details>}
             <div className="invoice-meta-grid">
               <label><span>Proveedor</span><select value={document.provider} onChange={(event) => updateDocumentMeta({ provider: event.target.value as IntakeDocument["provider"] })}><option value="amazon">Amazon</option><option value="iherb">iHerb</option><option value="other">Otra tienda</option></select></label>
               <label><span>Número de pedido</span><input value={document.orderNumber} onChange={(event) => updateDocumentMeta({ orderNumber: event.target.value })} placeholder="Pedido, compra u orden" /></label>
@@ -1196,7 +1247,7 @@ export function InventoryIntakeModal(props: Props) {
 
     {removeLineTarget && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card"><div className="delete-symbol"><X /></div><h2>¿Eliminar este producto?</h2><p>Se quitará <b>{removeLineTarget.name || "este producto"}</b> de la revisión. Ya no aparecerá en esta factura ni será necesario completar sus datos.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setRemoveLineTarget(null)} disabled={Boolean(removingLineId)}>No, conservar</button><button className="btn danger-solid" onClick={() => void removeLineFromReview()} disabled={Boolean(removingLineId)}>{removingLineId ? <Loader2 className="spin" /> : <X />}Sí, eliminar</button></div></div></div>}
     {cancelConfirmOpen && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card"><div className="delete-symbol"><X /></div><h2>¿Cancelar toda la carga?</h2><p>Se borrará el borrador completo, incluido el progreso guardado producto por producto. No quedará registrado como ingresado y volverás a la pantalla para cargar otra factura.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setCancelConfirmOpen(false)} disabled={canceling}>No, continuar</button><button className="btn danger-solid" onClick={() => void cancelInvoiceReview(false, true)} disabled={canceling}>{canceling ? <Loader2 className="spin" /> : <X />}Sí, cancelar y borrar</button></div></div></div>}
-    {reanalyzeConfirmOpen && document && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card reanalyze-card"><div className="download-symbol"><Sparkles /></div><h2>¿Analizar nuevamente con IA?</h2><p>Esto enviará otra vez todos los archivos de esta factura a OpenAI y <b>generará un nuevo consumo</b>. No se usa el análisis en caché. Los productos ya confirmados y el progreso guardado se conservan.</p>{analysis && <div className="reanalyze-cost"><span>Último análisis</span><b>{costLabel(analysis.estimatedCostUsd)}</b><small>Referencia estimada; el nuevo costo puede variar según páginas y búsquedas.</small></div>}<div className="confirm-actions"><button className="btn secondary" onClick={() => setReanalyzeConfirmOpen(false)} disabled={reanalyzing}>No, conservar análisis</button><button className="btn primary" onClick={() => void reanalyzeInvoice()} disabled={reanalyzing || !aiConfig?.aiAvailable}>{reanalyzing ? <Loader2 className="spin" /> : <Sparkles />}Sí, generar nuevo consumo</button></div></div></div>}
+    {reanalyzeConfirmOpen && document && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card reanalyze-card"><div className="download-symbol"><Sparkles /></div><span className="eyebrow">Acción administrativa</span><h2>{reanalyzeTarget === "sol" ? "¿Reanalizar con Sol?" : "¿Analizar nuevamente con IA?"}</h2><p>{reanalyzeTarget === "sol" ? <>Se enviará otra vez la factura completa a OpenAI usando <b>gpt-5.6-sol</b>. Esta segunda llamada <b>genera un nuevo consumo</b> y se guardará separada del análisis de Terra.</> : <>Esto enviará otra vez todos los archivos de esta factura a OpenAI usando el modelo principal configurado y <b>generará un nuevo consumo</b>. No se usa el análisis en caché.</>} Los productos ya confirmados y el progreso guardado se conservan.</p>{analysis && <div className="reanalyze-cost"><span>Último análisis</span><b>{costLabel(analysis.estimatedCostUsd)}</b><small>Referencia estimada; el nuevo costo puede variar según páginas y búsquedas.</small></div>}<div className="confirm-actions"><button className="btn secondary" onClick={() => setReanalyzeConfirmOpen(false)} disabled={reanalyzing}>No, conservar análisis</button><button className="btn primary" onClick={() => void reanalyzeInvoice()} disabled={reanalyzing || !aiConfig?.aiAvailable}>{reanalyzing ? <Loader2 className="spin" /> : <Sparkles />}{reanalyzeTarget === "sol" ? "Sí, reanalizar con Sol" : "Sí, generar nuevo consumo"}</button></div></div></div>}
     {pendingBarcode && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card barcode-confirm"><div className="download-symbol"><Barcode /></div><h2>Confirmar código detectado</h2><p>Verificá el número y la presentación antes de guardarlo. No se utilizará hasta que lo confirmés.</p><strong>{pendingBarcode.code}</strong><small>{validateBarcode(pendingBarcode.code).type}</small>{pendingBarcode.sourceUrl && <a className="pending-source-link" href={pendingBarcode.sourceUrl} target="_blank" rel="noreferrer">{pendingBarcode.sourceTitle || pendingBarcode.source}</a>}{pendingBarcode.differences?.map((difference) => <div className="alert warning" key={difference}><AlertCircle />{difference}</div>)}<div className="confirm-actions"><button className="btn secondary" onClick={() => setPendingBarcode(null)}>Cancelar</button><button className="btn primary" onClick={confirmPendingBarcode}><Check />Confirmar código</button></div></div></div>}
     {reverseTarget && <div className="nested-modal" role="dialog" aria-modal="true"><div className="confirm-card reverse-card"><div className="delete-symbol"><RotateCcw /></div><h2>Revertir ingreso</h2><p>Se creará un movimiento contrario sin borrar el historial original. Si ya se vendieron unidades y no hay suficiente inventario, la operación se bloqueará.</p><label className="field"><span>Razón de la reversión</span><textarea value={reverseReason} onChange={(event) => setReverseReason(event.target.value)} placeholder="Ej. cantidad ingresada incorrectamente" /></label><div className="confirm-actions"><button className="btn secondary" onClick={() => setReverseTarget(null)} disabled={reversing}>Cancelar</button><button className="btn danger-solid" onClick={() => void reverseOperation()} disabled={reversing || reverseReason.trim().length < 3}>{reversing ? <Loader2 className="spin" /> : <RotateCcw />}Crear reversión</button></div></div></div>}
   </div>;

@@ -68,7 +68,16 @@ export type InvoiceAiRunResult = {
   responseId: string;
   usage: InvoiceAiUsage;
   webSources: Array<{ title: string; url: string }>;
+  quality: InvoiceAiQuality;
 };
+
+export type InvoiceAiQuality = {
+  reviewRequired: boolean;
+  issues: string[];
+};
+
+export const DEFAULT_INVOICE_AI_MODEL = "gpt-5.6-terra";
+export const SOL_INVOICE_AI_MODEL = "gpt-5.6-sol";
 
 export class InvoiceAiError extends Error {
   code: string;
@@ -76,8 +85,21 @@ export class InvoiceAiError extends Error {
   usage?: InvoiceAiUsage;
   responseId: string;
   model: string;
+  extractionJson: string;
+  reviewRequired: boolean;
 
-  constructor(code: string, message: string, status = 500, metadata: { usage?: InvoiceAiUsage; responseId?: string; model?: string } = {}) {
+  constructor(
+    code: string,
+    message: string,
+    status = 500,
+    metadata: {
+      usage?: InvoiceAiUsage;
+      responseId?: string;
+      model?: string;
+      extractionJson?: string;
+      reviewRequired?: boolean;
+    } = {},
+  ) {
     super(message);
     this.name = "InvoiceAiError";
     this.code = code;
@@ -85,6 +107,8 @@ export class InvoiceAiError extends Error {
     this.usage = metadata.usage;
     this.responseId = metadata.responseId || "";
     this.model = metadata.model || "";
+    this.extractionJson = metadata.extractionJson || "{}";
+    this.reviewRequired = metadata.reviewRequired === true;
   }
 }
 
@@ -170,9 +194,9 @@ Reglas obligatorias:
 1. Revisa el texto, las imágenes, las tablas y la distribución visual de todas las páginas.
 2. Identifica proveedor, número de pedido/compra/orden, número de factura si existe, fecha y rastreo/envío. En Amazon, “N.º de pedido” es el número de pedido. En iHerb, “Número de compra” es el número de pedido.
 3. Incluye solo productos físicos. No incluyas envío, impuestos, descuentos ni totales como productos. Clasifica muestras, regalos, promociones, cancelaciones, reembolsos y devoluciones.
-4. Para cada producto conserva marca, presentación exacta, tamaño, sabor, concentración, unidades del paquete y cantidad comprada. Usa 0 solo cuando una cantidad no pueda determinarse; usa 1 en package_units cuando es una unidad normal.
-5. El UPC, EAN o GTIN es el identificador principal. El ASIN de Amazon y el código interno de iHerb son identificadores secundarios y nunca son códigos de barras.
-6. Si el código de barras no está impreso, realiza búsqueda web para cada producto usando marca y presentación exactas. Verifica tamaño, sabor, concentración y cantidad del paquete.
+4. Para cada producto conserva marca, presentación exacta, tamaño, sabor, concentración, unidades del paquete y cantidad comprada. Usa 0 solo cuando una cantidad no pueda determinarse; usa 1 en package_units cuando es una unidad normal. package_units cuenta unidades vendibles idénticas que comparten la misma presentación y código; un kit o set con componentes distintos (por ejemplo, difusor + recargas) usa package_units=1 y debe describirse como set.
+5. El UPC, EAN o GTIN es el identificador principal. El ASIN de Amazon y el código interno de iHerb son identificadores secundarios y nunca son códigos de barras. El código iHerb se completa únicamente cuando esté visible en la factura. Un ASIN hallado en web solo se acepta si la página corresponde al producto y presentación exactos; registra source="web", page=0. Nunca inventes ni derives identificadores secundarios.
+6. Si el código de barras no está impreso, realiza búsqueda web para UPC/EAN/GTIN y, en Amazon, para el ASIN de cada producto usando marca y presentación exactas. Verifica tamaño, sabor, concentración, cantidad del paquete y todos los componentes de un set.
 7. Nunca inventes, completes ni derives dígitos de un código. Si hay diferencias, varias posibilidades o no hay una fuente exacta, conserva el candidato solo como sugerencia: exact_match=false y detalla las diferencias. Si no hay candidato verificable, value="" y source_kind="pending".
 8. Para códigos hallados en web, source_url debe ser la página exacta consultada y source_title su título. Para códigos impresos, source_kind="invoice", page indica la página y source_url="".
 9. Registra para cada dato su seguridad de 0 a 100 y la página 1-based; usa página 0 y source="absent" cuando no aparece.
@@ -378,6 +402,50 @@ function sanitizeAnalysis(value: unknown, sources: Array<{ title: string; url: s
   };
 }
 
+export function assessInvoiceAnalysis(analysis: AiInvoiceAnalysis): InvoiceAiQuality {
+  const issues: string[] = [];
+  if (!analysis.products.length) issues.push("No se reconocieron productos físicos.");
+  if (!analysis.order_number) issues.push("Falta el número de pedido, compra u orden.");
+  if (!analysis.document_date) issues.push("Falta la fecha del documento.");
+
+  const lineKeys = new Set<string>();
+  analysis.products.forEach((product, index) => {
+    const lineNumber = index + 1;
+    const evidenceFor = (field: string, sources: AiEvidence["source"][]) => product.field_evidence.some((item) => (
+      item.field === field
+      && sources.includes(item.source)
+      && (item.source === "web" || item.page > 0)
+      && Boolean(item.value)
+    ));
+    if (lineKeys.has(product.line_key)) issues.push(`La línea ${lineNumber} repite un identificador de producto.`);
+    lineKeys.add(product.line_key);
+    if (!product.name || /^Producto \d+$/i.test(product.name)) issues.push(`La línea ${lineNumber} no tiene un nombre verificable.`);
+    if (!product.brand) issues.push(`La línea ${lineNumber} no tiene marca verificable.`);
+    if (!product.presentation && !product.size && !product.concentration) {
+      issues.push(`La línea ${lineNumber} no tiene presentación, tamaño ni concentración verificables.`);
+    }
+    if (product.quantity <= 0) issues.push(`La línea ${lineNumber} no tiene una cantidad válida.`);
+    if (product.package_units <= 0) issues.push(`La línea ${lineNumber} no tiene una cantidad válida de unidades por paquete.`);
+    if (product.package_units > 1 && /\b(?:kit|set|difusor|surtido|bundle)\b/i.test(`${product.name} ${product.presentation} ${product.original_description}`)) {
+      issues.push(`La línea ${lineNumber} parece un set con componentes distintos; confirmá manualmente las unidades por paquete.`);
+    }
+    if (analysis.provider === "amazon" && product.asin && !evidenceFor("asin", ["invoice_visual", "invoice_text", "web"])) {
+      issues.push(`La línea ${lineNumber} contiene un ASIN sin evidencia verificable.`);
+    }
+    if (analysis.provider === "iherb") {
+      if (!product.iherb_code) issues.push(`La línea ${lineNumber} no tiene el código interno de iHerb visible en la factura.`);
+      else if (!evidenceFor("iherb_code", ["invoice_visual", "invoice_text"])) issues.push(`La línea ${lineNumber} contiene un código iHerb que no está respaldado por la factura.`);
+    }
+    if (!product.barcode.value) issues.push(`La línea ${lineNumber} no tiene un UPC, EAN o GTIN verificable.`);
+    else if (!product.barcode.exact_match) issues.push(`La línea ${lineNumber} contiene un código de barras que sigue siendo una sugerencia.`);
+    if (product.barcode.exact_match && product.barcode.differences.length) {
+      issues.push(`La línea ${lineNumber} marca un código como exacto aunque registra diferencias.`);
+    }
+  });
+
+  return { reviewRequired: issues.length > 0, issues: [...new Set(issues)] };
+}
+
 const MODEL_PRICING_USD_PER_MILLION: Record<string, { input: number; cached: number; output: number }> = {
   "gpt-5.6-sol": { input: 5, cached: 0.5, output: 30 },
   "gpt-5.6-terra": { input: 2, cached: 0.2, output: 12 },
@@ -389,7 +457,7 @@ function pricingFor(model: string) {
   const exact = MODEL_PRICING_USD_PER_MILLION[model];
   if (exact) return exact;
   const prefix = Object.entries(MODEL_PRICING_USD_PER_MILLION).find(([name]) => model.startsWith(`${name}-`));
-  return prefix?.[1] || MODEL_PRICING_USD_PER_MILLION["gpt-5.6-terra"];
+  return prefix?.[1] || MODEL_PRICING_USD_PER_MILLION[DEFAULT_INVOICE_AI_MODEL];
 }
 
 export function estimateInvoiceAiCostMicrousd(model: string, inputTokens: number, cachedInputTokens: number, outputTokens: number, webSearchCount: number) {
@@ -406,7 +474,7 @@ export function estimateInvoiceAiCostMicrousd(model: string, inputTokens: number
 export function invoiceAiConfig() {
   const enabled = /^(?:1|true|yes|on)$/i.test(globalThis.__NUTRIPLUS_INVOICE_AI_ENABLED__ || "");
   const key = globalThis.__NUTRIPLUS_OPENAI_API_KEY__?.trim() || "";
-  const model = globalThis.__NUTRIPLUS_INVOICE_AI_MODEL__?.trim() || "gpt-5.6-terra";
+  const model = globalThis.__NUTRIPLUS_INVOICE_AI_MODEL__?.trim() || DEFAULT_INVOICE_AI_MODEL;
   const parsedLimit = Number(globalThis.__NUTRIPLUS_INVOICE_AI_MONTHLY_LIMIT_USD__ || "5");
   return {
     enabled,
@@ -432,11 +500,15 @@ export async function invoiceAiUsageSummary(db: D1Database) {
   };
 }
 
-export async function analyzeStoredInvoice(files: StoredInvoiceFileRow[]): Promise<InvoiceAiRunResult> {
+export async function analyzeStoredInvoice(
+  files: StoredInvoiceFileRow[],
+  options: { model?: string } = {},
+): Promise<InvoiceAiRunResult> {
   const config = invoiceAiConfig();
   if (!config.enabled) throw new InvoiceAiError("ai_disabled", "El análisis con IA está desactivado. La factura continúa disponible en modo Manual.", 503);
   if (!config.keyConfigured) throw new InvoiceAiError("missing_key", "Falta la clave de OpenAI. La factura continúa disponible en modo Manual.", 503);
   if (!files.length) throw new InvoiceAiError("missing_file", "No se encontró el archivo guardado de la factura.", 404);
+  const requestedModel = options.model?.trim() || config.model;
 
   const inputFiles = await Promise.all(files.sort((left, right) => left.file_index - right.file_index).map(async (file) => ({
     file,
@@ -462,14 +534,15 @@ export async function analyzeStoredInvoice(files: StoredInvoiceFileRow[]): Promi
 
   let response: Response;
   try {
-    response = await fetch("https://api.openai.com/v1/responses", {
+    const openAiFetch = globalThis.__NUTRIPLUS_INVOICE_AI_TEST_FETCH__ || fetch;
+    response = await openAiFetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${config.key}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: config.model,
+        model: requestedModel,
         reasoning: { effort: "low" },
         tools: [{ type: "web_search", external_web_access: true, search_context_size: "medium" }],
         tool_choice: "auto",
@@ -506,22 +579,36 @@ export async function analyzeStoredInvoice(files: StoredInvoiceFileRow[]): Promi
   }
 
   const sources = webSourcesFromResponse(raw);
-  const observedModel = stringValue(raw.model, 120) || config.model;
+  const observedModel = stringValue(raw.model, 120) || requestedModel;
   const observedUsage = usageFromResponse(raw, observedModel);
   const responseId = stringValue(raw.id, 200);
-  let analysis: AiInvoiceAnalysis;
-  try { analysis = sanitizeAnalysis(JSON.parse(outputText(raw)), sources); }
+  let rawOutput = "";
+  try { rawOutput = outputText(raw); }
   catch (error) {
     if (error instanceof InvoiceAiError) {
       error.usage = observedUsage;
       error.responseId = responseId;
       error.model = observedModel;
+    }
+    throw error;
+  }
+  let analysis: AiInvoiceAnalysis;
+  try { analysis = sanitizeAnalysis(JSON.parse(rawOutput), sources); }
+  catch (error) {
+    if (error instanceof InvoiceAiError) {
+      error.usage = observedUsage;
+      error.responseId = responseId;
+      error.model = observedModel;
+      error.extractionJson = JSON.stringify({ rawOutput: rawOutput.slice(0, 200_000) });
+      error.reviewRequired = true;
       throw error;
     }
-    throw new InvoiceAiError("invalid_json", "OpenAI no devolvió la estructura esperada. La factura continúa en modo Manual.", 502, {
+    throw new InvoiceAiError("invalid_json", "OpenAI devolvió un resultado que requiere revisión antes de usarlo.", 502, {
       usage: observedUsage,
       responseId,
       model: observedModel,
+      extractionJson: JSON.stringify({ rawOutput: rawOutput.slice(0, 200_000) }),
+      reviewRequired: true,
     });
   }
   return {
@@ -530,6 +617,7 @@ export async function analyzeStoredInvoice(files: StoredInvoiceFileRow[]): Promi
     responseId,
     usage: observedUsage,
     webSources: sources,
+    quality: assessInvoiceAnalysis(analysis),
   };
 }
 

@@ -5,6 +5,7 @@ declare global {
   var __NUTRIPLUS_INVOICE_AI_ENABLED__: string | undefined;
   var __NUTRIPLUS_INVOICE_AI_MODEL__: string | undefined;
   var __NUTRIPLUS_INVOICE_AI_MONTHLY_LIMIT_USD__: string | undefined;
+  var __NUTRIPLUS_INVOICE_AI_TEST_FETCH__: typeof fetch | undefined;
 
   namespace Cloudflare {
     interface Env {
