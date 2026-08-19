@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const developmentPreviewMeta =
@@ -29,5 +30,14 @@ test("renders development preview metadata", async () => {
     response.headers.get("content-type") ?? "",
     /^text\/html\b/i,
   );
-  assert.match(await response.text(), developmentPreviewMeta);
+  const html = await response.text();
+  assert.match(html, developmentPreviewMeta);
+});
+
+test("exposes all three invoice modes in the client interface", async () => {
+  const source = await readFile(new URL("../app/inventory-intake.tsx", import.meta.url), "utf8");
+  assert.match(source, />Automático con IA</);
+  assert.match(source, />Manual</);
+  assert.match(source, />Importar análisis de ChatGPT</);
+  assert.match(source, /\/api\/inventory-intake\/import-chatgpt/);
 });

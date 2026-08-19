@@ -15,6 +15,26 @@ function jsonArray(value: unknown) {
   } catch { return []; }
 }
 
+function chatGptImportSummary(value: unknown) {
+  const extraction = jsonObject(value);
+  const invoice = extraction.invoice && typeof extraction.invoice === "object" && !Array.isArray(extraction.invoice)
+    ? extraction.invoice as Record<string, unknown> : {};
+  const source = extraction.source && typeof extraction.source === "object" && !Array.isArray(extraction.source)
+    ? extraction.source as Record<string, unknown> : {};
+  const amount = (entry: unknown) => Number.isFinite(Number(entry)) ? Number(entry) : 0;
+  return {
+    pageCount: Number(source.page_count || 0),
+    currency: invoice.currency ? String(invoice.currency) : "",
+    subtotal: amount(invoice.subtotal),
+    shipping: amount(invoice.shipping),
+    tax: amount(invoice.tax),
+    total: amount(invoice.total),
+    lineCount: Number(invoice.line_count || 0),
+    inventoryUnits: Number(invoice.inventory_units || 0),
+    sourceSha256: source.sha256 ? String(source.sha256) : "",
+  };
+}
+
 export function intakeDocumentFromRow(row: Record<string, unknown>) {
   return {
     id: String(row.id),
@@ -43,10 +63,14 @@ export function intakeDocumentFromRow(row: Record<string, unknown>) {
 
 export function invoiceAnalysisFromRow(row: Record<string, unknown> | null | undefined, cumulativeCostUsd = 0) {
   if (!row) return null;
+  const analysisOrigin = row.analysis_origin ? String(row.analysis_origin) : "OPENAI_API";
   return {
     id: String(row.id),
     analysisNumber: Number(row.analysis_number || 0),
     model: String(row.model),
+    analysisOrigin,
+    apiCalls: Number(row.api_calls ?? (analysisOrigin === "OPENAI_API" ? 1 : 0)),
+    apiCostUsd: Number(row.api_cost_microusd ?? row.estimated_cost_microusd ?? 0) / 1_000_000,
     status: String(row.status),
     inputTokens: Number(row.input_tokens || 0),
     cachedInputTokens: Number(row.cached_input_tokens || 0),
@@ -61,6 +85,7 @@ export function invoiceAnalysisFromRow(row: Record<string, unknown> | null | und
     errorMessage: row.error_message ? String(row.error_message) : "",
     createdAt: String(row.created_at),
     completedAt: row.completed_at ? String(row.completed_at) : "",
+    importSummary: analysisOrigin === "CHATGPT_IMPORT" ? chatGptImportSummary(row.extraction_json) : null,
   };
 }
 

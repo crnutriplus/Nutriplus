@@ -10,6 +10,7 @@ import {
   Camera,
   Check,
   ClipboardPaste,
+  FileArchive,
   FileClock,
   FileSearch,
   FileText,
@@ -45,7 +46,7 @@ type IntakeDocument = {
   documentDate: string;
   pageCount: number;
   fileCount: number;
-  processingMode: "ai" | "manual";
+  processingMode: "ai" | "manual" | "chatgpt_import";
   analysisStatus: string;
   activeAnalysisId: string;
   fieldEvidence: Record<string, { value?: string; confidence?: number; page?: number; source?: string }>;
@@ -69,6 +70,9 @@ type InvoiceAnalysis = {
   id: string;
   analysisNumber: number;
   model: string;
+  analysisOrigin: "OPENAI_API" | "CHATGPT_IMPORT" | string;
+  apiCalls: number;
+  apiCostUsd: number;
   status: string;
   inputTokens: number;
   cachedInputTokens: number;
@@ -83,6 +87,17 @@ type InvoiceAnalysis = {
   errorMessage: string;
   createdAt: string;
   completedAt: string;
+  importSummary: {
+    pageCount: number;
+    currency: string;
+    subtotal: number;
+    shipping: number;
+    tax: number;
+    total: number;
+    lineCount: number;
+    inventoryUnits: number;
+    sourceSha256: string;
+  } | null;
 };
 
 type InvoiceUsage = {
@@ -208,6 +223,11 @@ const EVIDENCE_LABELS: Record<string, string> = {
   flavor: "Sabor",
   concentration: "Concentración",
   quantity: "Cantidad",
+  unit_price: "Precio unitario",
+  discount_total: "Descuento",
+  line_subtotal: "Subtotal de línea",
+  currency: "Moneda",
+  total: "Total",
   package_units: "Unidades por paquete",
   iherb_code: "Código iHerb",
   asin: "ASIN",
@@ -215,8 +235,16 @@ const EVIDENCE_LABELS: Record<string, string> = {
 };
 
 function costLabel(value: number) {
-  if (!Number.isFinite(value)) return "$0.0000";
+  if (!Number.isFinite(value) || value === 0) return "$0.00";
   return `$${value.toFixed(value >= 1 ? 2 : 4)}`;
+}
+
+function analysisOriginLabel(origin: string) {
+  return origin === "CHATGPT_IMPORT" ? "ChatGPT Import" : "OpenAI API";
+}
+
+function importedMoney(value: number, currency: string) {
+  return `${currency || "USD"} ${value.toFixed(2)}`;
 }
 
 function analysisStatusLabel(status: string) {
@@ -367,12 +395,13 @@ export function InventoryIntakeModal(props: Props) {
   } = props;
   const [tab, setTab] = useState<"invoice" | "quick" | "history">("invoice");
   const [document, setDocument] = useState<IntakeDocument | null>(null);
-  const [invoiceMode, setInvoiceMode] = useState<"ai" | "manual">("ai");
+  const [invoiceMode, setInvoiceMode] = useState<"ai" | "manual" | "chatgpt_import">("ai");
   const [aiConfig, setAiConfig] = useState<InvoiceAiConfig | null>(null);
   const [invoiceFiles, setInvoiceFiles] = useState<IntakeInvoiceFile[]>([]);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [analysis, setAnalysis] = useState<InvoiceAnalysis | null>(null);
   const [analyses, setAnalyses] = useState<InvoiceAnalysis[]>([]);
+  const [analysisHistoryOpen, setAnalysisHistoryOpen] = useState(false);
   const [usage, setUsage] = useState<InvoiceUsage | null>(null);
   const uploadedFilesRef = useRef<File[]>([]);
   const [lines, setLines] = useState<IntakeLineDto[]>([]);
@@ -441,6 +470,7 @@ export function InventoryIntakeModal(props: Props) {
     setSelectedFileIndex(0);
     setAnalysis(null);
     setAnalyses([]);
+    setAnalysisHistoryOpen(false);
     setUsage(null);
     uploadedFilesRef.current = [];
     setLines([]);
@@ -465,7 +495,8 @@ export function InventoryIntakeModal(props: Props) {
   useEffect(() => {
     if (!open) return;
     let active = true;
-    void apiJson<InvoiceAiConfig>(fetch("/api/inventory-intake/config"))
+    void fetch("/api/inventory-intake/config")
+      .then((response) => apiJson<InvoiceAiConfig>(response))
       .then((config) => {
         if (!active) return;
         setAiConfig(config);
@@ -569,6 +600,7 @@ export function InventoryIntakeModal(props: Props) {
     setSelectedFileIndex(0);
     setAnalysis(result.analysis || null);
     setAnalyses(result.analyses || (result.analysis ? [result.analysis] : []));
+    setAnalysisHistoryOpen(Boolean(result.analysis?.reviewRequired || (result.analyses || []).length > 1));
     setUsage(result.usage || null);
     setLines(hydrated);
     setSelected(new Set(hydrated.filter((line) => line.selectedForIngress && line.action !== "ignore" && line.status !== "processed").map((line) => line.id)));
@@ -577,7 +609,9 @@ export function InventoryIntakeModal(props: Props) {
     setDeletedLineIds(new Set());
     setMetaDirty(false);
     metaRevisionRef.current = 0;
-    setInvoiceMode(result.document.processingMode === "ai" && !result.manualFallback ? "ai" : "manual");
+    setInvoiceMode(result.document.processingMode === "chatgpt_import"
+      ? "chatgpt_import"
+      : result.document.processingMode === "ai" && !result.manualFallback ? "ai" : "manual");
   }
 
   function addBlankManualLine() {
@@ -641,20 +675,32 @@ export function InventoryIntakeModal(props: Props) {
   async function analyzeFiles(event: ChangeEvent<HTMLInputElement>) {
     const files = [...(event.currentTarget.files || [])];
     if (!files.length) return;
+    if (invoiceMode === "chatgpt_import" && files.length !== 1) {
+      onNotify({ type: "error", text: "Seleccioná un único archivo ZIP generado desde ChatGPT.", sticky: true });
+      return;
+    }
     uploadedFilesRef.current = files;
     setReadProgress({
       current: 0,
       total: 1,
-      message: invoiceMode === "ai" ? "Guardando y analizando la factura con IA…" : "Guardando la factura para revisión manual…",
+      message: invoiceMode === "ai"
+        ? "Guardando y analizando la factura con IA…"
+        : invoiceMode === "chatgpt_import" ? "Validando el ZIP y preparando el borrador…" : "Guardando la factura para revisión manual…",
     });
     setReading(true);
     resetInvoiceReview();
     uploadedFilesRef.current = files;
     try {
       const form = new FormData();
-      form.set("mode", invoiceMode);
-      files.forEach((file) => form.append("files", file, file.name));
-      const result = await apiJson<IntakeLoadResult>(await fetch("/api/inventory-intake", { method: "POST", body: form }));
+      let endpoint = "/api/inventory-intake";
+      if (invoiceMode === "chatgpt_import") {
+        endpoint = "/api/inventory-intake/import-chatgpt";
+        form.append("package", files[0], files[0].name);
+      } else {
+        form.set("mode", invoiceMode);
+        files.forEach((file) => form.append("files", file, file.name));
+      }
+      const result = await apiJson<IntakeLoadResult>(await fetch(endpoint, { method: "POST", body: form }));
       applyLoadedResult(result);
       if (result.exactDuplicate) {
         onNotify({ type: "warning", text: "Esta misma factura ya había sido ingresada. Sus productos procesados permanecen bloqueados para evitar duplicados.", sticky: true });
@@ -663,6 +709,14 @@ export function InventoryIntakeModal(props: Props) {
       } else if (result.manualFallback) {
         onNotify({ type: "error", text: result.aiErrorMessage || "El análisis con IA falló. La factura se conservó y cambió al modo Manual.", sticky: true });
         await runOcrFallback(files, result.document.id, true);
+      } else if (invoiceMode === "chatgpt_import") {
+        onNotify({
+          type: result.reviewRequired ? "warning" : "success",
+          text: result.reviewRequired
+            ? `El paquete se importó como borrador con ${result.lines.length} productos y requiere revisión.`
+            : `Análisis de ChatGPT importado: ${result.lines.length} productos en borrador, sin consumo de OpenAI API.`,
+          sticky: result.reviewRequired,
+        });
       } else if (invoiceMode === "manual") {
         if (!result.lines.length) addBlankManualLine();
         onNotify({ type: "success", text: "La factura quedó guardada en modo Manual. Podés completar los productos uno por uno." });
@@ -680,7 +734,13 @@ export function InventoryIntakeModal(props: Props) {
         });
       }
     } catch (error) {
-      onNotify({ type: "error", text: intakeErrorText(error, "No se pudo guardar o analizar la factura. Revisá el archivo e intentá nuevamente."), sticky: true });
+      onNotify({
+        type: "error",
+        text: intakeErrorText(error, invoiceMode === "chatgpt_import"
+          ? "No se pudo importar el paquete de ChatGPT. Revisá el ZIP e intentá nuevamente."
+          : "No se pudo guardar o analizar la factura. Revisá el archivo e intentá nuevamente."),
+        sticky: true,
+      });
     } finally { setReading(false); }
   }
 
@@ -1135,20 +1195,25 @@ export function InventoryIntakeModal(props: Props) {
               <span><b>Manual</b><small>Guarda la factura sin llamar a OpenAI. Podés escribir cada producto o usar la lectura OCR de respaldo.</small></span>
               <em>Sin consumo de IA</em>
             </button>
+            <button type="button" className={invoiceMode === "chatgpt_import" ? "active" : ""} onClick={() => setInvoiceMode("chatgpt_import")}>
+              <span className="mode-icon"><FileArchive /></span>
+              <span><b>Importar análisis de ChatGPT</b><small>Valida un ZIP con analysis.json y una única factura, y crea un borrador para revisión.</small></span>
+              <em>API calls 0 · Costo $0.00</em>
+            </button>
           </div>
-          {aiConfig && <div className="ai-budget-note"><Sparkles /><span>Consumo del mes: <b>{costLabel(aiConfig.currentMonthCostUsd)}</b> de {costLabel(aiConfig.monthlyLimitUsd)} · acumulado {costLabel(aiConfig.cumulativeCostUsd)}</span></div>}
-          <label className="surface invoice-upload"><span className="upload-icon"><Upload /></span><h3>Subir factura</h3><p>PDF, fotografías, capturas y documentos de varias páginas. Se guardan antes de iniciar cualquier análisis.</p><span className="btn primary"><FileText />Elegir archivos</span><input className="native-file-input" type="file" accept="application/pdf,image/*" multiple onChange={analyzeFiles} /></label>
+          {aiConfig && invoiceMode === "ai" && <div className="ai-budget-note"><Sparkles /><span>Consumo del mes: <b>{costLabel(aiConfig.currentMonthCostUsd)}</b> de {costLabel(aiConfig.monthlyLimitUsd)} · acumulado {costLabel(aiConfig.cumulativeCostUsd)}</span></div>}
+          <label className="surface invoice-upload"><span className="upload-icon"><Upload /></span><h3>{invoiceMode === "chatgpt_import" ? "Subir paquete ZIP" : "Subir factura"}</h3><p>{invoiceMode === "chatgpt_import" ? "Debe contener analysis.json y exactamente una factura invoice.pdf, invoice.jpg, invoice.jpeg, invoice.png o invoice.webp." : "PDF, fotografías, capturas y documentos de varias páginas. Se guardan antes de iniciar cualquier análisis."}</p><span className="btn primary">{invoiceMode === "chatgpt_import" ? <FileArchive /> : <FileText />}{invoiceMode === "chatgpt_import" ? "Elegir ZIP" : "Elegir archivos"}</span><input className="native-file-input" type="file" accept={invoiceMode === "chatgpt_import" ? ".zip,application/zip,application/x-zip-compressed" : "application/pdf,image/*"} multiple={invoiceMode !== "chatgpt_import"} onChange={analyzeFiles} /></label>
         </div>}
-        {reading && <div className="surface invoice-reading"><Loader2 className="spin" /><h3>{invoiceMode === "ai" ? "Analizando la factura" : "Guardando la factura"}</h3><p>{readProgress.message}</p>{ocrReading && <><div className="progress"><span style={{ width: `${Math.round(readProgress.current / Math.max(1, readProgress.total) * 100)}%` }} /></div><b>{Math.round(readProgress.current / Math.max(1, readProgress.total) * 100)}%</b></>}</div>}
+        {reading && <div className="surface invoice-reading"><Loader2 className="spin" /><h3>{invoiceMode === "ai" ? "Analizando la factura" : invoiceMode === "chatgpt_import" ? "Importando análisis de ChatGPT" : "Guardando la factura"}</h3><p>{readProgress.message}</p>{ocrReading && <><div className="progress"><span style={{ width: `${Math.round(readProgress.current / Math.max(1, readProgress.total) * 100)}%` }} /></div><b>{Math.round(readProgress.current / Math.max(1, readProgress.total) * 100)}%</b></>}</div>}
         {document && !reading && <>
           <div className="surface invoice-summary">
             <div className="invoice-summary-head">
               <div><span className="eyebrow">Vista previa obligatoria</span><h3>{document.fileName}</h3><p>{document.pageCount} página{document.pageCount === 1 ? "" : "s"} · {document.fileCount || invoiceFiles.length} archivo{(document.fileCount || invoiceFiles.length) === 1 ? "" : "s"} · {lines.length} producto{lines.length === 1 ? "" : "s"}</p></div>
               <div className="invoice-summary-actions">
                 {document.processingMode === "manual" && <button className="btn secondary small" onClick={() => void runOcrFallback()} disabled={ocrReading || reanalyzing}><FileSearch />{ocrReading ? "Leyendo…" : "Extraer con OCR (sin IA)"}</button>}
-                <button className="btn secondary small" onClick={() => { setReanalyzeTarget("primary"); setReanalyzeConfirmOpen(true); }} disabled={reanalyzing || !aiConfig?.aiAvailable || document.analysisStatus === "processing" || !invoiceFiles.length}><Sparkles />{reanalyzing ? "Analizando…" : "Analizar nuevamente"}</button>
-                {(analysis?.reviewRequired || document.analysisStatus === "review_required") && !analysis?.model.startsWith("gpt-5.6-sol") && <button className="btn secondary small sol-reanalysis-button" onClick={() => { setReanalyzeTarget("sol"); setReanalyzeConfirmOpen(true); }} disabled={reanalyzing || !aiConfig?.aiAvailable || document.analysisStatus === "processing" || !invoiceFiles.length}><Sparkles />Reanalizar con Sol</button>}
-                <label className="btn secondary small"><Upload />Cambiar factura<input className="native-file-input" type="file" accept="application/pdf,image/*" multiple onChange={analyzeFiles} /></label>
+                {document.processingMode !== "chatgpt_import" && <button className="btn secondary small" onClick={() => { setReanalyzeTarget("primary"); setReanalyzeConfirmOpen(true); }} disabled={reanalyzing || !aiConfig?.aiAvailable || document.analysisStatus === "processing" || !invoiceFiles.length}><Sparkles />{reanalyzing ? "Analizando…" : "Analizar nuevamente"}</button>}
+                {analysis?.analysisOrigin !== "CHATGPT_IMPORT" && (analysis?.reviewRequired || document.analysisStatus === "review_required") && !analysis?.model.startsWith("gpt-5.6-sol") && <button className="btn secondary small sol-reanalysis-button" onClick={() => { setReanalyzeTarget("sol"); setReanalyzeConfirmOpen(true); }} disabled={reanalyzing || !aiConfig?.aiAvailable || document.analysisStatus === "processing" || !invoiceFiles.length}><Sparkles />Reanalizar con Sol</button>}
+                <label className="btn secondary small"><Upload />{document.processingMode === "chatgpt_import" ? "Cambiar paquete" : "Cambiar factura"}<input className="native-file-input" type="file" accept={document.processingMode === "chatgpt_import" ? ".zip,application/zip,application/x-zip-compressed" : "application/pdf,image/*"} multiple={document.processingMode !== "chatgpt_import"} onChange={analyzeFiles} /></label>
               </div>
             </div>
 
@@ -1163,23 +1228,30 @@ export function InventoryIntakeModal(props: Props) {
             </div>}
 
             <div className={`analysis-overview ${document.processingMode}`}>
-              <div className="analysis-mode"><span>{document.processingMode === "ai" ? <Bot /> : <FileSearch />}</span><div><small>Modo actual</small><b>{document.processingMode === "ai" ? "Automático con IA" : "Manual"}</b></div></div>
+              <div className="analysis-mode"><span>{document.processingMode === "ai" ? <Bot /> : document.processingMode === "chatgpt_import" ? <FileArchive /> : <FileSearch />}</span><div><small>Modo actual</small><b>{document.processingMode === "ai" ? "Automático con IA" : document.processingMode === "chatgpt_import" ? "Importar análisis de ChatGPT" : "Manual"}</b></div></div>
               {analysis ? <>
-                <div><small>Modelo</small><b>{analysis.model || "—"}</b></div>
+                <div><small>Origen</small><b>{analysisOriginLabel(analysis.analysisOrigin)}</b></div>
                 <div><small>Estado</small><b className={`analysis-status-text ${analysis.status}`}>{analysisStatusLabel(analysis.status)}</b></div>
-                <div><small>Tokens</small><b>{analysis.totalTokens.toLocaleString("es-CR")}</b><em>{analysis.inputTokens.toLocaleString("es-CR")} entrada · {analysis.outputTokens.toLocaleString("es-CR")} salida · {analysis.cachedInputTokens.toLocaleString("es-CR")} en caché</em></div>
-                <div><small>Búsquedas web</small><b>{analysis.webSearchCount}</b></div>
-                <div><small>Costo estimado de este análisis</small><b>{costLabel(analysis.estimatedCostUsd)}</b></div>
+                {analysis.analysisOrigin === "CHATGPT_IMPORT" ? <>
+                  <div><small>Llamadas API</small><b>{analysis.apiCalls}</b></div>
+                  <div><small>Costo API</small><b>{costLabel(analysis.apiCostUsd)}</b></div>
+                  {analysis.importSummary && <><div><small>Moneda y total</small><b>{importedMoney(analysis.importSummary.total, analysis.importSummary.currency)}</b><em>Subtotal {importedMoney(analysis.importSummary.subtotal, analysis.importSummary.currency)}</em></div><div><small>Contenido validado</small><b>{analysis.importSummary.lineCount} líneas · {analysis.importSummary.inventoryUnits} unidades</b></div></>}
+                </> : <>
+                  <div><small>Modelo</small><b>{analysis.model || "—"}</b></div>
+                  <div><small>Tokens</small><b>{analysis.totalTokens.toLocaleString("es-CR")}</b><em>{analysis.inputTokens.toLocaleString("es-CR")} entrada · {analysis.outputTokens.toLocaleString("es-CR")} salida · {analysis.cachedInputTokens.toLocaleString("es-CR")} en caché</em></div>
+                  <div><small>Búsquedas web</small><b>{analysis.webSearchCount}</b></div>
+                  <div><small>Costo estimado de este análisis</small><b>{costLabel(analysis.estimatedCostUsd)}</b></div>
+                </>}
                 <div><small>Fecha y hora</small><b>{analysisDateLabel(analysis.completedAt || analysis.createdAt)}</b></div>
               </> : <div className="analysis-manual-note"><small>Análisis de OpenAI</small><b>No realizado</b></div>}
               {usage && <div><small>Costo acumulado</small><b>{costLabel(usage.cumulativeCostUsd)}</b><em>{usage.billedAnalyses} análisis con consumo</em></div>}
             </div>
-            {analysis?.reviewRequired && <div className="analysis-review-alert"><AlertCircle /><div><b>Revisión requerida</b><p>El resultado se conservó, pero Terra detectó datos incompletos o inconsistentes. Revisá la factura y cada producto. No se ejecutará Sol automáticamente.</p></div></div>}
-            {analyses.length > 0 && <details className="analysis-history" defaultOpen={Boolean(analysis?.reviewRequired || analyses.length > 1)}>
+            {analysis?.reviewRequired && <div className="analysis-review-alert"><AlertCircle /><div><b>Revisión requerida</b><p>{analysis.analysisOrigin === "CHATGPT_IMPORT" ? "El paquete se conservó como borrador, pero contiene productos marcados para revisión. Revisá la factura y cada producto antes de confirmar." : "El resultado se conservó, pero Terra detectó datos incompletos o inconsistentes. Revisá la factura y cada producto. No se ejecutará Sol automáticamente."}</p></div></div>}
+            {analyses.length > 0 && <details className="analysis-history" open={analysisHistoryOpen} onToggle={(event) => setAnalysisHistoryOpen(event.currentTarget.open)}>
               <summary><History />Historial de análisis ({analyses.length})</summary>
               <div className="analysis-history-list">{analyses.slice().reverse().map((item) => <article key={item.id}>
-                <header><span><b>Análisis #{item.analysisNumber}</b><small>{item.reanalysis ? "Reanálisis" : "Análisis inicial"}</small></span><span className={`analysis-status-pill ${item.status}`}>{analysisStatusLabel(item.status)}</span></header>
-                <div><span><small>Modelo utilizado</small><b>{item.model || "—"}</b></span><span><small>Fecha y hora</small><b>{analysisDateLabel(item.completedAt || item.createdAt)}</b></span><span><small>Tokens</small><b>{item.totalTokens.toLocaleString("es-CR")}</b><small>{item.inputTokens.toLocaleString("es-CR")} entrada · {item.outputTokens.toLocaleString("es-CR")} salida · {item.cachedInputTokens.toLocaleString("es-CR")} caché</small></span><span><small>Búsquedas web</small><b>{item.webSearchCount}</b></span><span><small>Costo individual</small><b>{costLabel(item.estimatedCostUsd)}</b></span><span><small>Acumulado de esta factura</small><b>{costLabel(item.cumulativeCostUsd)}</b></span></div>
+                <header><span><b>Análisis #{item.analysisNumber}</b><small>{item.analysisOrigin === "CHATGPT_IMPORT" ? "Análisis importado" : item.reanalysis ? "Reanálisis" : "Análisis inicial"}</small></span><span className={`analysis-status-pill ${item.status}`}>{analysisStatusLabel(item.status)}</span></header>
+                <div><span><small>Origen</small><b>{analysisOriginLabel(item.analysisOrigin)}</b></span>{item.analysisOrigin === "CHATGPT_IMPORT" ? <><span><small>Llamadas API</small><b>{item.apiCalls}</b></span><span><small>Costo API</small><b>{costLabel(item.apiCostUsd)}</b></span></> : <><span><small>Modelo utilizado</small><b>{item.model || "—"}</b></span><span><small>Tokens</small><b>{item.totalTokens.toLocaleString("es-CR")}</b><small>{item.inputTokens.toLocaleString("es-CR")} entrada · {item.outputTokens.toLocaleString("es-CR")} salida · {item.cachedInputTokens.toLocaleString("es-CR")} caché</small></span><span><small>Búsquedas web</small><b>{item.webSearchCount}</b></span><span><small>Costo individual</small><b>{costLabel(item.estimatedCostUsd)}</b></span></>}<span><small>Fecha y hora</small><b>{analysisDateLabel(item.completedAt || item.createdAt)}</b></span><span><small>Acumulado de esta factura</small><b>{costLabel(item.cumulativeCostUsd)}</b></span></div>
                 {item.errorMessage && <p>{item.errorMessage}</p>}
               </article>)}</div>
             </details>}

@@ -68,7 +68,7 @@ export function insertLineStatement(db: D1Database, documentId: string, line: In
 export async function duplicateForParsedInvoice(db: D1Database, documentId: string, parsed: ParsedInvoice) {
   if (!parsed.orderNumber) return { duplicateOf: "", warning: "" };
   const prior = await db.prepare(`SELECT * FROM inventory_documents
-    WHERE id<>? AND provider=? AND order_number=? AND status IN ('reviewing','partial','processed')
+    WHERE id<>? AND provider=? AND order_number=? AND status IN ('draft','reviewing','partial','processed')
     ORDER BY created_at DESC LIMIT 10`).bind(documentId, parsed.provider, parsed.orderNumber).all<Record<string, unknown>>();
   const sameInvoiceOrShipment = prior.results.find((row) => {
     const previousTracking = String(row.shipment_number || "");

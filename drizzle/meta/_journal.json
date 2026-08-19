@@ -85,6 +85,13 @@
       "when": 1786516276245,
       "tag": "0011_smart_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1787080660924,
+      "tag": "0012_breezy_bullseye",
+      "breakpoints": true
     }
   ]
 }

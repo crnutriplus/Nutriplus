@@ -511,7 +511,7 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .quick-example code { font-weight: 900; }
 .quick-example span { color: var(--muted); }
 .invoice-start { display: flex; flex-direction: column; gap: 12px; }
-.invoice-mode-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.invoice-mode-picker { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
 .invoice-mode-picker > button { min-width: 0; padding: 14px; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 5px 11px; border: 1px solid #d6dfd4; border-radius: 15px; background: #fff; color: var(--ink); text-align: left; }
 .invoice-mode-picker > button:hover:not(:disabled) { border-color: #a8c3a2; }
 .invoice-mode-picker > button.active { border-color: var(--g700); box-shadow: 0 0 0 3px rgba(54,118,78,.1); background: #f8fcf7; }

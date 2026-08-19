@@ -94,9 +94,9 @@ export async function processDocumentWithAi(
     await db.batch([
       db.prepare(`UPDATE invoice_ai_analyses SET
         model=?,status=?,response_id=?,input_tokens=?,cached_input_tokens=?,output_tokens=?,web_search_count=?,
-        estimated_cost_microusd=?,extraction_json=?,error_code=?,error_message=?,completed_at=? WHERE id=?`).bind(
+        estimated_cost_microusd=?,api_cost_microusd=?,extraction_json=?,error_code=?,error_message=?,completed_at=? WHERE id=?`).bind(
         run.model, analysisStatus, run.responseId || null, run.usage.inputTokens, run.usage.cachedInputTokens,
-        run.usage.outputTokens, run.usage.webSearchCount, run.usage.estimatedCostMicrousd, JSON.stringify(run.analysis),
+        run.usage.outputTokens, run.usage.webSearchCount, run.usage.estimatedCostMicrousd, run.usage.estimatedCostMicrousd, JSON.stringify(run.analysis),
         run.quality.reviewRequired ? "review_required" : null,
         run.quality.reviewRequired ? run.quality.issues.join(" ") : null,
         completedAt, analysisId,
@@ -125,10 +125,10 @@ export async function processDocumentWithAi(
       await db.batch([
         db.prepare(`UPDATE invoice_ai_analyses SET
           model=?,status='review_required',response_id=?,input_tokens=?,cached_input_tokens=?,output_tokens=?,web_search_count=?,
-          estimated_cost_microusd=?,extraction_json=?,error_code=?,error_message=?,completed_at=? WHERE id=?`).bind(
+          estimated_cost_microusd=?,api_cost_microusd=?,extraction_json=?,error_code=?,error_message=?,completed_at=? WHERE id=?`).bind(
           aiError.model || requestedModel, aiError.responseId || null, failedUsage?.inputTokens || 0,
           failedUsage?.cachedInputTokens || 0, failedUsage?.outputTokens || 0, failedUsage?.webSearchCount || 0,
-          failedUsage?.estimatedCostMicrousd || 0, aiError.extractionJson || "{}", aiError.code, message, completedAt, analysisId,
+          failedUsage?.estimatedCostMicrousd || 0, failedUsage?.estimatedCostMicrousd || 0, aiError.extractionJson || "{}", aiError.code, message, completedAt, analysisId,
         ),
         db.prepare(`UPDATE inventory_documents SET processing_mode='ai',analysis_status='review_required',active_analysis_id=?,warnings_json=?,updated_at=? WHERE id=?`)
           .bind(analysisId, JSON.stringify(warnings), completedAt, documentId),
@@ -141,10 +141,10 @@ export async function processDocumentWithAi(
     await db.batch([
       db.prepare(`UPDATE invoice_ai_analyses SET
         model=?,status='failed',response_id=?,input_tokens=?,cached_input_tokens=?,output_tokens=?,web_search_count=?,
-        estimated_cost_microusd=?,error_code=?,error_message=?,completed_at=? WHERE id=?`).bind(
+        estimated_cost_microusd=?,api_cost_microusd=?,error_code=?,error_message=?,completed_at=? WHERE id=?`).bind(
         aiError.model || requestedModel, aiError.responseId || null, failedUsage?.inputTokens || 0,
         failedUsage?.cachedInputTokens || 0, failedUsage?.outputTokens || 0, failedUsage?.webSearchCount || 0,
-        failedUsage?.estimatedCostMicrousd || 0, aiError.code, aiError.message, completedAt, analysisId,
+        failedUsage?.estimatedCostMicrousd || 0, failedUsage?.estimatedCostMicrousd || 0, aiError.code, aiError.message, completedAt, analysisId,
       ),
       db.prepare(`UPDATE inventory_documents SET processing_mode='manual',analysis_status='failed',active_analysis_id=?,warnings_json=?,updated_at=? WHERE id=?`)
         .bind(analysisId, JSON.stringify(warnings), completedAt, documentId),

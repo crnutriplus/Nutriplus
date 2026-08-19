@@ -267,6 +267,8 @@ export async function ensureDatabase() {
           file_fingerprint TEXT NOT NULL,
           analysis_number INTEGER NOT NULL,
           model TEXT NOT NULL,
+          analysis_origin TEXT NOT NULL DEFAULT 'OPENAI_API',
+          api_calls INTEGER NOT NULL DEFAULT 1,
           status TEXT NOT NULL DEFAULT 'processing',
           response_id TEXT,
           input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -274,6 +276,7 @@ export async function ensureDatabase() {
           output_tokens INTEGER NOT NULL DEFAULT 0,
           web_search_count INTEGER NOT NULL DEFAULT 0,
           estimated_cost_microusd INTEGER NOT NULL DEFAULT 0,
+          api_cost_microusd INTEGER NOT NULL DEFAULT 0,
           extraction_json TEXT NOT NULL DEFAULT '{}',
           error_code TEXT,
           error_message TEXT,
@@ -375,6 +378,16 @@ export async function ensureDatabase() {
       if (!intakeLineColumnNames.has("barcode_lookup_status")) intakeLineAdditions.push(db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN barcode_lookup_status TEXT NOT NULL DEFAULT 'pending'"));
       if (!intakeLineColumnNames.has("field_evidence_json")) intakeLineAdditions.push(db.prepare("ALTER TABLE inventory_document_lines ADD COLUMN field_evidence_json TEXT NOT NULL DEFAULT '{}'"));
       if (intakeLineAdditions.length) await db.batch(intakeLineAdditions);
+
+      const invoiceAnalysisColumns = await db.prepare("PRAGMA table_info(invoice_ai_analyses)").all<{ name: string }>();
+      const invoiceAnalysisColumnNames = new Set(invoiceAnalysisColumns.results.map((column) => column.name));
+      const invoiceAnalysisAdditions = [];
+      const needsApiCostBackfill = !invoiceAnalysisColumnNames.has("api_cost_microusd");
+      if (!invoiceAnalysisColumnNames.has("analysis_origin")) invoiceAnalysisAdditions.push(db.prepare("ALTER TABLE invoice_ai_analyses ADD COLUMN analysis_origin TEXT NOT NULL DEFAULT 'OPENAI_API'"));
+      if (!invoiceAnalysisColumnNames.has("api_calls")) invoiceAnalysisAdditions.push(db.prepare("ALTER TABLE invoice_ai_analyses ADD COLUMN api_calls INTEGER NOT NULL DEFAULT 1"));
+      if (needsApiCostBackfill) invoiceAnalysisAdditions.push(db.prepare("ALTER TABLE invoice_ai_analyses ADD COLUMN api_cost_microusd INTEGER NOT NULL DEFAULT 0"));
+      if (invoiceAnalysisAdditions.length) await db.batch(invoiceAnalysisAdditions);
+      if (needsApiCostBackfill) await db.prepare("UPDATE invoice_ai_analyses SET api_cost_microusd=estimated_cost_microusd").run();
 
       const backupColumns = await db.prepare("PRAGMA table_info(import_backup_products)").all<{ name: string }>();
       const backupColumnNames = new Set(backupColumns.results.map((column) => column.name));

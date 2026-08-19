@@ -26,6 +26,8 @@ export type ParsedInvoiceLine = {
   barcodeType: string;
   barcodeSourceUrl: string;
   barcodeSourceTitle: string;
+  barcodeMethod?: string;
+  barcodeSource?: string;
   barcodeDifferences: string[];
   barcodeLookupStatus: "found_exact" | "suggestion" | "pending";
   secondaryId: string;
