@@ -61,6 +61,7 @@ input, select { min-width: 0; }
 .weight-note b { font-size: 12px; }
 .weight-note small { color: #6f7952; font-size: 9px; }
 .content { width: calc(100% - 228px); padding: 26px 24px 55px; }
+.app-version { position: fixed; right: 18px; bottom: 14px; z-index: 42; padding: 5px 9px; border: 1px solid rgba(205, 220, 201, .9); border-radius: 999px; background: rgba(255, 255, 255, .9); color: #7b867d; box-shadow: 0 4px 12px rgba(35, 63, 40, .06); font-size: 9px; font-weight: 850; letter-spacing: .02em; }
 .view { max-width: 980px; margin: auto; display: flex; flex-direction: column; gap: 17px; }
 .calculator-view { max-width: 720px; }
 .view-head { min-height: 73px; }
@@ -399,6 +400,7 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
   .sticky-breakdown { left: 0; right: 0; width: 100%; }
   .side { display: none; }
   .content { width: 100%; padding: 20px 16px 40px; }
+  .app-version { right: auto; left: 13px; bottom: calc(72px + env(safe-area-inset-bottom)); padding: 4px 8px; font-size: 8px; }
   .bottom { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; height: calc(68px + env(safe-area-inset-bottom)); padding: 6px 7px env(safe-area-inset-bottom); display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); background: rgba(255, 255, 255, .96); backdrop-filter: blur(14px); }
   .bottom button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border: 0; border-radius: 10px; background: none; color: #7b867d; font-size: 8px; font-weight: 850; }
   .bottom button svg { width: 20px; }
