@@ -1,0 +1,74 @@
+# Pruebas y calidad
+
+## Puerta de calidad obligatoria
+
+```bash
+npm run lint
+npx tsc --noEmit
+npm test
+npm run build
+```
+
+`npm test` ya ejecuta `npm run build`; el build explícito se conserva como verificación final cuando una tarea lo exige.
+
+## Suite principal
+
+`npm test` ejecuta:
+
+- `tests/rendered-html.test.mjs`: metadata y versión renderizadas;
+- `tests/invoice-reader-unit.test.mjs`: normalización/lectura local de facturas;
+- `tests/invoice-ai-unit.test.mjs`: configuración, modelos y estimación de consumo;
+- `tests/chatgpt-invoice-import-unit.test.mjs`: parser y seguridad del ZIP;
+- `tests/api-integration.mjs`: productos, ajustes, quotes e importaciones;
+- `tests/concurrency-integration.mjs`: idempotencia y concurrencia;
+- `tests/inventory-intake-integration.mjs`: documentos, confirmación y reversas;
+- `tests/export-integration.mjs`: Excel/PDF exportados.
+
+Las integraciones ejecutan el artefacto construido con dobles locales de D1/R2 cuando corresponde. No modifican producción.
+
+## Pruebas opcionales con archivos
+
+### Paquete ChatGPT real
+
+```bash
+NUTRIPLUS_CHATGPT_IMPORT_ZIP=/ruta/al/NutriPlus_*.zip npm run test:chatgpt-import
+```
+
+Valida un ZIP real contra el endpoint construido y comprueba borrador, deduplicación, hash, cero llamadas/costo y ausencia de modificación del inventario antes de confirmar. El test instala un `fetch` que falla si el flujo intenta llamar a OpenAI.
+
+### Contrato de facturas reales sin consumo
+
+```bash
+NUTRIPLUS_IHERB_TEST_PDF=/ruta/iherb.pdf \
+NUTRIPLUS_AMAZON_TEST_PDF=/ruta/amazon.pdf \
+npm run test:real-invoices
+```
+
+Usa las facturas como entrada, pero sustituye Responses API por respuestas controladas. La clave incluida por el test es ficticia. Verifica contrato, archivos completos, modelo y persistencia sin consumo real.
+
+### Almacenamiento local con IA deshabilitada
+
+```bash
+NUTRIPLUS_IHERB_TEST_PDF=/ruta/iherb.pdf \
+NUTRIPLUS_AMAZON_TEST_PDF=/ruta/amazon.pdf \
+npm run test:real-invoices:local
+```
+
+Comprueba almacenamiento/recuperación de archivos con `INVOICE_AI_ENABLED=false`.
+
+## Regla sobre OpenAI
+
+No ejecutar una llamada pagada real para probar interfaz, errores, validación o una factura repetida. Usar fixtures, mocks y respuestas almacenadas. Una prueba real requiere autorización expresa y debe registrar el consumo resultante.
+
+## Qué falta
+
+- no existe una suite E2E de navegador que recorra todos los botones del deployment;
+- no hay prueba automática de migración desde cada snapshot histórico de D1;
+- no hay prueba automatizada de backup integral/recuperación D1+R2 porque ese mecanismo aún no existe;
+- las pruebas opcionales dependen de rutas de fixtures externas y no forman parte de `npm test`.
+
+Estas carencias deben tratarse en tareas separadas. No se debe compensar ejecutando mutaciones destructivas ni restauraciones sobre producción.
+
+## Criterio de finalización
+
+Una tarea no está completa si falla lint, TypeScript, una prueba relacionada, el build o el deployment. Después de publicar se debe comprobar la versión y, para cambios funcionales, el flujo afectado en la aplicación publicada.

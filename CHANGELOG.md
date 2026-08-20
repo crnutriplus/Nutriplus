@@ -5,7 +5,15 @@ NutriPlus mantiene dos identificadores independientes:
 - **Versión pública:** se muestra a las personas usuarias y avanza como `2.3`, `2.4`, `2.5`, etc.
 - **Checkpoint / commit / deployment:** identifica técnicamente un estado del código. Nunca es el número público de NutriPlus.
 
-`package.json` usa SemVer, por lo que representa la versión pública `2.9` como `2.9.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+`package.json` usa SemVer, por lo que representa la versión pública `2.10` como `2.10.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+
+## 2.10 — 2026-08-19
+
+- Se auditó la arquitectura real, el modelo de datos, los ambientes, las pruebas, el deployment, los respaldos, la seguridad y las dependencias.
+- Se reemplazó el README genérico por documentación específica de NutriPlus y se creó el manual permanente `AGENTS.md`.
+- Se documentaron controles existentes, riesgos y prioridades futuras sin implementar cambios funcionales.
+- Se confirmó en el código la existencia de Automático con IA, Manual e Importar análisis de ChatGPT.
+- No se modificaron APIs, lógica de Facturas/Inventario/Productos, autenticación, OpenAI, esquema ni migraciones.
 
 ## 2.9 — 2026-08-19
 
@@ -41,11 +49,12 @@ Un checkpoint guardado no prueba por sí solo que ese estado haya sido desplegad
 | 19 | `e2bf73c` | 2026-08-17 | Seguía declarando `2.0.2` | Recuperación de archivos en cargas duplicadas | 2.6 |
 | 20 | `ec30d7a` | 2026-08-17 | Seguía declarando `2.0.2` | Terra por servidor, revisión segura e historial | 2.7 |
 | 21 | `9045024` | 2026-08-19 | Seguía declarando `2.0.2` | Importación segura de análisis de ChatGPT | 2.8 |
+| 22 | `2d91cc9` | 2026-08-19 | Primera versión visible normalizada | Separación de versión pública y checkpoint | 2.9 |
 
 La evidencia disponible permite afirmar que el checkpoint 20 tuvo un deployment exitoso y que el 21 era la versión desplegada inmediatamente antes de esta normalización. Sites expone el historial completo de checkpoints guardados, pero no un listado histórico equivalente de todos los deployments; por eso no se atribuye un despliegue independiente a los demás checkpoints cuando no puede probarse. Los checkpoints 1 y 11 están identificados expresamente como prueba privada y parche intermedio, respectivamente, y no como publicaciones públicas independientes.
 
-La publicación de este documento corresponde a NutriPlus **v2.9**. Su checkpoint y commit técnicos quedan registrados por Sites y Git al guardar la publicación; no se incrustan en el propio commit porque un commit no puede contener su propio hash.
+La publicación de este documento corresponde a NutriPlus **v2.10**. Su checkpoint y commit técnicos quedan registrados por Sites y Git al guardar la publicación; no se incrustan en el propio commit porque un commit no puede contener su propio hash.
 
 ## Regla futura
 
-La próxima implementación publicada después de `2.9` será `2.10`, luego `2.11`, y así sucesivamente. No se usarán `2.0.3`, `2.0.4` ni números de checkpoint o deployment como versiones públicas.
+La próxima implementación publicada después de `2.10` será `2.11`, luego `2.12`, y así sucesivamente. No se usarán `2.0.3`, `2.0.4` ni números de checkpoint o deployment como versiones públicas.

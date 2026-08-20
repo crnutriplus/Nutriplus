@@ -1,108 +1,113 @@
-# vinext-starter
+# NutriPlus
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+NutriPlus es una aplicación privada para calcular precios, administrar productos e inventario y registrar ingresos a partir de facturas. La versión pública vigente se define en `lib/public-version.ts`; es independiente del checkpoint de Sites y del commit de Git.
 
-## Prerequisites
+## Estado funcional actual
 
-- Node.js `>=22.13.0`
-- Linux with `flock`, `curl`, and GNU `timeout`
+Funciones implementadas y comprobadas en el código:
 
-## Sites Lifecycle
+- calculadora de precios en CRC a partir de costo, peso y ajustes comerciales;
+- catálogo de Productos y lista separada de No inventario;
+- búsqueda, códigos, escaneo, existencias, stock mínimo y alertas de abastecimiento;
+- altas, edición, eliminación individual o masiva, concurrencia y cola sin conexión;
+- importación de inventario desde Excel, historial y respaldo previo de productos;
+- exportación del inventario a Excel y PDF;
+- ingreso de inventario por factura en tres modalidades: Automático con IA, Manual e Importar análisis de ChatGPT;
+- revisión, deduplicación, borradores, confirmación explícita, movimientos y reversa de ingresos;
+- historial de análisis de facturas y control estimado de consumo de OpenAI.
 
-The Sites lifecycle CLI runs the locked dependency install before returning this checkout. Edit the source under `app/`, then checkpoint when a coherent milestone is ready to inspect or share. The remote Sites builder runs `npm run build` against the pushed commit. Do not repeat install or build as a normal pre-checkpoint step.
+No existen todavía módulos funcionales de Pedidos, CRM, Poket, portal de clientes, WhatsApp ni agente comercial. Que alguno figure en una herramienta de planificación no lo convierte en parte de esta aplicación.
 
-This starter does not use `wrangler.jsonc`.
+## Arquitectura actual
 
-`install:ci` is intentionally a single, non-retrying `npm ci`. It refuses a concurrent install for the same project, consumes a matching image-seeded npm cache with `--prefer-offline` while retaining registry fallback for a missing cache object, otherwise downloads and verifies the complete vinext tarball recorded in `package-lock.json`, limits npm to one socket, and terminates a stalled install. `build` applies a short timeout and then validates the Sites artifact. These helpers target Linux and use GNU `timeout`; they are not native macOS scripts.
+| Capa | Implementación |
+|---|---|
+| Interfaz | React 19, TypeScript y App Router compatible con Next mediante Vinext |
+| Servidor | Route Handlers bajo `app/api/`, ejecutados por un Cloudflare Worker |
+| Persistencia | Cloudflare D1 (SQLite), Drizzle ORM y migraciones SQL |
+| Archivos | Cloudflare R2 para los PDF e imágenes originales de facturas |
+| Procesamiento local | PDF.js, Tesseract.js, ZXing, SheetJS, ExcelJS y PDF-lib |
+| Servicio externo | OpenAI Responses API, solo en el modo automático de facturas y cuando está habilitado |
+| Publicación | ChatGPT Sites, configurado mediante `.openai/hosting.json` |
 
-Scripts that need writable project-scoped home, npm, XDG, and temporary paths use `scripts/sites-env.sh`. The `dev` and `start` scripts honor the caller's runtime environment and keep Wrangler logs inside the checkout. The generated `.sites-runtime/` directory is disposable and ignored by Git.
+El Worker recibe los bindings `DB` y `BUCKET`, además de la configuración opcional de OpenAI, y los expone únicamente al código de servidor. Los componentes de interfaz consumen los endpoints internos; no reciben la clave de OpenAI.
 
-## Included Shape
+Más detalle en:
 
-- edit site code under `app/`
-- `app/chatgpt-auth.ts` provides optional dispatch-owned ChatGPT sign-in helpers
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+- [Arquitectura](docs/ARCHITECTURE.md)
+- [Modelo de datos](docs/DATA_MODEL.md)
+- [Ambientes y variables](docs/ENVIRONMENT.md)
+- [Pruebas](docs/TESTING.md)
+- [Despliegue](docs/DEPLOYMENT.md)
+- [Respaldos y recuperación](docs/BACKUP_RESTORE.md)
+- [Auditoría técnica](docs/TECHNICAL_AUDIT.md)
+- [Seguridad](SECURITY.md)
+- [Historial de versiones](CHANGELOG.md)
 
-## Workspace Auth Headers
+## Estructura del repositorio
 
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```text
+app/                 interfaz, estilos y Route Handlers
+db/                  esquema Drizzle y acceso/inicialización de D1
+drizzle/             migraciones SQL y snapshots históricos
+lib/                 reglas de precios, facturas, importación, exportación y persistencia
+public/              PWA, logo y activos locales de PDF/OCR
+scripts/             instalación, build y validación para Sites
+tests/               pruebas unitarias y de integración
+worker/              entrada del Cloudflare Worker y bindings de servidor
+.openai/hosting.json proyecto de Sites y nombres lógicos de D1/R2
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+## Requisitos e instalación
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+- Node.js `>=22.13.0`;
+- Linux con `flock`, `curl` y GNU `timeout` para los scripts de ciclo de vida de Sites;
+- bindings locales compatibles con Cloudflare para las funciones que usan D1 o R2.
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+Instalación reproducible desde el lockfile:
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+```bash
+npm run install:ci
+```
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+El helper usa rutas de caché temporales dentro del proyecto, evita instalaciones concurrentes y valida la integridad del tarball de Vinext fijado en `package-lock.json`. `.sites-runtime/` y `.wrangler/` son temporales y están ignorados por Git.
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+## Desarrollo y calidad
 
-## Diagnostic Commands
+```bash
+npm run dev               # servidor local Vinext/Vite
+npm run lint              # ESLint
+npx tsc --noEmit          # TypeScript estricto
+npm test                  # build y suite principal
+npm run build             # build limitado en tiempo y validación del artefacto
+npm run validate:artifact # valida un artefacto ya generado
+```
 
-- `npm run install:ci`: perform the one bounded lockfile install
-- `npm run dev`: start the Vite/Vinext development server
-- `npm run build`: build and validate the deployable Sites artifact
-- `npm run start`: start the built Vinext application
-- `npm test`: build, validate, and verify the rendered development-preview metadata
-- `npm run validate:artifact`: recheck an existing artifact's manifest and ESM `default.fetch` export
-- `npm run db:generate`: generate Drizzle migrations after schema changes
+Las pruebas adicionales que necesitan archivos reales están explicadas en [docs/TESTING.md](docs/TESTING.md). Ninguna prueba debe hacer llamadas pagadas a OpenAI sin autorización expresa; se usan fixtures y dobles de `fetch` cuando es posible.
 
-Use build and validation commands for targeted diagnosis after a remote failure, not as part of the normal checkpoint path.
+## Variables y secretos
 
-The timeout defaults can be overridden for a controlled canary with `SITES_INSTALL_TIMEOUT`, `SITES_INSTALL_KILL_AFTER`, `SITES_BUILD_TIMEOUT`, and `SITES_BUILD_KILL_AFTER`. A timeout fails the command; the helpers never retry an unchanged install or build.
+Los nombres de configuración de servidor que utiliza el código son:
 
-## Learn More
+- `OPENAI_API_KEY`: secreto de servidor; nunca debe llegar al navegador ni a Git;
+- `INVOICE_AI_ENABLED`: habilita las llamadas automáticas cuando tiene un valor verdadero;
+- `INVOICE_AI_MODEL`: modelo principal; el código usa `gpt-5.6-terra` si falta;
+- `INVOICE_AI_MONTHLY_LIMIT_USD`: límite mensual estimado; el valor predeterminado es `5`;
+- `DB`: binding lógico de Cloudflare D1;
+- `BUCKET`: binding lógico de Cloudflare R2.
 
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+No se documentan valores de secretos. Consulte [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) antes de configurar un ambiente.
+
+## Facturas
+
+- **Automático con IA:** conserva la factura completa, usa Responses API con Structured Outputs, registra modelo/uso/costo y cae a Manual ante un fallo.
+- **Manual:** no llama a OpenAI; permite completar o revisar las líneas localmente.
+- **Importar análisis de ChatGPT:** recibe un ZIP con `analysis.json` y exactamente una factura, valida su estructura y SHA-256, registra `api_calls = 0` y `api_cost = 0`, y crea un borrador. El inventario cambia únicamente después de **Confirmar ingreso**.
+
+## Base de datos, respaldos y despliegue
+
+El esquema está en `db/schema.ts`, las migraciones históricas en `drizzle/` y el acceso a D1 en `db/index.ts`. No se deben editar ni borrar migraciones ya aplicadas.
+
+Los respaldos actuales cubren snapshots de la tabla de productos antes de importaciones o eliminaciones masivas. No constituyen un respaldo integral de D1 ni de R2. Consulte [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md) antes de una recuperación.
+
+La publicación se realiza con el ciclo de vida de ChatGPT Sites, no con un `wrangler deploy` manual. El procedimiento y la verificación están en [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
