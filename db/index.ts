@@ -344,6 +344,7 @@ export async function ensureDatabase() {
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`),
         db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS inventory_movements_operation_line_unique ON inventory_movements (operation_id, document_line_id)"),
+        db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS inventory_movements_invoice_line_unique ON inventory_movements (document_line_id) WHERE original_movement_id IS NULL AND document_line_id LIKE 'iline-%'"),
         db.prepare("CREATE INDEX IF NOT EXISTS inventory_movements_product_idx ON inventory_movements (product_id, created_at)"),
         db.prepare("CREATE INDEX IF NOT EXISTS inventory_movements_operation_idx ON inventory_movements (operation_id, id)"),
       ]);

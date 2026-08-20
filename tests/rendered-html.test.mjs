@@ -69,3 +69,13 @@ test("exposes all three invoice modes in the client interface", async () => {
   assert.match(source, />Importar análisis de ChatGPT</);
   assert.match(source, /\/api\/inventory-intake\/import-chatgpt/);
 });
+
+test("keeps actionable recovery and authentication messages in the invoice interface", async () => {
+  const source = await readFile(new URL("../app/inventory-intake.tsx", import.meta.url), "utf8");
+  assert.match(source, /result\.recovered/);
+  assert.match(source, /Factura ya procesada/);
+  assert.match(source, /AUTH_SESSION_EXPIRED/);
+  assert.match(source, /Tu sesión venció/);
+  assert.match(source, /AUTH_FORBIDDEN/);
+  assert.match(source, /No tenés permiso/);
+});

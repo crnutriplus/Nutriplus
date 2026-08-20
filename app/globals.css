@@ -375,10 +375,13 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .confirm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .toast { position: fixed; right: 22px; bottom: 22px; z-index: 240; width: min(calc(100% - 32px), 390px); min-height: 52px; padding: 12px 11px 12px 15px; display: flex; align-items: center; gap: 8px; border-radius: 13px; color: #fff; box-shadow: 0 15px 40px rgba(20, 42, 26, .24); font-size: 11px; font-weight: 750; }
 .toast.success { background: var(--g800); }
+.toast.info { background: #315f72; }
 .toast.error { background: #9f3d38; }
 .toast.warning { background: #84651f; }
 .toast > svg { width: 18px; flex: 0 0 auto; }
-.toast > span { flex: 1; }
+.toast > span { flex: 1; display: grid; gap: 2px; }
+.toast > span b { font-size: 12px; }
+.toast > span small { color: inherit; font-size: inherit; font-weight: inherit; line-height: 1.35; }
 .toast button { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 8px; background: rgba(255, 255, 255, .12); color: #fff; }
 .toast button svg { width: 16px; }
 .toast.sticky { outline: 2px solid rgba(255, 255, 255, .35); }

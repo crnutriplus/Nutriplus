@@ -84,7 +84,7 @@ test("blocks a package when source.sha256 does not match invoice.*", async () =>
   value.source.sha256 = "0".repeat(64);
   await assert.rejects(
     parseChatGptInvoiceImport(packageFile(value)),
-    (error) => error?.message === "El análisis no corresponde a la factura incluida en este paquete.",
+    (error) => error?.code === "CHATGPT_HASH_MISMATCH" && /no corresponde a la factura/.test(error.message),
   );
 });
 
@@ -96,13 +96,54 @@ test("recalculates totals instead of trusting the validation block", async () =>
   value.validation.invoice_total_matches_lines = true;
   await assert.rejects(
     parseChatGptInvoiceImport(packageFile(value)),
-    /invoice\.subtotal no coincide con la suma recalculada/,
+    (error) => error?.code === "CHATGPT_TOTAL_INCONSISTENT" && /total calculado de los productos/.test(error.message),
   );
 });
 
 test("blocks paths, extra files and executable-shaped package contents before extraction", async () => {
   await assert.rejects(
     parseChatGptInvoiceImport(packageFile(analysis(), { "../payload.exe": encoder.encode("MZ") })),
-    /rutas o carpetas no permitidas|analysis\.json y exactamente una factura/,
+    (error) => error?.code === "CHATGPT_ZIP_INVALID" && /rutas o carpetas no permitidas|archivos adicionales/.test(error.message),
+  );
+});
+
+test("distinguishes missing analysis, missing invoice, multiple invoices and unsupported schema versions", async () => {
+  const onlyInvoice = zipSync({ "invoice.pdf": pdf });
+  await assert.rejects(
+    parseChatGptInvoiceImport(new File([onlyInvoice], "missing-analysis.zip", { type: "application/zip" })),
+    (error) => error?.code === "CHATGPT_ANALYSIS_MISSING",
+  );
+
+  const onlyAnalysis = zipSync({ "analysis.json": encoder.encode(JSON.stringify(analysis())) });
+  await assert.rejects(
+    parseChatGptInvoiceImport(new File([onlyAnalysis], "missing-invoice.zip", { type: "application/zip" })),
+    (error) => error?.code === "CHATGPT_INVOICE_MISSING",
+  );
+
+  const multipleInvoices = packageFile(analysis(), { "invoice.png": new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) });
+  await assert.rejects(parseChatGptInvoiceImport(multipleInvoices), (error) => error?.code === "CHATGPT_MULTIPLE_INVOICES");
+
+  const unsupported = analysis();
+  unsupported.schema_version = "2.0";
+  await assert.rejects(parseChatGptInvoiceImport(packageFile(unsupported)), (error) => error?.code === "CHATGPT_SCHEMA_UNSUPPORTED");
+});
+
+test("returns actionable codes for invalid ZIP, JSON and quantities", async () => {
+  await assert.rejects(
+    parseChatGptInvoiceImport(new File([encoder.encode("not a zip")], "broken.zip", { type: "application/zip" })),
+    (error) => error?.code === "CHATGPT_ZIP_INVALID" && /No pudimos abrir/.test(error.message),
+  );
+
+  const invalidJson = zipSync({ "invoice.pdf": pdf, "analysis.json": encoder.encode("{not-json") });
+  await assert.rejects(
+    parseChatGptInvoiceImport(new File([invalidJson], "invalid-json.zip", { type: "application/zip" })),
+    (error) => error?.code === "CHATGPT_ANALYSIS_JSON_INVALID",
+  );
+
+  const invalidQuantity = analysis();
+  invalidQuantity.products[0].quantity = 0;
+  await assert.rejects(
+    parseChatGptInvoiceImport(packageFile(invalidQuantity)),
+    (error) => error?.code === "INVENTORY_INVALID_QUANTITY" && /Producto de prueba/.test(error.message),
   );
 });

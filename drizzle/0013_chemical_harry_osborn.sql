@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `inventory_movements_invoice_line_unique` ON `inventory_movements` (`document_line_id`) WHERE "inventory_movements"."original_movement_id" IS NULL AND "inventory_movements"."document_line_id" LIKE 'iline-%';

@@ -32,7 +32,7 @@ import { validateBarcode } from "@/lib/barcodes";
 import type { IntakeLineDto, IntakeLineStatus } from "@/lib/inventory-intake";
 import type { NonInventoryRecord, ProductRecord } from "@/lib/pricing";
 
-type Notice = { type: "success" | "error" | "warning"; text: string; sticky?: boolean; dismissOnPageTouch?: boolean; durationMs?: number };
+type Notice = { type: "success" | "info" | "error" | "warning"; title?: string; text: string; sticky?: boolean; dismissOnPageTouch?: boolean; durationMs?: number };
 
 type IntakeDocument = {
   id: string;
@@ -136,6 +136,19 @@ type IntakeLoadResult = {
   aiErrorMessage?: string;
   reviewRequired?: boolean;
   ocrFallbackApplied?: boolean;
+  recovered?: boolean;
+  recoveryState?: "draft" | "partial" | "completed";
+  processedLines?: number;
+  ignoredLines?: number;
+  pendingLines?: number;
+  apiCalls?: number;
+  apiCostUsd?: number;
+  notice?: {
+    type: "success" | "info" | "error" | "warning";
+    title: string;
+    message: string;
+    code: string;
+  };
 };
 
 type CodeCandidate = {
@@ -265,19 +278,33 @@ function evidenceEntries(evidence: IntakeDocument["fieldEvidence"] | IntakeLineD
   return Object.entries(evidence || {}).filter(([, item]) => item && typeof item === "object");
 }
 
+type IntakeApiFailure = { error?: string; errors?: string[]; title?: string; code?: string; reference?: string };
+
+class IntakeApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public payload: IntakeApiFailure,
+  ) { super(message); }
+}
+
 async function apiJson<T>(response: Response) {
   const raw = await response.text();
-  let body: T & { error?: string; errors?: string[] };
+  let body: T & IntakeApiFailure;
   try {
-    body = raw ? JSON.parse(raw) as T & { error?: string; errors?: string[] } : {} as T & { error?: string; errors?: string[] };
+    body = raw ? JSON.parse(raw) as T & IntakeApiFailure : {} as T & IntakeApiFailure;
   } catch {
-    throw new Error(response.ok
+    if (response.status === 401) throw new IntakeApiError("Tu sesión venció. Iniciá sesión nuevamente para continuar. El progreso que ya estaba guardado no se perdió.", 401, { code: "AUTH_SESSION_EXPIRED", title: "Sesión vencida" });
+    if (response.status === 403) throw new IntakeApiError("No tenés permiso para realizar esta acción.", 403, { code: "AUTH_FORBIDDEN", title: "Sin permisos" });
+    throw new IntakeApiError(response.ok
       ? "El servidor devolvió una respuesta que no se pudo leer. Intentá nuevamente."
-      : `El servidor rechazó la operación (código ${response.status}) sin indicar el detalle.`);
+      : "No pudimos completar esta operación por un problema temporal de NutriPlus. No se realizaron cambios nuevos en el inventario. Intentá nuevamente.", response.status, { code: "SERVER_RESPONSE_INVALID", title: "Problema temporal de NutriPlus" });
   }
   if (!response.ok) {
+    if (response.status === 401) throw new IntakeApiError("Tu sesión venció. Iniciá sesión nuevamente para continuar. El progreso que ya estaba guardado no se perdió.", 401, { ...body, code: "AUTH_SESSION_EXPIRED", title: "Sesión vencida" });
+    if (response.status === 403) throw new IntakeApiError("No tenés permiso para realizar esta acción.", 403, { ...body, code: "AUTH_FORBIDDEN", title: "Sin permisos" });
     const details = body.errors?.length ? ` ${body.errors.join(" ")}` : "";
-    throw new Error(`${body.error || "No se pudo completar la operación."}${details}`);
+    throw new IntakeApiError(`${body.error || "No se pudo completar la operación."}${details}`, response.status, body);
   }
   return body;
 }
@@ -293,6 +320,13 @@ function intakeErrorText(error: unknown, fallback: string) {
   if (/aborterror|aborted|cancelled|canceled/i.test(raw)) return "La operación se interrumpió antes de terminar. Intentá nuevamente.";
   if (/[áéíóúñ¿¡]/i.test(raw) || /^(?:No se|El |La |Los |Las |Revisá|Ingresá|Seleccioná|Ocurrió|Código|Factura|Archivo)/i.test(raw)) return raw;
   return fallback;
+}
+
+function intakeErrorNotice(error: unknown, fallbackTitle: string, fallbackText: string) {
+  return {
+    title: error instanceof IntakeApiError && error.payload.title ? error.payload.title : fallbackTitle,
+    text: intakeErrorText(error, fallbackText),
+  };
 }
 
 function equivalentOwners(code: string, products: ProductRecord[], quotes: NonInventoryRecord[]) {
@@ -673,10 +707,12 @@ export function InventoryIntakeModal(props: Props) {
   }
 
   async function analyzeFiles(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
     const files = [...(event.currentTarget.files || [])];
     if (!files.length) return;
     if (invoiceMode === "chatgpt_import" && files.length !== 1) {
-      onNotify({ type: "error", text: "Seleccioná un único archivo ZIP generado desde ChatGPT.", sticky: true });
+      onNotify({ type: "error", title: "Paquete ZIP requerido", text: "Seleccioná un único archivo ZIP generado desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.", sticky: true });
+      input.value = "";
       return;
     }
     uploadedFilesRef.current = files;
@@ -688,7 +724,7 @@ export function InventoryIntakeModal(props: Props) {
         : invoiceMode === "chatgpt_import" ? "Validando el ZIP y preparando el borrador…" : "Guardando la factura para revisión manual…",
     });
     setReading(true);
-    resetInvoiceReview();
+    if (invoiceMode !== "chatgpt_import") resetInvoiceReview();
     uploadedFilesRef.current = files;
     try {
       const form = new FormData();
@@ -702,7 +738,14 @@ export function InventoryIntakeModal(props: Props) {
       }
       const result = await apiJson<IntakeLoadResult>(await fetch(endpoint, { method: "POST", body: form }));
       applyLoadedResult(result);
-      if (result.exactDuplicate) {
+      if (invoiceMode === "chatgpt_import" && result.recovered) {
+        onNotify({
+          type: result.notice?.type || "info",
+          title: result.notice?.title || (result.recoveryState === "completed" ? "Factura ya procesada" : "Factura recuperada"),
+          text: result.notice?.message || "Se recuperó la factura existente sin crear duplicados ni modificar el inventario.",
+          sticky: true,
+        });
+      } else if (result.exactDuplicate) {
         onNotify({ type: "warning", text: "Esta misma factura ya había sido ingresada. Sus productos procesados permanecen bloqueados para evitar duplicados.", sticky: true });
       } else if (result.cachedAnalysis) {
         onNotify({ type: "success", text: "Se recuperó el análisis y el avance guardados sin volver a generar consumo de OpenAI.", sticky: true });
@@ -712,6 +755,7 @@ export function InventoryIntakeModal(props: Props) {
       } else if (invoiceMode === "chatgpt_import") {
         onNotify({
           type: result.reviewRequired ? "warning" : "success",
+          title: result.reviewRequired ? "Revisión requerida" : "Factura importada correctamente",
           text: result.reviewRequired
             ? `El paquete se importó como borrador con ${result.lines.length} productos y requiere revisión.`
             : `Análisis de ChatGPT importado: ${result.lines.length} productos en borrador, sin consumo de OpenAI API.`,
@@ -734,14 +778,19 @@ export function InventoryIntakeModal(props: Props) {
         });
       }
     } catch (error) {
+      const notice = intakeErrorNotice(error, "No se pudo importar la factura", invoiceMode === "chatgpt_import"
+        ? "No se pudo importar el paquete de ChatGPT. No se creó ninguna factura ni se modificó el inventario."
+        : "No se pudo guardar o analizar la factura. Revisá el archivo e intentá nuevamente.");
       onNotify({
         type: "error",
-        text: intakeErrorText(error, invoiceMode === "chatgpt_import"
-          ? "No se pudo importar el paquete de ChatGPT. Revisá el ZIP e intentá nuevamente."
-          : "No se pudo guardar o analizar la factura. Revisá el archivo e intentá nuevamente."),
+        title: notice.title,
+        text: notice.text,
         sticky: true,
       });
-    } finally { setReading(false); }
+    } finally {
+      setReading(false);
+      input.value = "";
+    }
   }
 
   async function saveDraft(options: {

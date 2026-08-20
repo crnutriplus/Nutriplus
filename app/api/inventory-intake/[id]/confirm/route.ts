@@ -1,5 +1,4 @@
 import { ensureDatabase, getD1 } from "@/db";
-import { errorResponse } from "@/lib/api-helpers";
 import { validateBarcode } from "@/lib/barcodes";
 import { descriptionSignature, descriptionsCompatible, presentationSignature } from "@/lib/inventory-intake";
 import { normalizeName, productFromRow } from "@/lib/pricing";
@@ -70,13 +69,58 @@ type CleanLine = {
   matchNonInventoryId: number | null;
 };
 
+class InventoryConfirmError extends Error {
+  constructor(
+    message: string,
+    public status = 400,
+    public code = "INVENTORY_REVIEW_REQUIRED",
+    public title = "Revisión requerida",
+  ) { super(message); }
+}
+
+function confirmErrorResponse(error: unknown) {
+  if (error instanceof InventoryConfirmError) {
+    return Response.json({ error: error.message, title: error.title, code: error.code }, { status: error.status });
+  }
+  const message = error instanceof Error ? error.message : "";
+  if (/inventory_movements_invoice_line_unique|UNIQUE constraint failed: inventory_movements\.document_line_id/i.test(message)) {
+    return Response.json({
+      error: "Este producto ya fue agregado al inventario desde esta factura. No se volverá a sumar.",
+      title: "Producto ya ingresado",
+      code: "INVENTORY_LINE_ALREADY_CONFIRMED",
+    }, { status: 409 });
+  }
+  if (/UNIQUE constraint failed/i.test(message)) {
+    return Response.json({
+      error: "Ya existe un producto con ese nombre o código. Seleccionalo para continuar; no se realizaron cambios nuevos en el inventario.",
+      title: "Producto existente",
+      code: "INVENTORY_PRODUCT_ALREADY_EXISTS",
+    }, { status: 409 });
+  }
+  const reference = crypto.randomUUID().slice(0, 8).toUpperCase();
+  console.error("[INVENTORY_CONFIRM]", { code: "DATABASE_WRITE_FAILED", reference, errorName: error instanceof Error ? error.name : typeof error });
+  return Response.json({
+    error: "No pudimos guardar los cambios en este momento. El progreso guardado anteriormente se conserva y no se realizaron cambios nuevos en el inventario. Intentá nuevamente.",
+    title: "Problema temporal de NutriPlus",
+    code: "DATABASE_WRITE_FAILED",
+    reference,
+  }, { status: 500 });
+}
+
 function cleanText(value: unknown, max = 500) {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, max) : "";
 }
 
 function cleanInteger(value: unknown, label: string, minimum = 0, maximum = 1_000_000) {
   const number = Number(value);
-  if (!Number.isInteger(number) || number < minimum || number > maximum) throw new Error(`${label} debe ser un número entero entre ${minimum} y ${maximum}.`);
+  if (!Number.isInteger(number) || number < minimum || number > maximum) {
+    throw new InventoryConfirmError(
+      `${label} tiene una cantidad inválida. Corregila antes de continuar. El inventario no fue modificado.`,
+      400,
+      "INVENTORY_INVALID_QUANTITY",
+      "Cantidad inválida",
+    );
+  }
   return number;
 }
 
@@ -154,25 +198,40 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const productCodes = canonicalOwners(productsResult.results);
     const quoteCodes = canonicalOwners(quotesResult.results);
     const errors: string[] = [];
+    const alreadyProcessed = sourceLines.flatMap((source) => {
+      const id = cleanText(source.id, 100);
+      const stored = storedById.get(id);
+      return stored?.processed_operation_id ? [id] : [];
+    });
+    if (alreadyProcessed.length) return Response.json({
+      error: "Este producto ya fue agregado al inventario desde esta factura. No se volverá a sumar.",
+      title: "Producto ya ingresado",
+      code: "INVENTORY_LINE_ALREADY_CONFIRMED",
+      lineIds: alreadyProcessed,
+    }, { status: 409 });
+    const pendingCodeNames: string[] = [];
 
     const lines: CleanLine[] = sourceLines.map((source, index) => {
       const id = cleanText(source.id, 100) || `iline-${crypto.randomUUID()}`;
       const lineKey = cleanText(source.lineKey, 150) || `manual-${id}`;
       const stored = storedById.get(id);
-      if (stored?.processed_operation_id) errors.push(`La línea ${index + 1} ya fue procesada anteriormente.`);
       const name = cleanText(source.name, 500);
       const originalDescription = cleanText(source.originalDescription, 1000) || name;
       if (!name) errors.push(`La línea ${index + 1} no tiene nombre de producto.`);
-      const receivedQuantity = cleanInteger(source.receivedQuantity, `La cantidad recibida de la línea ${index + 1}`, 0, 100000);
-      const unitsPerPackage = cleanInteger(source.unitsPerPackage, `Las unidades por paquete de la línea ${index + 1}`, 1, 10000);
+      const quantityLabel = `El producto “${name || `línea ${index + 1}`}”`;
+      const receivedQuantity = cleanInteger(source.receivedQuantity, quantityLabel, 0, 100000);
+      const unitsPerPackage = cleanInteger(source.unitsPerPackage, quantityLabel, 1, 10000);
       const totalToAdd = receivedQuantity * unitsPerPackage;
       if (totalToAdd <= 0) errors.push(`La línea ${index + 1} no agrega ninguna unidad.`);
       const billedRaw = source.billedQuantity;
-      const billedQuantity = billedRaw == null || billedRaw === "" ? null : cleanInteger(billedRaw, `La cantidad facturada de la línea ${index + 1}`, 0, 100000);
+      const billedQuantity = billedRaw == null || billedRaw === "" ? null : cleanInteger(billedRaw, quantityLabel, 0, 100000);
       const barcode = validateBarcode(source.barcode);
       if (!barcode.valid || !barcode.normalized || !barcode.canonical) errors.push(`Línea ${index + 1}: ${barcode.error || "el código de barras no es válido"}`);
       const barcodeConfirmed = source.barcodeConfirmed === true;
-      if (!barcodeConfirmed) errors.push(`El código de barras de la línea ${index + 1} todavía no está confirmado.`);
+      if (!barcodeConfirmed) {
+        pendingCodeNames.push(name || `línea ${index + 1}`);
+        errors.push(`El código de barras de la línea ${index + 1} todavía no está confirmado.`);
+      }
       const action = cleanText(source.action, 20) as CleanLine["action"];
       if (!["existing", "move", "create"].includes(action)) errors.push(`La línea ${index + 1} todavía no tiene una acción confirmada.`);
       const barcodeLevel = cleanText(source.barcodeLevel, 30) || (unitsPerPackage === 1 ? "unit" : "");
@@ -262,7 +321,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         }
       }
     });
-    if (errors.length) return Response.json({ error: "El ingreso está bloqueado hasta resolver los conflictos.", errors: [...new Set(errors)] }, { status: 409 });
+    if (errors.length) {
+      const codePending = pendingCodeNames.length > 0;
+      return Response.json({
+        error: codePending
+          ? `No encontramos un código de barras confirmado para “${pendingCodeNames[0]}”. Podés escanearlo, escribirlo o dejarlo pendiente para revisión. El inventario no fue modificado.`
+          : "El ingreso está bloqueado hasta resolver los conflictos. Revisá los productos indicados; el inventario no fue modificado.",
+        title: codePending ? "Código pendiente" : "Revisión requerida",
+        code: codePending ? "INVENTORY_CODE_PENDING" : "INVENTORY_REVIEW_REQUIRED",
+        errors: [...new Set(errors)],
+      }, { status: 409 });
+    }
 
     const user = requestUserLabel(request);
     const now = new Date().toISOString();
@@ -397,6 +466,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         if (existing?.operation.status === "completed") return Response.json({ ...existing, recoveredAfterConnectionCheck: true });
       } catch { /* Se devuelve el error original. */ }
     }
-    return errorResponse(error);
+    return confirmErrorResponse(error);
   }
 }

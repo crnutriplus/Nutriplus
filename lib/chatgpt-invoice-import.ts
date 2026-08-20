@@ -75,12 +75,20 @@ export type ChatGptInvoiceImportResult = {
 
 export class ChatGptImportError extends Error {
   status: number;
+  code: string;
+  title: string;
 
-  constructor(message: string, status = 400) {
+  constructor(message: string, status = 400, code = "CHATGPT_SCHEMA_INVALID", title = "Análisis no compatible") {
     super(message);
     this.name = "ChatGptImportError";
     this.status = status;
+    this.code = code;
+    this.title = title;
   }
+}
+
+function zipError(message = "No pudimos abrir este archivo ZIP. Puede estar dañado o incompleto. Descargalo nuevamente desde ChatGPT e intentá otra vez. No se creó ninguna factura ni se modificó el inventario.") {
+  return new ChatGptImportError(message, 400, "CHATGPT_ZIP_INVALID", "ZIP dañado o incompleto");
 }
 
 function record(value: unknown, label: string) {
@@ -129,7 +137,7 @@ function dateText(value: unknown) {
 
 function decodeName(bytes: Uint8Array) {
   try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-  catch { throw new ChatGptImportError("El ZIP contiene un nombre de archivo ilegible."); }
+  catch { throw zipError(); }
 }
 
 function findEocd(bytes: Uint8Array, view: DataView) {
@@ -137,7 +145,7 @@ function findEocd(bytes: Uint8Array, view: DataView) {
   for (let offset = bytes.byteLength - 22; offset >= minimum; offset -= 1) {
     if (view.getUint32(offset, true) === ZIP_EOCD_SIGNATURE) return offset;
   }
-  throw new ChatGptImportError("El archivo no es un ZIP válido.");
+  throw zipError();
 }
 
 function safeArchiveName(name: string) {
@@ -147,7 +155,7 @@ function safeArchiveName(name: string) {
 }
 
 function zipMetadata(bytes: Uint8Array) {
-  if (bytes.byteLength < 22) throw new ChatGptImportError("El archivo no es un ZIP válido.");
+  if (bytes.byteLength < 22) throw zipError();
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const eocd = findEocd(bytes, view);
   const diskNumber = view.getUint16(eocd + 4, true);
@@ -157,16 +165,16 @@ function zipMetadata(bytes: Uint8Array) {
   const centralSize = view.getUint32(eocd + 12, true);
   const centralOffset = view.getUint32(eocd + 16, true);
   const commentLength = view.getUint16(eocd + 20, true);
-  if (diskNumber !== 0 || centralDisk !== 0 || entriesOnDisk !== entryCount) throw new ChatGptImportError("No se permiten ZIP divididos en varios archivos.");
-  if (entryCount < 1 || entryCount > MAX_ENTRY_COUNT) throw new ChatGptImportError(`El ZIP supera el máximo de ${MAX_ENTRY_COUNT} archivos.`);
-  if (eocd + 22 + commentLength !== bytes.byteLength || centralOffset + centralSize > eocd) throw new ChatGptImportError("La estructura central del ZIP es inválida.");
+  if (diskNumber !== 0 || centralDisk !== 0 || entriesOnDisk !== entryCount) throw zipError();
+  if (entryCount < 1 || entryCount > MAX_ENTRY_COUNT) throw zipError(`Este paquete supera el máximo seguro de ${MAX_ENTRY_COUNT} archivos. Generá nuevamente el ZIP desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.`);
+  if (eocd + 22 + commentLength !== bytes.byteLength || centralOffset + centralSize > eocd) throw zipError();
 
   const entries: ZipEntryMetadata[] = [];
   const seen = new Set<string>();
   let offset = centralOffset;
   let totalUncompressed = 0;
   for (let index = 0; index < entryCount; index += 1) {
-    if (offset + 46 > eocd || view.getUint32(offset, true) !== ZIP_CENTRAL_SIGNATURE) throw new ChatGptImportError("La estructura de archivos del ZIP es inválida.");
+    if (offset + 46 > eocd || view.getUint32(offset, true) !== ZIP_CENTRAL_SIGNATURE) throw zipError();
     const flags = view.getUint16(offset + 8, true);
     const method = view.getUint16(offset + 10, true);
     const compressedSize = view.getUint32(offset + 20, true);
@@ -179,35 +187,35 @@ function zipMetadata(bytes: Uint8Array) {
     const localOffset = view.getUint32(offset + 42, true);
     const end = offset + 46 + nameLength + extraLength + entryCommentLength;
     if (end > eocd || diskStart !== 0 || [compressedSize, uncompressedSize, localOffset].includes(0xffffffff)) {
-      throw new ChatGptImportError("El ZIP utiliza una estructura no admitida o demasiado grande.");
+      throw zipError();
     }
     const name = decodeName(bytes.subarray(offset + 46, offset + 46 + nameLength));
     const normalizedName = name.toLowerCase();
-    if (!safeArchiveName(name) || name.includes("/") || name.endsWith("/")) throw new ChatGptImportError("El ZIP contiene rutas o carpetas no permitidas.");
-    if (seen.has(normalizedName)) throw new ChatGptImportError("El ZIP contiene nombres de archivo duplicados.");
+    if (!safeArchiveName(name) || name.includes("/") || name.endsWith("/")) throw zipError("Este paquete contiene rutas o carpetas no permitidas. Generá nuevamente el ZIP desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.");
+    if (seen.has(normalizedName)) throw zipError("Este paquete contiene nombres de archivo duplicados. Generá nuevamente el ZIP desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.");
     seen.add(normalizedName);
-    if (flags & 0x1) throw new ChatGptImportError("No se permiten archivos ZIP cifrados.");
-    if (![0, 8].includes(method)) throw new ChatGptImportError("El ZIP usa un método de compresión no admitido.");
+    if (flags & 0x1) throw zipError("Este paquete está cifrado y NutriPlus no puede validarlo. Generá nuevamente el ZIP desde ChatGPT sin contraseña.");
+    if (![0, 8].includes(method)) throw zipError();
     const unixMode = (externalAttributes >>> 16) & 0xffff;
-    if ((unixMode & 0o170000) === 0o120000) throw new ChatGptImportError("El ZIP contiene enlaces simbólicos no permitidos.");
-    if ((unixMode & 0o111) !== 0) throw new ChatGptImportError("El ZIP contiene un archivo marcado como ejecutable.");
-    if ((externalAttributes & 0x10) !== 0) throw new ChatGptImportError("El ZIP contiene carpetas no permitidas.");
-    if (uncompressedSize > 0 && compressedSize === 0) throw new ChatGptImportError("El ZIP contiene una entrada con compresión inválida.");
+    if ((unixMode & 0o170000) === 0o120000) throw zipError("Este paquete contiene enlaces no permitidos. Generá nuevamente el ZIP desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.");
+    if ((unixMode & 0o111) !== 0) throw zipError("Este paquete contiene un archivo ejecutable no permitido. Generá nuevamente el ZIP desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.");
+    if ((externalAttributes & 0x10) !== 0) throw zipError("Este paquete contiene carpetas no permitidas. Debe incluir solo analysis.json y una factura.");
+    if (uncompressedSize > 0 && compressedSize === 0) throw zipError();
     if (uncompressedSize > 1024 * 1024 && uncompressedSize / Math.max(1, compressedSize) > MAX_COMPRESSION_RATIO) {
-      throw new ChatGptImportError("El ZIP presenta una relación de compresión insegura.");
+      throw zipError("Este paquete tiene una compresión insegura y no puede abrirse. Generá nuevamente el ZIP desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.");
     }
     totalUncompressed += uncompressedSize;
-    if (totalUncompressed > MAX_UNCOMPRESSED_BYTES) throw new ChatGptImportError("El contenido descomprimido del ZIP supera 25 MB.");
-    if (localOffset + 30 > centralOffset || view.getUint32(localOffset, true) !== ZIP_LOCAL_SIGNATURE) throw new ChatGptImportError("El ZIP contiene una cabecera local inválida.");
+    if (totalUncompressed > MAX_UNCOMPRESSED_BYTES) throw zipError("El contenido del paquete supera el máximo seguro de 25 MB. Generá un paquete más pequeño. No se creó ninguna factura ni se modificó el inventario.");
+    if (localOffset + 30 > centralOffset || view.getUint32(localOffset, true) !== ZIP_LOCAL_SIGNATURE) throw zipError();
     const localNameLength = view.getUint16(localOffset + 26, true);
     const localExtraLength = view.getUint16(localOffset + 28, true);
     const localName = decodeName(bytes.subarray(localOffset + 30, localOffset + 30 + localNameLength));
     const dataEnd = localOffset + 30 + localNameLength + localExtraLength + compressedSize;
-    if (localName !== name || dataEnd > centralOffset) throw new ChatGptImportError("Las cabeceras del ZIP no coinciden.");
+    if (localName !== name || dataEnd > centralOffset) throw zipError();
     entries.push({ name, compressedSize, uncompressedSize, method, flags, externalAttributes, localOffset });
     offset = end;
   }
-  if (offset !== centralOffset + centralSize) throw new ChatGptImportError("El directorio central del ZIP tiene un tamaño inválido.");
+  if (offset !== centralOffset + centralSize) throw zipError();
   return entries;
 }
 
@@ -242,9 +250,30 @@ function barcodeFromIdentifiers(identifiers: Record<string, unknown>) {
 
 function validateAnalysis(value: unknown) {
   const root = record(value, "analysis.json");
-  if (text(root.schema, "schema", { max: 100 }) !== "nutriplus.invoice_import") throw new ChatGptImportError("El schema debe ser nutriplus.invoice_import.");
-  if (text(root.schema_version, "schema_version", { max: 20 }) !== "1.0") throw new ChatGptImportError("schema_version debe ser 1.0.");
-  if (text(root.analysis_origin, "analysis_origin", { max: 40 }) !== "CHATGPT_IMPORT") throw new ChatGptImportError("analysis_origin debe ser CHATGPT_IMPORT.");
+  if (text(root.schema, "schema", { max: 100 }) !== "nutriplus.invoice_import") {
+    throw new ChatGptImportError(
+      "Este análisis no usa el formato de importación de NutriPlus. Generá nuevamente el paquete desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.",
+      400,
+      "CHATGPT_SCHEMA_INVALID",
+      "Formato de análisis no válido",
+    );
+  }
+  if (text(root.schema_version, "schema_version", { max: 20 }) !== "1.0") {
+    throw new ChatGptImportError(
+      "Este paquete fue creado con una versión de importación que NutriPlus no admite. Generá nuevamente el paquete desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.",
+      400,
+      "CHATGPT_SCHEMA_UNSUPPORTED",
+      "Versión no compatible",
+    );
+  }
+  if (text(root.analysis_origin, "analysis_origin", { max: 40 }) !== "CHATGPT_IMPORT") {
+    throw new ChatGptImportError(
+      "Este análisis no fue identificado como una importación de ChatGPT para NutriPlus. Generá nuevamente el paquete desde ChatGPT.",
+      400,
+      "CHATGPT_SCHEMA_INVALID",
+      "Origen de análisis no válido",
+    );
+  }
 
   const source = record(root.source, "source");
   const sourceFileName = text(source.file_name, "source.file_name", { max: 500 });
@@ -277,7 +306,17 @@ function validateAnalysis(value: unknown) {
     const lineNumber = wholeNumber(item.line_number, `products[${index}].line_number`, 1, 500);
     if (seenLines.has(lineNumber)) throw new ChatGptImportError(`La línea ${lineNumber} está duplicada en products.`);
     seenLines.add(lineNumber);
-    const quantity = wholeNumber(item.quantity, `products[${index}].quantity`, 1, 100_000);
+    const name = text(item.name, `products[${index}].name`, { max: 700 });
+    const quantityValue = Number(item.quantity);
+    if (!Number.isInteger(quantityValue) || quantityValue < 1 || quantityValue > 100_000) {
+      throw new ChatGptImportError(
+        `El producto “${name}” tiene una cantidad inválida. Corregila antes de continuar. No se modificó el inventario.`,
+        400,
+        "INVENTORY_INVALID_QUANTITY",
+        "Cantidad inválida",
+      );
+    }
+    const quantity = quantityValue;
     const unitPriceCents = moneyCents(item.unit_price, `products[${index}].unit_price`);
     const discountTotalCents = moneyCents(item.discount_total, `products[${index}].discount_total`);
     const lineSubtotalCents = moneyCents(item.line_subtotal, `products[${index}].line_subtotal`);
@@ -294,7 +333,7 @@ function validateAnalysis(value: unknown) {
     return {
       lineNumber,
       brand: text(item.brand, `products[${index}].brand`, { max: 250 }),
-      name: text(item.name, `products[${index}].name`, { max: 700 }),
+      name,
       presentation: text(item.presentation, `products[${index}].presentation`, { max: 500 }),
       size: optionalText(item.size, `products[${index}].size`, 200) || text(item.presentation, `products[${index}].presentation`, { max: 500 }),
       flavor: optionalText(item.flavor, `products[${index}].flavor`, 200),
@@ -318,10 +357,22 @@ function validateAnalysis(value: unknown) {
     throw new ChatGptImportError("invoice.inventory_units no coincide con la suma de cantidades de productos.");
   }
   if (products.reduce((sum, product) => sum + product.lineSubtotalCents, 0) !== subtotalCents) {
-    throw new ChatGptImportError("invoice.subtotal no coincide con la suma recalculada de las líneas.");
+    const calculated = products.reduce((sum, product) => sum + product.lineSubtotalCents, 0) / 100;
+    throw new ChatGptImportError(
+      `El total calculado de los productos (${currency} ${calculated.toFixed(2)}) no coincide con el subtotal de la factura (${currency} ${(subtotalCents / 100).toFixed(2)}). Revisá los productos y cantidades antes de continuar. El inventario no fue modificado.`,
+      400,
+      "CHATGPT_TOTAL_INCONSISTENT",
+      "Total inconsistente",
+    );
   }
   if (subtotalCents + shippingCents + taxCents !== totalCents) {
-    throw new ChatGptImportError("invoice.total no coincide con subtotal, envío e impuestos recalculados.");
+    const calculated = (subtotalCents + shippingCents + taxCents) / 100;
+    throw new ChatGptImportError(
+      `El total recalculado de la factura (${currency} ${calculated.toFixed(2)}) no coincide con el total indicado (${currency} ${(totalCents / 100).toFixed(2)}). Revisá el paquete antes de continuar. El inventario no fue modificado.`,
+      400,
+      "CHATGPT_TOTAL_INCONSISTENT",
+      "Total inconsistente",
+    );
   }
 
   return {
@@ -394,42 +445,81 @@ function parsedProduct(product: ValidatedProduct, provider: ParsedInvoice["provi
 }
 
 export async function parseChatGptInvoiceImport(file: File): Promise<ChatGptInvoiceImportResult> {
-  if (!file || !file.size) throw new ChatGptImportError("Seleccioná un archivo ZIP generado desde ChatGPT.");
+  if (!file || !file.size) throw new ChatGptImportError(
+    "Seleccioná el archivo .zip generado desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.",
+    400,
+    "CHATGPT_ZIP_INVALID",
+    "Paquete ZIP requerido",
+  );
   if (!/\.zip$/i.test(file.name) && !/(?:application\/zip|application\/x-zip-compressed)/i.test(file.type || "")) {
-    throw new ChatGptImportError("Importar análisis de ChatGPT acepta únicamente un archivo ZIP.");
+    throw new ChatGptImportError(
+      "Este archivo no es un paquete ZIP válido de NutriPlus. Seleccioná el archivo .zip generado desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.",
+      400,
+      "CHATGPT_ZIP_INVALID",
+      "Tipo de archivo incorrecto",
+    );
   }
-  if (file.size > MAX_ARCHIVE_BYTES) throw new ChatGptImportError("El ZIP supera el máximo de 25 MB.");
+  if (file.size > MAX_ARCHIVE_BYTES) throw zipError("Este paquete supera el máximo seguro de 25 MB. Generá un paquete más pequeño. No se creó ninguna factura ni se modificó el inventario.");
   const archiveBytes = new Uint8Array(await file.arrayBuffer());
   const metadata = zipMetadata(archiveBytes);
   const analysisEntry = metadata.filter((entry) => entry.name.toLowerCase() === "analysis.json");
   const invoiceEntries = metadata.filter((entry) => Boolean(invoiceExtension(entry.name)));
-  if (analysisEntry.length !== 1 || invoiceEntries.length !== 1 || metadata.length !== 2) {
-    throw new ChatGptImportError("El ZIP debe contener analysis.json y exactamente una factura invoice.pdf, invoice.jpg, invoice.jpeg, invoice.png o invoice.webp.");
-  }
-  if (analysisEntry[0].uncompressedSize > MAX_ANALYSIS_BYTES) throw new ChatGptImportError("analysis.json supera el máximo de 512 KB.");
-  if (invoiceEntries[0].uncompressedSize > MAX_INVOICE_BYTES) throw new ChatGptImportError("La factura incluida supera el máximo de 20 MB.");
+  if (!analysisEntry.length) throw new ChatGptImportError(
+    "Este paquete no contiene el archivo de análisis necesario (analysis.json). Generá nuevamente el paquete desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.",
+    400,
+    "CHATGPT_ANALYSIS_MISSING",
+    "Falta analysis.json",
+  );
+  if (analysisEntry.length > 1) throw zipError("Este paquete contiene más de un archivo analysis.json. Generá nuevamente el ZIP desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.");
+  if (!invoiceEntries.length) throw new ChatGptImportError(
+    "Este paquete contiene el análisis, pero no incluye la factura original. Generá nuevamente el paquete desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.",
+    400,
+    "CHATGPT_INVOICE_MISSING",
+    "Falta la factura original",
+  );
+  if (invoiceEntries.length > 1) throw new ChatGptImportError(
+    "Este paquete contiene más de una factura. Cada paquete NutriPlus debe incluir solamente una factura. No se creó ninguna factura ni se modificó el inventario.",
+    400,
+    "CHATGPT_MULTIPLE_INVOICES",
+    "Más de una factura",
+  );
+  if (metadata.length !== 2) throw zipError("Este paquete contiene archivos adicionales no permitidos. Debe incluir solamente analysis.json y una factura. No se creó ninguna factura ni se modificó el inventario.");
+  if (analysisEntry[0].uncompressedSize > MAX_ANALYSIS_BYTES) throw zipError("analysis.json supera el máximo seguro de 512 KB. Generá nuevamente el paquete desde ChatGPT.");
+  if (invoiceEntries[0].uncompressedSize > MAX_INVOICE_BYTES) throw zipError("La factura incluida supera el máximo seguro de 20 MB. Generá un paquete más pequeño.");
 
   let extracted: Record<string, Uint8Array>;
   try { extracted = unzipSync(archiveBytes); }
-  catch { throw new ChatGptImportError("No se pudo descomprimir el ZIP de forma segura."); }
+  catch { throw zipError(); }
   const extractedByName = new Map(Object.entries(extracted).map(([name, bytes]) => [name.toLowerCase(), bytes]));
   const analysisBytes = extractedByName.get("analysis.json");
   const invoiceEntry = invoiceEntries[0];
   const invoiceBytes = extractedByName.get(invoiceEntry.name.toLowerCase());
   if (!analysisBytes || !invoiceBytes || analysisBytes.byteLength !== analysisEntry[0].uncompressedSize || invoiceBytes.byteLength !== invoiceEntry.uncompressedSize) {
-    throw new ChatGptImportError("El contenido descomprimido no coincide con la estructura declarada del ZIP.");
+    throw zipError();
   }
   let analysisValue: unknown;
   try {
     const json = new TextDecoder("utf-8", { fatal: true }).decode(analysisBytes).replace(/^\uFEFF/, "");
     analysisValue = JSON.parse(json);
-  } catch { throw new ChatGptImportError("analysis.json no contiene JSON UTF-8 válido."); }
+  } catch {
+    throw new ChatGptImportError(
+      "El archivo de análisis está dañado o tiene un formato que NutriPlus no puede leer. Generá nuevamente el paquete desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.",
+      400,
+      "CHATGPT_ANALYSIS_JSON_INVALID",
+      "Análisis JSON inválido",
+    );
+  }
   const validated = validateAnalysis(analysisValue);
   const extension = invoiceExtension(invoiceEntry.name);
-  if (!validInvoiceSignature(invoiceBytes, extension)) throw new ChatGptImportError("La extensión de invoice.* no coincide con el contenido real de la factura.");
+  if (!validInvoiceSignature(invoiceBytes, extension)) throw zipError("La factura incluida no coincide con su tipo de archivo. Generá nuevamente el paquete desde ChatGPT. No se creó ninguna factura ni se modificó el inventario.");
   const actualSha256 = await sha256Bytes(invoiceBytes);
   if (actualSha256 !== validated.sourceSha256) {
-    throw new ChatGptImportError("El análisis no corresponde a la factura incluida en este paquete.");
+    throw new ChatGptImportError(
+      "El análisis no corresponde a la factura incluida en este paquete. No se importó ningún producto ni se modificó el inventario. Generá nuevamente el paquete usando la factura correcta.",
+      400,
+      "CHATGPT_HASH_MISMATCH",
+      "El análisis no corresponde a la factura",
+    );
   }
   const sourceExtension = validated.sourceFileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || extension;
   const mimeType = INVOICE_TYPES[extension];

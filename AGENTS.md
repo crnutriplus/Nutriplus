@@ -107,3 +107,24 @@ Antes de publicar, revisar el diff para confirmar que no hay cambios accidentale
 - comprobar la versión pública visible o su metadata en la URL publicada;
 - verificar el flujo modificado sin hacer operaciones destructivas ni consumo no autorizado;
 - informar con claridad pruebas ejecutadas, límites de la verificación y cualquier riesgo pendiente.
+
+## 10. Mensajes de error y recuperación
+
+Todo error visible al usuario debe ser claro, específico y accionable. Siempre que la causa sea conocida, el mensaje debe explicar:
+
+1. qué ocurrió;
+2. por qué ocurrió en lenguaje comprensible;
+3. qué puede hacer la persona usuaria para solucionarlo;
+4. qué ocurrió con sus datos o inventario.
+
+Usar la regla: **PROBLEMA + CAUSA COMPRENSIBLE + ACCIÓN RECOMENDADA + ESTADO DE LOS DATOS**.
+
+- Evitar mensajes genéricos si existe información suficiente para ser más específico.
+- Registrar los detalles técnicos en logs seguros; no mostrarlos como experiencia principal.
+- Nunca mostrar stack traces, SQL, secretos, API keys, tokens, cookies ni rutas internas sensibles.
+- Diferenciar situaciones recuperables de errores definitivos.
+- Si una operación falla después de realizar parcialmente una acción, indicar qué parte quedó guardada.
+- Si ninguna modificación ocurrió, indicarlo explícitamente.
+- Si existe riesgo de repetir una operación que afecte inventario, pagos, facturas o pedidos, implementar idempotencia y comunicar si ya había sido procesada.
+
+Esta regla aplica a Productos, Inventario, Facturas, Importaciones, Pedidos, autenticación, CRM, página de clientes, pagos, Poket, WhatsApp y futuras integraciones.
