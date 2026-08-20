@@ -127,6 +127,7 @@ La protección real es la política de Sites. `request-user.ts` atribuye accione
 - La exportación Excel/PDF no es un backup restaurable.
 - Los checkpoints preservan código, no datos.
 - No existe un procedimiento integral y probado para todas las tablas D1 y objetos R2.
+- La revisión del 2026-08-20 confirmó que los recursos son administrados exclusivamente por ChatGPT Sites. La plataforma solo expone lectura acotada de D1 y no ofrece exportación integral de D1, listado administrativo de R2 ni escritura hacia destinos aislados. El simulacro D1 + R2 queda formalmente bloqueado hasta que Sites ofrezca esas capacidades o se autorice otra infraestructura; no se realizó ninguna migración.
 
 ## Prioridades para una auditoría posterior
 
