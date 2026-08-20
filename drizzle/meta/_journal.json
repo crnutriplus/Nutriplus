@@ -106,6 +106,13 @@
       "when": 1787194867169,
       "tag": "0014_woozy_madrox",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1787266692733,
+      "tag": "0015_quiet_anthem",
+      "breakpoints": true
     }
   ]
 }

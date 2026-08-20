@@ -58,7 +58,7 @@ Hallazgo pendiente: la carga normal determina actualmente PDF/imagen por MIME de
 
 ## Logging seguro
 
-La aplicación no mantiene actualmente un sistema central de logs de negocio y el código de producción no contiene llamadas directas a `console.*`. Si se agregan logs:
+La aplicación no mantiene actualmente un sistema central de logs de negocio. Pedidos usa únicamente un `console.error` redactado para fallos inesperados, con código estable, referencia opaca y tipo de excepción; no incluye mensaje, SQL, request ni datos personales. Cualquier log adicional debe cumplir estas reglas:
 
 - registrar evento, estado, identificador técnico opaco, duración y código de error;
 - redactar email, nombres, direcciones, tracking, contenido de facturas y códigos cuando no sean indispensables;

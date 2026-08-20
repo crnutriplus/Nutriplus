@@ -159,6 +159,18 @@ Pasaron ESLint, TypeScript, 36/36 pruebas unitarias, la prueba del Worker de pro
 
 No se modificaron ExcelJS 4.4.0, uuid 8.3.2, D1, R2, bindings, migraciones, infraestructura, autenticación, Facturas, Inventario, Pedidos, CRM, Ventas/Gastos, Poket ni OpenAI. No hubo llamadas pagadas; `CHATGPT_IMPORT` conserva `api_calls = 0` y `api_cost = 0`. `docs/BACKUP_RESTORE.md` permanece intacto y el backup integral D1 + R2 continúa formalmente **BLOQUEADO** por las limitaciones actuales de Sites.
 
+## Pedidos — Fase 1 local (2026-08-20)
+
+La base técnica de Pedidos se desarrolló en `feature/orders-phase-1`, creada directamente desde el `main` productivo `1921a68cf28fa6f6201216de04c1c946456be4d6` (NutriPlus v2.15, checkpoint 29). La rama local `security/phase-3b1` y su commit `ccf0837574f0c9a66414a8c72fabb0db7e1d30f2` permanecieron intactos; no se mezcló Seguridad 3B1/3B2.
+
+La migración aditiva `0015_quiet_anthem.sql` agrega Pedidos, líneas, operaciones idempotentes, eventos, pagos, referencias externas, rutas, devoluciones y entregas normalizadas. `inventory_movements` recibe únicamente referencias opcionales a pedido/línea y tipo de movimiento, preservando todas las filas y flujos históricos. Restricciones y claves foráneas viven en la migración; los triggers se instalan como sentencias preparadas individuales desde `ensureDatabase()`, siguiendo el patrón compatible con Sites ya usado por `0014`. Juntos protegen estados, montos, cantidades, historial append-only y saldo de inventario no negativo. La migración se validó desde una base representativa del esquema anterior y no se aplicó a D1 productivo.
+
+El dominio usa números NP mediante secuencia autoincremental, IDs nativos de Web Crypto, importes CRC enteros, fecha civil de Costa Rica, `operationId` con respuesta repetible y `orders.version` para concurrencia optimista. Confirmar descuenta una sola vez; editar un pedido comprometido aplica solo el delta; cancelar restaura; preparar, entregar y reprogramar no mueven inventario. Pagos y devoluciones son ledgers auditables. Las entregas parciales futuras se normalizan en cabecera/líneas separadas del pedido.
+
+La instalación limpia mediante el wrapper del proyecto, que ejecuta un único `npm ci` con caché aislada, pasó. También pasaron ESLint, TypeScript, 36/36 pruebas unitarias, pruebas de migración `0014` y `0015`, las 25 invariantes de Pedidos, concurrencia, APIs, Facturas, Inventario, importación, exportación Excel/PDF, build y validador del artefacto Sites. El build conserva el aviso conocido de chunks mayores de 500 kB, sin error. `npm audit --omit=dev` informó 2 nodos: 0 críticos, 0 altos, 2 moderados y 0 bajos (`exceljs` y `uuid`), sin cambios de dependencias en esta fase.
+
+La Fase 1 no incluye interfaz ni publicación. No hubo merge a `main`, push, checkpoint, deploy, cambio de versión, escritura D1/R2 productiva ni llamadas a OpenAI. `CHATGPT_IMPORT` conserva cero llamadas/costo. Las APIs de Pedidos requieren policies propias cuando se retome autorización interna; actualmente solo existe la protección externa privada de Sites. `docs/BACKUP_RESTORE.md` quedó intacto y el backup integral D1+R2 continúa formalmente **BLOQUEADO**.
+
 ### Uso y peso
 
 - No se identificó una dependencia directa claramente eliminable sin análisis funcional adicional.
@@ -168,7 +180,7 @@ No se modificaron ExcelJS 4.4.0, uuid 8.3.2, D1, R2, bindings, migraciones, infr
 
 ## Logs y datos sensibles
 
-- No se hallaron `console.*` en `app/`, `lib/`, `db/` o `worker/` fuera de los activos de terceros bajo `public/`.
+- Pedidos agrega un único `console.error` redactado para fallos inesperados: registra código estable, referencia opaca y nombre de excepción, pero no mensaje, SQL, request, PII, headers ni secretos. No hay otros `console.*` propios en `app/`, `lib/`, `db/` o `worker/`.
 - Las pruebas usan claves ficticias construidas en tiempo de ejecución.
 - Los archivos originales y resultados de análisis pueden contener datos personales, pedido, tracking y envío; deben tratarse como sensibles.
 - La política permanente de logging quedó en `SECURITY.md`.

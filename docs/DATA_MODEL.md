@@ -4,7 +4,7 @@
 
 NutriPlus usa Cloudflare D1, compatible con SQLite. Drizzle ORM describe el esquema en `db/schema.ts`, mientras que los Route Handlers usan tanto Drizzle como sentencias preparadas de D1.
 
-Las migraciones versionadas están en `drizzle/` y el journal registra 15 entradas, de `0000_fluffy_shinobi_shaw.sql` a `0014_woozy_madrox.sql`.
+Las migraciones versionadas están en `drizzle/` y el journal registra 16 entradas, de `0000_fluffy_shinobi_shaw.sql` a `0015_quiet_anthem.sql`. La migración `0015` pertenece a Pedidos Fase 1 y permanece validada solo de forma local hasta que exista una publicación autorizada.
 
 ## Entidades
 
@@ -56,6 +56,26 @@ cantidad_disponible = max(0, total_to_add - cantidad_activa)
 
 La migración `0014` elimina el índice `inventory_movements_invoice_line_unique`, que impedía un reingreso legítimo después de una reversa, y recalcula los estados de documentos existentes. Como el ejecutor SQL de Sites no admite cuerpos de trigger dentro del archivo de migración, `ensureDatabase()` instala ambos triggers como sentencias preparadas individuales antes de atender cualquier mutación: bloquean transaccionalmente una suma activa mayor que `total_to_add` o menor que cero. El índice `(operation_id, document_line_id)` continúa garantizando una sola mutación de esa línea dentro del mismo `operationId`.
 
+### Pedidos
+
+| Tabla | Propósito |
+|---|---|
+| `order_number_allocations` | Secuencia transaccional para números `NP-######`. |
+| `orders` | Cabecera, snapshots de cliente/dirección, estado, fecha, importes y versión optimista. |
+| `order_lines` | Líneas activas/históricas, vínculo opcional a producto y snapshots comerciales/de costo. |
+| `order_operations` | Recibos idempotentes con hash de solicitud y respuesta repetible. |
+| `order_status_events` | Transiciones append-only con motivo, operación y actor nullable. |
+| `order_events` | Eventos internos append-only para historial e integraciones futuras. |
+| `order_payments` | Ledger de pagos y reversas; el estado de pago se deriva. |
+| `order_external_references` | Referencias desacopladas a proveedores externos futuros. |
+| `delivery_routes` / `route_orders` | Rutas por fecha y posición estable de cada pedido. |
+| `order_returns` / `order_return_lines` | Devoluciones y decisión explícita de reingreso a inventario. |
+| `order_fulfillments` / `order_fulfillment_lines` | Entregas separadas del pedido y preparadas para cantidades parciales. |
+
+`inventory_movements` recibe tres columnas opcionales: `order_id`, `order_line_id` y `movement_type`. Las filas históricas y de Facturas permanecen válidas con valores nulos. Solo los movimientos con línea de pedido activan la validación de producto, cantidades previa/resultante y saldo no negativo, y actualizan el producto dentro del mismo batch D1. Igual que los guards de `0014`, `ensureDatabase()` instala los triggers de Pedidos como sentencias D1 individuales porque el ejecutor de migraciones de Sites no acepta cuerpos con terminadores internos.
+
+Los importes de Pedidos se almacenan como enteros CRC. Las fechas operativas de entrega y ruta son texto `YYYY-MM-DD` interpretado en `America/Costa_Rica`; los timestamps técnicos conservan la convención UTC del proyecto.
+
 ### Importaciones, respaldos y eliminaciones
 
 | Tabla | Propósito |
@@ -71,11 +91,11 @@ Los campos `claim_token` y `claimed_at` permiten que los procesos se reanuden si
 
 ## Relaciones y restricciones
 
-El esquema no declara `FOREIGN KEY`. Los campos `document_id`, `operation_id`, `product_id`, `import_id`, `backup_id` y `deletion_id` representan relaciones lógicas que las transacciones y validaciones de la aplicación deben mantener.
+Las tablas históricas no declaran `FOREIGN KEY`; sus campos `document_id`, `operation_id`, `product_id`, `import_id`, `backup_id` y `deletion_id` continúan como relaciones lógicas. Las tablas nuevas de Pedidos sí declaran claves foráneas entre sus entidades y aplican `CASCADE`, `RESTRICT` o `SET NULL` según la conservación histórica requerida.
 
 Implicaciones:
 
-- D1 no bloquea por sí solo referencias huérfanas;
+- D1 no bloquea por sí solo referencias huérfanas en las tablas históricas;
 - una futura incorporación de claves foráneas requiere auditoría de datos, estrategia de borrado y nueva migración;
 - no se deben agregar restricciones directamente en producción sin probar compatibilidad con restauraciones, reversas y jobs reanudables.
 

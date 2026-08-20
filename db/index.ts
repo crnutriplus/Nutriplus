@@ -3,6 +3,7 @@ import {
   INVENTORY_MOVEMENT_CAPACITY_TRIGGER_SQL,
   INVENTORY_MOVEMENT_NONNEGATIVE_TRIGGER_SQL,
 } from "../lib/inventory-movement-guard-sql";
+import { ORDER_DATABASE_SQL, ORDER_DATABASE_TRIGGER_SQL } from "../lib/orders-database";
 import * as schema from "./schema";
 
 let initialization: Promise<void> | null = null;
@@ -331,6 +332,9 @@ export async function ensureDatabase() {
           operation_id TEXT NOT NULL,
           original_movement_id TEXT,
           document_line_id TEXT,
+          order_id TEXT,
+          order_line_id TEXT,
+          movement_type TEXT,
           product_id INTEGER NOT NULL,
           product_name TEXT NOT NULL,
           barcode TEXT,
@@ -353,6 +357,19 @@ export async function ensureDatabase() {
         db.prepare(INVENTORY_MOVEMENT_NONNEGATIVE_TRIGGER_SQL),
         db.prepare("CREATE INDEX IF NOT EXISTS inventory_movements_product_idx ON inventory_movements (product_id, created_at)"),
         db.prepare("CREATE INDEX IF NOT EXISTS inventory_movements_operation_idx ON inventory_movements (operation_id, id)"),
+      ]);
+
+      const inventoryMovementColumns = await db.prepare("PRAGMA table_info(inventory_movements)").all<{ name: string }>();
+      const inventoryMovementColumnNames = new Set(inventoryMovementColumns.results.map((column) => column.name));
+      const inventoryMovementAdditions = [];
+      if (!inventoryMovementColumnNames.has("order_id")) inventoryMovementAdditions.push(db.prepare("ALTER TABLE inventory_movements ADD COLUMN order_id TEXT"));
+      if (!inventoryMovementColumnNames.has("order_line_id")) inventoryMovementAdditions.push(db.prepare("ALTER TABLE inventory_movements ADD COLUMN order_line_id TEXT"));
+      if (!inventoryMovementColumnNames.has("movement_type")) inventoryMovementAdditions.push(db.prepare("ALTER TABLE inventory_movements ADD COLUMN movement_type TEXT"));
+      if (inventoryMovementAdditions.length) await db.batch(inventoryMovementAdditions);
+
+      await db.batch([
+        ...ORDER_DATABASE_SQL.map((statement) => db.prepare(statement)),
+        ...ORDER_DATABASE_TRIGGER_SQL.map((statement) => db.prepare(statement)),
       ]);
 
       const intakeDocumentColumns = await db.prepare("PRAGMA table_info(inventory_documents)").all<{ name: string }>();

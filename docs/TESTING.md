@@ -7,6 +7,7 @@ npm run lint
 npx tsc --noEmit
 npm test
 npm run build
+npm run validate:artifact
 ```
 
 `npm test` ya ejecuta `npm run build`; el build explícito se conserva como verificación final cuando una tarea lo exige.
@@ -20,12 +21,27 @@ npm run build
 - `tests/invoice-ai-unit.test.mjs`: configuración, modelos y estimación de consumo;
 - `tests/chatgpt-invoice-import-unit.test.mjs`: parser y seguridad del ZIP;
 - `tests/inventory-migration-0014.integration.mjs`: migración desde el índice de v2.11, reingreso tras reversa, límites por saldo y compatibilidad con ingreso rápido;
+- `tests/orders-migration-0015.integration.mjs`: migración aditiva desde el esquema productivo actual, conservación de inventario y restricciones/triggers de Pedidos;
+- `tests/orders-phase-1.integration.mjs`: estados, inventario por delta, idempotencia, concurrencia, pagos, devoluciones, rutas, snapshots, numeración NP y fechas de Costa Rica;
 - `tests/api-integration.mjs`: productos, ajustes, quotes e importaciones;
 - `tests/concurrency-integration.mjs`: idempotencia y concurrencia;
 - `tests/inventory-intake-integration.mjs`: documentos, confirmación, cierre no destructivo a nivel de interfaz, omisión/reactivación, saldo neto, reingreso, concurrencia, historial por factura y reversas;
 - `tests/export-integration.mjs`: Excel/PDF exportados.
 
 Las integraciones ejecutan el artefacto construido con dobles locales de D1/R2 cuando corresponde. No modifican producción.
+
+## Pedidos — Fase 1
+
+Para validar aisladamente el dominio nuevo:
+
+```bash
+node tests/orders-migration-0015.integration.mjs
+node tests/orders-phase-1.integration.mjs
+```
+
+La prueba de dominio cubre los 25 invariantes solicitados: borrador sin stock, confirmación única, reintentos, rollback por faltantes, edición confirmada por delta, cancelación, preparación/entrega, reapertura, pagos mixtos, devoluciones con y sin reingreso, actualización obsoleta, carrera por la última unidad, reprogramación, snapshots, NP concurrente y fecha operativa. También comprueba reversión de pago sin borrar el original, eliminación idempotente de un borrador sin movimientos, productos manuales, historial, entregas normalizadas, rutas y filtros paginados.
+
+Estas pruebas usan una base SQLite temporal compatible con D1. No aplican `0015` a producción, no crean movimientos reales, no usan R2 y no hacen llamadas a OpenAI.
 
 ## Pruebas opcionales con archivos
 
@@ -64,7 +80,8 @@ No ejecutar una llamada pagada real para probar interfaz, errores, validación o
 ## Qué falta
 
 - no existe una suite E2E de navegador que recorra todos los botones del deployment;
-- la migración crítica `0014` sí tiene una prueba automática con datos representativos de v2.11; no existe todavía una matriz desde cada snapshot histórico de D1;
+- las migraciones críticas `0014` y `0015` tienen pruebas automáticas con datos representativos; no existe todavía una matriz desde cada snapshot histórico de D1;
+- Pedidos Fase 1 no tiene prueba de navegador porque la interfaz queda expresamente fuera de alcance;
 - no hay prueba automatizada de backup integral/recuperación D1+R2 porque ese mecanismo aún no existe;
 - las pruebas opcionales dependen de rutas de fixtures externas y no forman parte de `npm test`.
 

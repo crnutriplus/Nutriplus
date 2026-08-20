@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { check, index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const settings = sqliteTable("settings", {
   id: integer("id").primaryKey(),
@@ -198,6 +198,254 @@ export const supplierProductAliases = sqliteTable("supplier_product_aliases", {
   index("supplier_product_aliases_barcode_idx").on(table.canonicalBarcode, table.productId),
 ]);
 
+export const orderNumberAllocations = sqliteTable("order_number_allocations", {
+  sequence: integer("sequence").primaryKey({ autoIncrement: true }),
+  orderId: text("order_id").notNull(),
+  allocatedAt: text("allocated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("order_number_allocations_order_unique").on(table.orderId)]);
+
+export const orders = sqliteTable("orders", {
+  id: text("id").primaryKey(),
+  orderNumber: text("order_number").notNull(),
+  orderType: text("order_type").notNull().default("STANDARD"),
+  customerId: text("customer_id"),
+  customerNameSnapshot: text("customer_name_snapshot").notNull(),
+  phoneRaw: text("phone_raw"),
+  phoneNormalized: text("phone_normalized"),
+  deliveryAddress: text("delivery_address"),
+  deliveryInstructions: text("delivery_instructions"),
+  province: text("province"),
+  canton: text("canton"),
+  district: text("district"),
+  latitude: real("latitude"),
+  longitude: real("longitude"),
+  scheduledDeliveryDate: text("scheduled_delivery_date"),
+  routeId: text("route_id"),
+  status: text("status").notNull().default("DRAFT"),
+  currency: text("currency").notNull().default("CRC"),
+  subtotal: integer("subtotal").notNull().default(0),
+  discountTotal: integer("discount_total").notNull().default(0),
+  deliveryFee: integer("delivery_fee").notNull().default(0),
+  total: integer("total").notNull().default(0),
+  internalNotes: text("internal_notes"),
+  deliveryNotes: text("delivery_notes"),
+  source: text("source").notNull().default("MANUAL"),
+  version: integer("version").notNull().default(1),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  confirmedAt: text("confirmed_at"),
+  preparedAt: text("prepared_at"),
+  deliveredAt: text("delivered_at"),
+  cancelledAt: text("cancelled_at"),
+  reopenedAt: text("reopened_at"),
+}, (table) => [
+  uniqueIndex("orders_number_unique").on(table.orderNumber),
+  index("orders_delivery_date_idx").on(table.scheduledDeliveryDate, table.id),
+  index("orders_status_idx").on(table.status, table.updatedAt, table.id),
+  index("orders_phone_idx").on(table.phoneNormalized, table.id),
+  index("orders_customer_idx").on(table.customerId, table.id),
+  index("orders_route_idx").on(table.routeId, table.id),
+  check("orders_type_check", sql`${table.orderType} IN ('STANDARD','SPECIAL_ORDER')`),
+  check("orders_status_check", sql`${table.status} IN ('DRAFT','CONFIRMED','PREPARED','DELIVERED','CANCELLED','REOPENED')`),
+  check("orders_currency_check", sql`length(trim(${table.currency})) = 3`),
+  check("orders_source_check", sql`${table.source} IN ('MANUAL','WHATSAPP','INSTAGRAM_FACEBOOK','WEB','CRM','OTHER')`),
+  check("orders_money_check", sql`${table.subtotal} >= 0 AND ${table.discountTotal} >= 0 AND ${table.deliveryFee} >= 0 AND ${table.total} >= 0`),
+  check("orders_total_check", sql`${table.total} = ${table.subtotal} - ${table.discountTotal} + ${table.deliveryFee}`),
+  check("orders_version_check", sql`${table.version} > 0`),
+]);
+
+export const orderLines = sqliteTable("order_lines", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  position: integer("position").notNull(),
+  productId: integer("product_id").references(() => products.id, { onDelete: "set null" }),
+  quantity: integer("quantity").notNull(),
+  productNameSnapshot: text("product_name_snapshot").notNull(),
+  presentationSnapshot: text("presentation_snapshot"),
+  barcodeSnapshot: text("barcode_snapshot"),
+  unitPriceOriginal: integer("unit_price_original"),
+  unitPriceSold: integer("unit_price_sold").notNull(),
+  discountAmount: integer("discount_amount").notNull().default(0),
+  lineSubtotal: integer("line_subtotal").notNull(),
+  lineTotal: integer("line_total").notNull(),
+  historicalCostSnapshot: integer("historical_cost_snapshot"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  removedAt: text("removed_at"),
+  removedReason: text("removed_reason"),
+}, (table) => [
+  index("order_lines_order_idx").on(table.orderId, table.position, table.id),
+  index("order_lines_product_idx").on(table.productId, table.orderId),
+  uniqueIndex("order_lines_position_unique").on(table.orderId, table.position).where(sql`${table.removedAt} IS NULL`),
+  check("order_lines_quantity_check", sql`${table.quantity} > 0`),
+  check("order_lines_position_check", sql`${table.position} > 0`),
+  check("order_lines_money_check", sql`${table.unitPriceSold} >= 0 AND ${table.discountAmount} >= 0 AND ${table.lineSubtotal} >= 0 AND ${table.lineTotal} >= 0`),
+  check("order_lines_totals_check", sql`${table.lineSubtotal} = ${table.quantity} * ${table.unitPriceSold} AND ${table.discountAmount} <= ${table.lineSubtotal} AND ${table.lineTotal} = ${table.lineSubtotal} - ${table.discountAmount}`),
+]);
+
+export const orderOperations = sqliteTable("order_operations", {
+  operationId: text("operation_id").primaryKey(),
+  orderId: text("order_id").notNull(),
+  operationType: text("operation_type").notNull(),
+  requestHash: text("request_hash").notNull(),
+  status: text("status").notNull().default("pending"),
+  responseJson: text("response_json"),
+  guard: integer("guard").notNull().default(1),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  completedAt: text("completed_at"),
+}, (table) => [
+  index("order_operations_order_idx").on(table.orderId, table.createdAt),
+  check("order_operations_status_check", sql`${table.status} IN ('pending','completed')`),
+  check("order_operations_guard_check", sql`${table.guard} = 1`),
+]);
+
+export const orderStatusEvents = sqliteTable("order_status_events", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "restrict" }),
+  fromStatus: text("from_status"),
+  toStatus: text("to_status").notNull(),
+  reason: text("reason"),
+  operationId: text("operation_id").notNull(),
+  actorPrincipal: text("actor_principal"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("order_status_events_order_idx").on(table.orderId, table.createdAt, table.id),
+  uniqueIndex("order_status_events_operation_unique").on(table.operationId),
+  check("order_status_events_reason_check", sql`${table.toStatus} NOT IN ('CANCELLED','REOPENED') OR length(trim(COALESCE(${table.reason},''))) >= 3`),
+]);
+
+export const orderEvents = sqliteTable("order_events", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "restrict" }),
+  eventType: text("event_type").notNull(),
+  payloadJson: text("payload_json").notNull().default("{}"),
+  operationId: text("operation_id").notNull(),
+  actorPrincipal: text("actor_principal"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("order_events_order_idx").on(table.orderId, table.createdAt, table.id),
+  uniqueIndex("order_events_operation_type_unique").on(table.operationId, table.eventType),
+]);
+
+export const orderPayments = sqliteTable("order_payments", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "restrict" }),
+  amount: integer("amount").notNull(),
+  currency: text("currency").notNull(),
+  method: text("method").notNull(),
+  paymentType: text("payment_type").notNull().default("PAYMENT"),
+  status: text("status").notNull().default("POSTED"),
+  reference: text("reference"),
+  reversesPaymentId: text("reverses_payment_id"),
+  reason: text("reason"),
+  operationId: text("operation_id").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("order_payments_order_idx").on(table.orderId, table.createdAt, table.id),
+  uniqueIndex("order_payments_operation_unique").on(table.operationId),
+  uniqueIndex("order_payments_reversal_unique").on(table.reversesPaymentId),
+  check("order_payments_amount_check", sql`${table.amount} > 0`),
+  check("order_payments_currency_check", sql`length(trim(${table.currency})) = 3`),
+  check("order_payments_method_check", sql`${table.method} IN ('CASH','SINPE','CARD','OTHER')`),
+  check("order_payments_type_check", sql`${table.paymentType} IN ('PAYMENT','REVERSAL','REFUND','VOID')`),
+  check("order_payments_status_check", sql`${table.status} = 'POSTED'`),
+  check("order_payments_reversal_check", sql`(${table.paymentType} = 'PAYMENT' AND ${table.reversesPaymentId} IS NULL) OR (${table.paymentType} <> 'PAYMENT' AND ${table.reversesPaymentId} IS NOT NULL AND length(trim(COALESCE(${table.reason},''))) >= 3)`),
+]);
+
+export const orderExternalReferences = sqliteTable("order_external_references", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  provider: text("provider").notNull(),
+  referenceType: text("reference_type").notNull(),
+  externalId: text("external_id").notNull(),
+  metadataJson: text("metadata_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("order_external_references_order_idx").on(table.orderId, table.provider),
+  uniqueIndex("order_external_references_external_unique").on(table.provider, table.referenceType, table.externalId),
+  uniqueIndex("order_external_references_order_unique").on(table.orderId, table.provider, table.referenceType),
+]);
+
+export const deliveryRoutes = sqliteTable("delivery_routes", {
+  id: text("id").primaryKey(),
+  routeDate: text("route_date").notNull(),
+  label: text("label"),
+  status: text("status").notNull().default("OPEN"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  closedAt: text("closed_at"),
+}, (table) => [
+  index("delivery_routes_date_idx").on(table.routeDate, table.status, table.id),
+  check("delivery_routes_status_check", sql`${table.status} IN ('OPEN','CLOSED')`),
+]);
+
+export const routeOrders = sqliteTable("route_orders", {
+  id: text("id").primaryKey(),
+  routeId: text("route_id").notNull().references(() => deliveryRoutes.id, { onDelete: "cascade" }),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "restrict" }),
+  position: integer("position").notNull(),
+  assignedAt: text("assigned_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  removedAt: text("removed_at"),
+}, (table) => [
+  index("route_orders_route_idx").on(table.routeId, table.position, table.id),
+  index("route_orders_order_idx").on(table.orderId, table.removedAt),
+  uniqueIndex("route_orders_position_unique").on(table.routeId, table.position).where(sql`${table.removedAt} IS NULL`),
+  uniqueIndex("route_orders_active_order_unique").on(table.orderId).where(sql`${table.removedAt} IS NULL`),
+  check("route_orders_position_check", sql`${table.position} > 0`),
+]);
+
+export const orderReturns = sqliteTable("order_returns", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "restrict" }),
+  reason: text("reason").notNull(),
+  status: text("status").notNull().default("COMPLETED"),
+  operationId: text("operation_id").notNull(),
+  actorPrincipal: text("actor_principal"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("order_returns_order_idx").on(table.orderId, table.createdAt, table.id),
+  uniqueIndex("order_returns_operation_unique").on(table.operationId),
+  check("order_returns_status_check", sql`${table.status} IN ('COMPLETED','REVERSED')`),
+  check("order_returns_reason_check", sql`length(trim(${table.reason})) >= 3`),
+]);
+
+export const orderReturnLines = sqliteTable("order_return_lines", {
+  id: text("id").primaryKey(),
+  returnId: text("return_id").notNull().references(() => orderReturns.id, { onDelete: "cascade" }),
+  orderLineId: text("order_line_id").notNull().references(() => orderLines.id, { onDelete: "restrict" }),
+  quantity: integer("quantity").notNull(),
+  reenterInventory: integer("reenter_inventory", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("order_return_lines_return_idx").on(table.returnId, table.id),
+  index("order_return_lines_order_line_idx").on(table.orderLineId, table.id),
+  uniqueIndex("order_return_lines_unique").on(table.returnId, table.orderLineId),
+  check("order_return_lines_quantity_check", sql`${table.quantity} > 0`),
+]);
+
+export const orderFulfillments = sqliteTable("order_fulfillments", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "restrict" }),
+  status: text("status").notNull().default("DELIVERED"),
+  operationId: text("operation_id").notNull(),
+  deliveredAt: text("delivered_at").notNull(),
+}, (table) => [
+  index("order_fulfillments_order_idx").on(table.orderId, table.deliveredAt, table.id),
+  uniqueIndex("order_fulfillments_operation_unique").on(table.operationId),
+  check("order_fulfillments_status_check", sql`${table.status} IN ('PARTIAL','DELIVERED')`),
+]);
+
+export const orderFulfillmentLines = sqliteTable("order_fulfillment_lines", {
+  id: text("id").primaryKey(),
+  fulfillmentId: text("fulfillment_id").notNull().references(() => orderFulfillments.id, { onDelete: "cascade" }),
+  orderLineId: text("order_line_id").notNull().references(() => orderLines.id, { onDelete: "restrict" }),
+  quantity: integer("quantity").notNull(),
+}, (table) => [
+  index("order_fulfillment_lines_fulfillment_idx").on(table.fulfillmentId, table.id),
+  index("order_fulfillment_lines_order_line_idx").on(table.orderLineId, table.id),
+  uniqueIndex("order_fulfillment_lines_unique").on(table.fulfillmentId, table.orderLineId),
+  check("order_fulfillment_lines_quantity_check", sql`${table.quantity} > 0`),
+]);
+
 export const inventoryOperations = sqliteTable("inventory_operations", {
   id: text("id").primaryKey(),
   documentId: text("document_id"),
@@ -221,6 +469,9 @@ export const inventoryMovements = sqliteTable("inventory_movements", {
   operationId: text("operation_id").notNull(),
   originalMovementId: text("original_movement_id"),
   documentLineId: text("document_line_id"),
+  orderId: text("order_id"),
+  orderLineId: text("order_line_id"),
+  movementType: text("movement_type"),
   productId: integer("product_id").notNull(),
   productName: text("product_name").notNull(),
   barcode: text("barcode"),
@@ -240,6 +491,8 @@ export const inventoryMovements = sqliteTable("inventory_movements", {
   uniqueIndex("inventory_movements_operation_line_unique").on(table.operationId, table.documentLineId),
   index("inventory_movements_product_idx").on(table.productId, table.createdAt),
   index("inventory_movements_operation_idx").on(table.operationId, table.id),
+  index("inventory_movements_order_idx").on(table.orderId, table.orderLineId, table.createdAt),
+  uniqueIndex("inventory_movements_order_operation_line_unique").on(table.operationId, table.orderLineId, table.movementType).where(sql`${table.orderLineId} IS NOT NULL`),
 ]);
 
 export const importJobs = sqliteTable("import_jobs", {

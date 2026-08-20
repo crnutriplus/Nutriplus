@@ -25,18 +25,20 @@ Navegador/PWA
 - `public/sw.js` y `manifest.webmanifest` proporcionan capacidades PWA.
 - PDF.js y Tesseract se cargan bajo demanda para lectura local; ZXing se usa para códigos.
 
-La navegación principal implementada es Calcular, Productos, Importar y Ajustes. Facturas se abre desde **Agregar inventario** en Productos. No hay un directorio `components/` ni módulos de Pedidos, CRM, Poket, clientes o WhatsApp.
+La navegación principal implementada es Calcular, Productos, Importar y Ajustes. Facturas se abre desde **Agregar inventario** en Productos. Pedidos dispone únicamente de base de datos, dominio y API en la rama local `feature/orders-phase-1`; todavía no tiene interfaz. No hay un directorio `components/` ni módulos de CRM, Poket, clientes o WhatsApp.
 
 ### API y servidor
 
-Los 29 Route Handlers de `app/api/` gestionan:
+Los 42 Route Handlers de `app/api/` gestionan:
 
 - productos, cantidades, abastecimiento y eliminaciones;
 - No inventario y traslado a inventario;
 - ajustes y elementos recientes;
 - importaciones masivas, progreso, historial y restauración;
 - documentos de inventario, archivos, análisis, revisión, confirmación, cancelación y reversa;
-- importación de paquetes ChatGPT y búsqueda de códigos.
+- importación de paquetes ChatGPT y búsqueda de códigos;
+- borradores, confirmación, preparación, entrega, cancelación, reapertura, reprogramación, pagos, devoluciones e historial de Pedidos;
+- creación/listado de rutas de entrega y asignación ordenada de pedidos.
 
 `worker/index.ts` es la entrada de Cloudflare. Inyecta D1, R2 y la configuración de IA en variables globales del runtime de servidor antes de delegar en Vinext. No existe un backend independiente ni una API pública separada.
 
@@ -44,7 +46,7 @@ Los 29 Route Handlers de `app/api/` gestionan:
 
 - `db/schema.ts`: definición Drizzle de las tablas.
 - `db/index.ts`: acceso a D1 y compatibilidad/inicialización en tiempo de ejecución.
-- `drizzle/`: 15 migraciones históricas (`0000` a `0014`) y snapshots.
+- `drizzle/`: 16 migraciones (`0000` a `0015`) y snapshots; `0015` es aditiva y permanece sin aplicar a producción durante Pedidos Fase 1.
 - `lib/invoice-storage.ts`: validación básica, hash y persistencia de facturas en R2.
 - `.openai/hosting.json`: bindings lógicos `DB` y `BUCKET` del proyecto de Sites.
 
@@ -97,11 +99,19 @@ Guarda la factura y el borrador sin llamada a OpenAI. La persona puede completar
 6. Guarda un análisis con origen `CHATGPT_IMPORT`, cero llamadas y costo cero.
 7. Crea un borrador y exige revisión/confirmación antes de inventario.
 
+### Pedidos — base técnica local
+
+La Fase 1 separa cabecera, líneas, pagos, eventos, devoluciones, entregas y rutas. Un pedido empieza como `DRAFT` y no mueve inventario. `CONFIRMED` descuenta stock mediante `inventory_movements`; una edición confirmada aplica únicamente el delta y una cancelación desde `CONFIRMED` o `PREPARED` restaura el compromiso vigente. `PREPARED` y `DELIVERED` no vuelven a descontar.
+
+Las mutaciones sensibles usan `operationId` con respuesta persistida, y `orders.version` evita sobrescrituras obsoletas. La asignación `NP-000001`, `NP-000002`, etc. usa una secuencia autoincremental en la misma transacción lógica, sin `MAX()+1`. Los importes CRC son enteros y las fechas operativas son valores `YYYY-MM-DD` de Costa Rica, no instantes UTC.
+
+La entrega futura parcial se modela mediante `order_fulfillments` y `order_fulfillment_lines`: el pedido, sus entregas y una venta futura permanecen conceptos distintos. En Fase 1, entregar registra todas las cantidades pendientes. La especificación completa está en [ORDERS.md](ORDERS.md).
+
 ## Autenticación y permisos
 
 La protección efectiva actual es la política de acceso de Sites. `app/chatgpt-auth.ts` contiene helpers opcionales de Sign in with ChatGPT, pero no está conectado a las páginas ni a los endpoints. No hay roles propios.
 
-Esto es suficiente solo mientras la política de plataforma mantenga el sitio restringido. La apertura a empleados o clientes requiere autorización de servidor antes de exponer más usuarios.
+Esto es suficiente solo mientras la política de plataforma mantenga el sitio restringido. La apertura a empleados o clientes requiere autorización de servidor antes de exponer más usuarios. Las APIs locales de Pedidos deberán recibir policies propias cuando se retome la rama `security/phase-3b1`; esa rama no se mezcló con Pedidos.
 
 ## Estado de mantenibilidad
 
@@ -123,7 +133,7 @@ Esto es suficiente solo mientras la política de plataforma mantenga el sitio re
 ### Problema importante
 
 - `db/index.ts` mantiene una segunda representación del esquema mediante `CREATE TABLE` y `ALTER TABLE` además de Drizzle/migraciones. Esta compatibilidad puede desviarse del esquema fuente.
-- No hay restricciones `FOREIGN KEY` declaradas; las relaciones se preservan por lógica de aplicación.
+- Las tablas históricas conservan relaciones lógicas sin `FOREIGN KEY`; el dominio nuevo de Pedidos sí declara claves foráneas y restricciones graduales, sin alterar las tablas históricas.
 - La autorización de endpoints depende de la política externa de Sites y no soporta roles propios.
 
 No se cambió ninguno de estos puntos en la auditoría documental para evitar una reorganización o migración riesgosa.
