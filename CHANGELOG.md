@@ -5,7 +5,15 @@ NutriPlus mantiene dos identificadores independientes:
 - **Versión pública:** se muestra a las personas usuarias y avanza como `2.3`, `2.4`, `2.5`, etc.
 - **Checkpoint / commit / deployment:** identifica técnicamente un estado del código. Nunca es el número público de NutriPlus.
 
-`package.json` usa SemVer, por lo que representa la versión pública `2.12` como `2.12.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+`package.json` usa SemVer, por lo que representa la versión pública `2.13` como `2.13.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+
+## 2.13 — 2026-08-20
+
+- Se actualizó únicamente el lote framework/runtime: Next y `eslint-config-next` pasaron de 16.2.6 a 16.3.1, sin cambiar Vinext, React ni React DOM.
+- La cadena de producción quedó en PostCSS 8.5.23, Nanoid 3.3.18 y Sharp 0.35.3, eliminando del audit los avisos asociados a Next y esas transitivas.
+- `npm audit --omit=dev` bajó de 16 hallazgos (15 altos, 1 moderado) a 4 (2 altos, 2 moderados). Los restantes pertenecen a SheetJS/xlsx y ExcelJS y quedan expresamente reservados para otro lote.
+- Pasaron instalación limpia, lint, TypeScript, suite completa, build verificado, navegación visual y la regresión del ZIP real `CHATGPT_IMPORT` con cero llamadas y costo cero de OpenAI.
+- No se modificaron funciones de negocio, APIs, D1, R2, bindings, infraestructura, autenticación ni datos. El backup integral D1 + R2 continúa documentado como bloqueado por las capacidades actuales de Sites.
 
 ## 2.12 — 2026-08-19
 
@@ -74,8 +82,8 @@ Un checkpoint guardado no prueba por sí solo que ese estado haya sido desplegad
 
 La evidencia disponible permite afirmar que el checkpoint 20 tuvo un deployment exitoso y que el 21 era la versión desplegada inmediatamente antes de esta normalización. Sites expone el historial completo de checkpoints guardados, pero no un listado histórico equivalente de todos los deployments; por eso no se atribuye un despliegue independiente a los demás checkpoints cuando no puede probarse. Los checkpoints 1 y 11 están identificados expresamente como prueba privada y parche intermedio, respectivamente, y no como publicaciones públicas independientes.
 
-La publicación actual de este documento corresponde a NutriPlus **v2.12**. Su checkpoint y commit técnicos quedan registrados por Sites y Git al guardar la publicación; no se incrustan en el propio commit porque un commit no puede contener su propio hash.
+La publicación actual de este documento corresponde a NutriPlus **v2.13**. Su checkpoint y commit técnicos quedan registrados por Sites y Git al guardar la publicación; no se incrustan en el propio commit porque un commit no puede contener su propio hash.
 
 ## Regla futura
 
-La próxima implementación publicada después de `2.12` será `2.13`, luego `2.14`, y así sucesivamente. No se usarán `2.0.3`, `2.0.4` ni números de checkpoint o deployment como versiones públicas.
+La próxima implementación publicada después de `2.13` será `2.14`, luego `2.15`, y así sucesivamente. No se usarán `2.0.3`, `2.0.4` ni números de checkpoint o deployment como versiones públicas.

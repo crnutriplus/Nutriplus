@@ -1,7 +1,7 @@
 {
   "name": "nutriplus-precios",
   "displayName": "Calculadora de Precios NutriPlus",
-  "version": "2.12.0",
+  "version": "2.13.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -29,7 +29,7 @@
     "exceljs": "^4.4.0",
     "fflate": "^0.7.4",
     "lucide-react": "1.30.0",
-    "next": "16.2.6",
+    "next": "16.3.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.2.108",
     "react": "19.2.6",
@@ -48,7 +48,7 @@
     "@vitejs/plugin-rsc": "0.5.26",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.3.1",
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",

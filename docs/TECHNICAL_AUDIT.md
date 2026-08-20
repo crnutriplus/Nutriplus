@@ -84,7 +84,7 @@ No se ejecutaron restauraciones, bypasses de acceso ni llamadas reales a OpenAI 
 
 ## Dependencias
 
-### Resultado reproducido
+### Línea base antes del lote 1
 
 `npm audit --omit=dev --json` informó 16 dependencias de producción afectadas: 15 altas, 1 moderada y 0 críticas. La auditoría completa informó 61: 49 altas, 9 moderadas, 3 bajas y 0 críticas.
 
@@ -99,6 +99,23 @@ Directas de producción que requieren revisión:
 El árbol también contiene paquetes transitivos deprecados (`inflight`, `fstream`, `glob@7`, `rimraf@2`, `lodash.isequal`, `@esbuild-kit/*`, `uuid@8`). Provienen principalmente de ExcelJS y Drizzle Kit; no se deben actualizar aisladamente sin comprobar el paquete padre.
 
 `npm outdated` confirmó que el stack tiene versiones posteriores disponibles, entre ellas Next 16.3.1, React 19.2.8, Vinext 1.0.0-beta.7, Vite 8.2.1 y Wrangler 4.124.0 al momento de la auditoría. No se hizo una actualización automática porque implica compatibilidad y cambios funcionales potenciales.
+
+### Lote 1 — framework/runtime (2026-08-20)
+
+Se reprodujo nuevamente la línea base antes de modificar dependencias: `npm audit --omit=dev` informó 16 vulnerabilidades de producción, con 0 críticas, 15 altas, 1 moderada y 0 bajas.
+
+| Cadena | Antes | Después | Avisos corregidos | Decisión |
+|---|---:|---:|---|---|
+| Next | 16.2.6 | 16.3.1 | `GHSA-6gpp-xcg3-4w24`, `GHSA-m99w-x7hq-7vfj`, `GHSA-89xv-2m56-2m9x`, `GHSA-68g3-v927-f742`, `GHSA-4633-3j49-mh5q`, `GHSA-4c39-4ccg-62r3`, `GHSA-p9j2-gv94-2wf4`, `GHSA-q8wf-6r8g-63ch`, `GHSA-955p-x3mx-jcvp` | 16.2.11 corregía los avisos propios de Next, pero mantenía transitivas vulnerables; 16.3.0 fue el primer estable de la misma major que actualizó toda la cadena y se eligió su parche vigente 16.3.1. |
+| PostCSS | 8.4.31 dentro de Next; 8.5.14 compartido | 8.5.23 | `GHSA-qx2v-qp2m-jg93`, `GHSA-6g55-p6wh-862q`, `GHSA-fxqj-rqcc-2cmp`, `GHSA-r28c-9q8g-f849` | Actualización transitiva soportada por Next 16.3.1; no se añadió override. |
+| Nanoid | 3.3.12 | 3.3.18 | `GHSA-28wg-ghj8-5hjv`, `GHSA-2v37-7h3g-55p8` | Resuelto por el rango de PostCSS corregido. |
+| Sharp de Next | 0.34.5 | 0.35.3 | `GHSA-f88m-g3jw-g9cj` | Resuelto por la dependencia opcional soportada de Next 16.3.1. |
+
+Vinext permaneció en 0.0.50, React y React DOM en 19.2.6, Vite en 8.0.13 y `@vitejs/plugin-rsc` en 0.5.26; sus peers siguieron satisfechos. `eslint-config-next` se alineó de 16.2.6 a 16.3.1. No se modificó código funcional ni se usaron overrides.
+
+Después de `npm ci`, `npm audit --omit=dev` informó 4 vulnerabilidades: 0 críticas, 2 altas, 2 moderadas y 0 bajas. Desaparecieron todos los avisos del framework/runtime objetivo. Permanecen xlsx (alta), `brace-expansion` (alta en la cadena pendiente), ExcelJS (moderada por la cadena reportada) y `uuid` (moderada bajo ExcelJS); su corrección se difiere al lote específico de archivos Excel.
+
+La validación pasó lint, TypeScript, 23/23 pruebas unitarias, todas las integraciones de API/concurrencia/inventario/exportación, build de producción y navegación visual. El ZIP real `CHATGPT_IMPORT` pasó validación, recuperación, reversa, historial e idempotencia con `api_calls = 0`, `api_cost = 0` y ninguna llamada a OpenAI. El bloqueo de backup/restore integral D1 + R2 continúa abierto e intacto.
 
 ### Uso y peso
 
@@ -131,8 +148,8 @@ La protección real es la política de Sites. `request-user.ts` atribuye accione
 
 ## Prioridades para una auditoría posterior
 
-1. **Alta:** plan y simulacro de recuperación D1/R2.
-2. **Alta:** actualización coordinada de Next/React/Vinext y estrategia para `xlsx`.
+1. **Alta, bloqueada por Sites:** plan y simulacro de recuperación D1/R2 cuando exista exportación integral o infraestructura autorizada.
+2. **Alta:** lote específico para `xlsx`/SheetJS y ExcelJS, con fixtures y regresión de importación/exportación.
 3. **Alta antes de nuevos usuarios:** autorización por servidor y roles.
 4. **Media:** magic bytes para cargas normales y mensajes de error públicos.
 5. **Media:** una sola estrategia de migración y evaluación de claves foráneas.
