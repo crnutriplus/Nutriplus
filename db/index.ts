@@ -1,4 +1,8 @@
 import { drizzle } from "drizzle-orm/d1";
+import {
+  INVENTORY_MOVEMENT_CAPACITY_TRIGGER_SQL,
+  INVENTORY_MOVEMENT_NONNEGATIVE_TRIGGER_SQL,
+} from "../lib/inventory-movement-guard-sql";
 import * as schema from "./schema";
 
 let initialization: Promise<void> | null = null;
@@ -345,27 +349,8 @@ export async function ensureDatabase() {
         )`),
         db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS inventory_movements_operation_line_unique ON inventory_movements (operation_id, document_line_id)"),
         db.prepare("DROP INDEX IF EXISTS inventory_movements_invoice_line_unique"),
-        db.prepare(`CREATE TRIGGER IF NOT EXISTS inventory_movements_invoice_capacity_insert
-          BEFORE INSERT ON inventory_movements
-          WHEN NEW.document_line_id LIKE 'iline-%' AND NEW.quantity_change>0
-          BEGIN
-            SELECT CASE
-              WHEN NOT EXISTS (SELECT 1 FROM inventory_document_lines WHERE id=NEW.document_line_id)
-                THEN RAISE(ABORT,'INVENTORY_LINE_NOT_FOUND')
-              WHEN COALESCE((SELECT SUM(quantity_change) FROM inventory_movements WHERE document_line_id=NEW.document_line_id),0)+NEW.quantity_change>
-                COALESCE((SELECT total_to_add FROM inventory_document_lines WHERE id=NEW.document_line_id),0)
-                THEN RAISE(ABORT,'INVENTORY_LINE_CAPACITY_EXCEEDED')
-            END;
-          END`),
-        db.prepare(`CREATE TRIGGER IF NOT EXISTS inventory_movements_invoice_active_nonnegative
-          BEFORE INSERT ON inventory_movements
-          WHEN NEW.document_line_id LIKE 'iline-%' AND NEW.quantity_change<0
-          BEGIN
-            SELECT CASE
-              WHEN COALESCE((SELECT SUM(quantity_change) FROM inventory_movements WHERE document_line_id=NEW.document_line_id),0)+NEW.quantity_change<0
-                THEN RAISE(ABORT,'INVENTORY_LINE_ACTIVE_NEGATIVE')
-            END;
-          END`),
+        db.prepare(INVENTORY_MOVEMENT_CAPACITY_TRIGGER_SQL),
+        db.prepare(INVENTORY_MOVEMENT_NONNEGATIVE_TRIGGER_SQL),
         db.prepare("CREATE INDEX IF NOT EXISTS inventory_movements_product_idx ON inventory_movements (product_id, created_at)"),
         db.prepare("CREATE INDEX IF NOT EXISTS inventory_movements_operation_idx ON inventory_movements (operation_id, id)"),
       ]);

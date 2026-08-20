@@ -54,7 +54,7 @@ cantidad_activa = suma(quantity_change) de movimientos completados de la línea
 cantidad_disponible = max(0, total_to_add - cantidad_activa)
 ```
 
-La migración `0014` elimina el índice `inventory_movements_invoice_line_unique`, que impedía un reingreso legítimo después de una reversa. Lo reemplaza por triggers que bloquean transaccionalmente una suma activa mayor que `total_to_add` o menor que cero. El índice `(operation_id, document_line_id)` continúa garantizando una sola mutación de esa línea dentro del mismo `operationId`.
+La migración `0014` elimina el índice `inventory_movements_invoice_line_unique`, que impedía un reingreso legítimo después de una reversa, y recalcula los estados de documentos existentes. Como el ejecutor SQL de Sites no admite cuerpos de trigger dentro del archivo de migración, `ensureDatabase()` instala ambos triggers como sentencias preparadas individuales antes de atender cualquier mutación: bloquean transaccionalmente una suma activa mayor que `total_to_add` o menor que cero. El índice `(operation_id, document_line_id)` continúa garantizando una sola mutación de esa línea dentro del mismo `operationId`.
 
 ### Importaciones, respaldos y eliminaciones
 

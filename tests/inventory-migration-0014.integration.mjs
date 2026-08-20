@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
+import {
+  INVENTORY_MOVEMENT_CAPACITY_TRIGGER_SQL,
+  INVENTORY_MOVEMENT_NONNEGATIVE_TRIGGER_SQL,
+} from "../lib/inventory-movement-guard-sql.ts";
 
 const sqlite = new DatabaseSync(":memory:");
 
@@ -47,14 +51,23 @@ try {
   `);
 
   const migration = await readFile(new URL("../drizzle/0014_woozy_madrox.sql", import.meta.url), "utf8");
-  for (const statement of migration.split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean)) {
+  const migrationStatements = migration.split("--> statement-breakpoint").map((value) => value.trim()).filter(Boolean);
+  for (const statement of migrationStatements) {
     sqlite.exec(statement);
   }
+  // A failed deploy may have executed DROP INDEX before recording the
+  // migration. Reapplying the safe statements must remain harmless.
+  for (const statement of migrationStatements) sqlite.exec(statement);
 
   const indexes = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='index'").all().map((row) => row.name);
   assert.ok(!indexes.includes("inventory_movements_invoice_line_unique"));
   assert.ok(indexes.includes("inventory_movements_operation_line_unique"));
   assert.equal(sqlite.prepare("SELECT status FROM inventory_documents WHERE id='idoc-v211'").get().status, "partial");
+
+  // ensureDatabase() installs each guard as one prepared D1 statement before
+  // any API mutation; trigger bodies intentionally do not live in Sites SQL.
+  sqlite.exec(INVENTORY_MOVEMENT_CAPACITY_TRIGGER_SQL);
+  sqlite.exec(INVENTORY_MOVEMENT_NONNEGATIVE_TRIGGER_SQL);
 
   sqlite.exec("INSERT INTO inventory_operations (id,document_id,status) VALUES ('reingress-v212','idoc-v211','pending')");
   sqlite.exec(`INSERT INTO inventory_movements (id,operation_id,original_movement_id,document_line_id,quantity_change)

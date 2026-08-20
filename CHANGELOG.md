@@ -13,7 +13,7 @@ NutriPlus mantiene dos identificadores independientes:
 - “Cambiar paquete” se normalizó como “Cambiar factura”. Cargar otra factura no elimina la anterior.
 - Las líneas originales ya no se eliminan: pueden marcarse como Omitidas y reactivarse, conservando cantidad, identificadores y trazabilidad. Solo las líneas manuales sin movimientos mantienen eliminación explícita.
 - La disponibilidad se calcula por cantidad neta: suma de ingresos menos reversas. Una reversa vuelve a habilitar únicamente el saldo disponible y permite `ingreso → reversa → reingreso` sin borrar movimientos.
-- El índice único por línea de v2.11 se reemplazó mediante la migración `0014` por límites transaccionales de capacidad y saldo no negativo, manteniendo idempotencia por operación y protección frente a confirmaciones concurrentes.
+- La migración `0014` elimina el índice único por línea de v2.11 y recalcula estados existentes. Antes de cualquier mutación, `ensureDatabase()` instala con sentencias preparadas de D1 los límites transaccionales de capacidad y saldo no negativo, manteniendo idempotencia por operación y protección frente a confirmaciones concurrentes.
 - El estado de la factura se recalcula como borrador, revisión, parcial o procesada según cantidades activas, pendientes y omitidas, incluso para datos creados antes de esta versión.
 - El historial principal ahora se agrupa factura por factura y muestra todas las líneas originales, cantidades de factura/activas/disponibles, omisiones, reversas y movimientos auditables.
 - Las pruebas cubren cierre no destructivo, texto visible, omitir/reactivar, bloqueo de eliminación original, reingreso después de reversa, carrera concurrente, historial agrupado y recuperación `CHATGPT_IMPORT` con cero llamadas y costo cero.
