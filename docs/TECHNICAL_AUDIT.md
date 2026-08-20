@@ -117,6 +117,30 @@ Después de `npm ci`, `npm audit --omit=dev` informó 4 vulnerabilidades: 0 crí
 
 La validación pasó lint, TypeScript, 23/23 pruebas unitarias, todas las integraciones de API/concurrencia/inventario/exportación, build de producción y navegación visual. El ZIP real `CHATGPT_IMPORT` pasó validación, recuperación, reversa, historial e idempotencia con `api_calls = 0`, `api_cost = 0` y ninguna llamada a OpenAI. El bloqueo de backup/restore integral D1 + R2 continúa abierto e intacto.
 
+### Lote 2A — brace-expansion (2026-08-20)
+
+La línea base confirmada fue NutriPlus v2.13, checkpoint técnico 27 y commit `d8d82818d06a3fb4a8622d3d9597f71878423333`, con el repositorio limpio. Antes del cambio, `npm audit --omit=dev` informó 12 nodos afectados: 0 críticos, 11 altos, 1 moderado y 0 bajos. La auditoría completa informó 57: 0 críticos, 46 altos, 8 moderados y 3 bajos.
+
+Se ejecutó una actualización dirigida de `brace-expansion` usando la resolución normal de npm y modificando únicamente el lockfile de dependencias en esta fase. No fue necesario agregar un `override` ni forzar versiones fuera de los rangos declarados por los paquetes padres.
+
+| Rama | Antes | Después | Dependencia padre | Resultado |
+|---|---:|---:|---|---|
+| 1.x | 1.1.14 | 1.1.18 | minimatch 3.1.5 (`^1.1.7`) | Corregida dentro del rango existente. |
+| 2.x | 2.1.4 | 2.1.4 | minimatch 5.1.9 (`^2.0.1`) | Se conservó la resolución segura existente. |
+| 5.x, desarrollo | 5.0.6 | 5.0.9 | minimatch 10.2.5 (`^5.0.5`) | Corregida dentro del rango existente. |
+
+Permanecieron exactamente en sus versiones anteriores minimatch 3.1.5, 5.1.9 y 10.2.5; glob 7.2.3; ExcelJS 4.4.0; xlsx 0.18.5 y uuid 8.3.2. También permanecieron las cadenas productivas de ExcelJS por archiver y unzipper, pero ahora la copia compartida de `brace-expansion` 1.x es 1.1.18.
+
+Después de una instalación limpia, `npm audit --omit=dev` informó 3 nodos: 0 críticos, 1 alto, 2 moderados y 0 bajos. La auditoría completa informó 47: 0 críticos, 20 altos, 24 moderados y 3 bajos. La variación de severidades de la auditoría completa refleja la propagación y reclasificación de nodos padres que hace npm; no representa 47 vulnerabilidades raíz independientes.
+
+Desaparecieron de ambas auditorías `GHSA-3jxr-9vmj-r5cp`, `GHSA-mh99-v99m-4gvg` y `GHSA-rgw5-rvv9-x895`. En producción permanecen únicamente xlsx/SheetJS con dos avisos altos y ExcelJS/uuid con el aviso moderado de uuid, contado también en el nodo padre ExcelJS. La auditoría completa conserva además hallazgos de tooling y build fuera del alcance de este lote.
+
+El bundle SSR de Excel continúa incluyendo código desde `node_modules/brace-expansion` y `node_modules/readdir-glob/node_modules/brace-expansion`; el lockfile resuelve esas rutas a 1.1.18 y 2.1.4, respectivamente. La rama 5.0.9 es exclusiva del tooling de desarrollo y no aparece en el artefacto productivo.
+
+Pasaron `npm ci`, ESLint, TypeScript, 23/23 pruebas unitarias, todas las integraciones de API, concurrencia, migración, Facturas, Inventario y exportación, el build y el validador del artefacto Sites. La regresión Excel generó y reabrió el archivo, conservó las tres hojas, encabezados, códigos como texto, monedas, fechas, caracteres españoles, filtros y formato condicional. El smoke test de interfaz cubrió Calculadora, Productos, Inventario, No inventario, Facturas, Historial e Importar Excel; una hoja sintética se leyó y mapeó sin confirmar la importación ni modificar datos.
+
+No se cambió código de importación o exportación, SheetJS, ExcelJS, uuid, D1, R2, bindings, migraciones, infraestructura, autenticación ni OpenAI. No hubo llamadas pagadas; `CHATGPT_IMPORT` conserva `api_calls = 0` y `api_cost = 0`. `docs/BACKUP_RESTORE.md` permanece intacto y el backup integral D1 + R2 continúa formalmente **BLOQUEADO** por las limitaciones actuales de Sites.
+
 ### Uso y peso
 
 - No se identificó una dependencia directa claramente eliminable sin análisis funcional adicional.
