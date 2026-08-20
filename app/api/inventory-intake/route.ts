@@ -2,6 +2,8 @@ import { ensureDatabase, getD1 } from "@/db";
 import { errorResponse } from "@/lib/api-helpers";
 import { processDocumentWithAi } from "@/lib/invoice-ai-service";
 import { intakeDocumentFromRow, loadIntakeDocument } from "@/lib/inventory-document";
+import { lineFromRow } from "@/lib/inventory-intake";
+import { applyLineProgress, conceptualDocumentStatus, loadDocumentMovementRows } from "@/lib/inventory-line-progress";
 import { duplicateForParsedInvoice, replaceDocumentLinesFromParsed } from "@/lib/invoice-lines-store";
 import { parseInvoicePages, type InvoicePageText } from "@/lib/invoice-parser";
 import {
@@ -87,16 +89,49 @@ async function restoreMissingFiles(
 }
 
 async function historyResponse(db: D1Database) {
+  const documentRows = await db.prepare(`SELECT * FROM inventory_documents
+    ORDER BY COALESCE(updated_at,created_at) DESC,id DESC LIMIT 40`).all<Record<string, unknown>>();
+  const documentIds = documentRows.results.map((row) => String(row.id));
+  const lineRows = documentIds.length
+    ? await db.prepare(`SELECT * FROM inventory_document_lines
+        WHERE document_id IN (SELECT value FROM json_each(?))
+        ORDER BY document_id,line_index,page_number,id`).bind(JSON.stringify(documentIds)).all<Record<string, unknown>>()
+    : { results: [] as Record<string, unknown>[] };
+  const documentMovementRows = await loadDocumentMovementRows(db, documentIds);
   const operations = await db.prepare(`SELECT o.*,d.file_name,d.provider,d.invoice_number,d.order_number,d.shipment_number
     FROM inventory_operations o LEFT JOIN inventory_documents d ON d.id=o.document_id
-    WHERE o.status='completed' ORDER BY o.confirmed_at DESC,o.id DESC LIMIT 40`).all<Record<string, unknown>>();
+    WHERE o.status='completed' ORDER BY o.confirmed_at DESC,o.id DESC LIMIT 120`).all<Record<string, unknown>>();
   const ids = operations.results.map((row) => String(row.id));
   const movements = ids.length
     ? await db.prepare(`SELECT * FROM inventory_movements WHERE operation_id IN (SELECT value FROM json_each(?))
         ORDER BY created_at,id`).bind(JSON.stringify(ids)).all<Record<string, unknown>>()
     : { results: [] as Record<string, unknown>[] };
   const reversed = new Set(operations.results.filter((row) => row.reversal_of).map((row) => String(row.reversal_of)));
+  const documents = documentRows.results.map((row) => {
+    const document = intakeDocumentFromRow(row);
+    const lines = applyLineProgress(
+      lineRows.results.filter((line) => String(line.document_id) === document.id).map(lineFromRow),
+      documentMovementRows,
+    );
+    document.status = conceptualDocumentStatus(lines, document.status);
+    const omittedLines = lines.filter((line) => line.status === "ignored").length;
+    const pendingLines = lines.filter((line) => line.status !== "ignored" && Number(line.availableQuantity || 0) > 0).length;
+    const ingressedLines = lines.filter((line) => Number(line.activeQuantity || 0) > 0).length;
+    const reversedLines = lines.filter((line) => line.hasReversals).length;
+    return {
+      ...document,
+      lineCount: lines.length,
+      ingressedLines,
+      pendingLines,
+      omittedLines,
+      reversedLines,
+      activeUnits: lines.reduce((total, line) => total + Number(line.activeQuantity || 0), 0),
+      pendingUnits: lines.reduce((total, line) => total + (line.status === "ignored" ? 0 : Number(line.availableQuantity || 0)), 0),
+      lines,
+    };
+  });
   return Response.json({
+    documents,
     operations: operations.results.map((row) => ({
       id: String(row.id),
       documentId: row.document_id ? String(row.document_id) : "",
@@ -151,7 +186,32 @@ async function existingUploadResponse(
   const loaded = await loadIntakeDocument(db, documentId);
   if (!loaded) throw new Error("No se pudo recuperar la factura guardada.");
   if (operation || ["partial", "processed"].includes(String(existing.status))) {
-    return Response.json({ ...loaded, duplicate: true, exactDuplicate: true, cachedAnalysis: true });
+    const processedLines = loaded.lines.filter((line) => line.status === "processed").length;
+    const ignoredLines = loaded.lines.filter((line) => line.status === "ignored").length;
+    const pendingLines = loaded.lines.filter((line) => line.status !== "ignored" && Number(line.availableQuantity ?? line.totalToAdd) > 0).length;
+    const recoveryState = pendingLines === 0 ? "completed" : processedLines > 0 || ignoredLines > 0 || loaded.document.status === "partial" ? "partial" : "draft";
+    return Response.json({
+      ...loaded,
+      duplicate: true,
+      exactDuplicate: true,
+      cachedAnalysis: true,
+      resumed: true,
+      recoveryState,
+      processedLines,
+      ignoredLines,
+      pendingLines,
+      notice: recoveryState === "completed" ? {
+        type: "info",
+        title: "Factura procesada",
+        code: "INVENTORY_INVOICE_COMPLETED",
+        message: "Esta factura no tiene cantidades pendientes. Podés consultar todas sus líneas y movimientos en el historial; el inventario no se modificó.",
+      } : {
+        type: "info",
+        title: "Factura recuperada",
+        code: "INVENTORY_INVOICE_RESUMED",
+        message: `Recuperamos el progreso real de la factura. Hay ${pendingLines} línea${pendingLines === 1 ? "" : "s"} con cantidades pendientes; el inventario no se modificó al abrirla.`,
+      },
+    });
   }
   if (["completed", "review_required"].includes(String(existing.analysis_status))) {
     return Response.json({ ...loaded, duplicate: false, exactDuplicate: false, resumed: true, cachedAnalysis: true });

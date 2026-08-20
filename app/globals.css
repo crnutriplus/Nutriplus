@@ -623,6 +623,9 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .status-pill.requires_confirm_code { background: var(--danger-soft); color: var(--danger); }
 .status-pill.conflict_identifiers { background: var(--danger-soft); color: var(--danger); }
 .status-pill.ignored { background: #ecefec; color: #747d75; }
+.status-pill.partial, .status-pill.reviewing { background: #fff1cf; color: #7d6225; }
+.status-pill.draft { background: #edf1eb; color: #5e6b60; }
+.line-omit-btn { flex: 0 0 auto; }
 .invoice-line-grid .wide { grid-column: span 2; }
 .barcode-field > div { display: flex; gap: 6px; }
 .barcode-field input { flex: 1; }
@@ -653,6 +656,7 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .line-evidence { margin: 9px 0 0; }
 .line-warning { margin: 8px 0 0; }
 .quantity-preview { margin-top: 11px; display: grid; grid-template-columns: repeat(3,1fr); gap: 7px; }
+.quantity-preview.line-progress-preview { grid-template-columns: repeat(4,1fr); }
 .quantity-preview span { padding: 9px; display: flex; flex-direction: column; border-radius: 9px; background: #f2f5f0; }
 .quantity-preview span:nth-child(2) { background: var(--lime-soft); color: var(--g800); }
 .quantity-preview span:nth-child(3) { background: var(--g100); color: var(--g800); }
@@ -691,6 +695,31 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .movement-list > div b { overflow-wrap: anywhere; }
 .movement-list small { color: var(--muted); font-size: 8px; }
 .reversed-label { color: var(--g700); font-size: 8px; font-weight: 850; }
+.invoice-history-list { display: flex; flex-direction: column; gap: 10px; }
+.invoice-history-card { overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: #fff; box-shadow: 0 5px 15px rgba(33,60,38,.04); }
+.invoice-history-card.status-partial { border-color: #dfcb94; }
+.invoice-history-card.status-processed { border-color: #b9d0b3; }
+.invoice-history-summary { width: 100%; padding: 14px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 0; background: transparent; text-align: left; }
+.invoice-history-summary > div:first-child { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.invoice-history-summary b { overflow-wrap: anywhere; color: var(--g950); font-size: 12px; }
+.invoice-history-summary small { color: var(--muted); font-size: 8px; }
+.invoice-history-status { flex: 0 0 auto; display: flex; align-items: flex-end; flex-direction: column; gap: 4px; text-align: right; }
+.invoice-history-status > b { color: var(--g700); font-size: 8px; }
+.invoice-history-detail { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid #e7ece5; }
+.invoice-history-line { margin-top: 10px; padding: 11px; border-radius: 12px; background: #f7f9f6; }
+.invoice-history-line > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.invoice-history-line > header > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.invoice-history-line > header b { overflow-wrap: anywhere; color: var(--g950); font-size: 10px; }
+.invoice-history-line > header small { color: var(--muted); font-size: 8px; }
+.invoice-history-line > header > span { color: var(--g800); font-size: 9px; font-weight: 900; text-align: right; }
+.history-line-quantities { margin-top: 8px; display: grid; grid-template-columns: repeat(4,1fr); gap: 6px; }
+.history-line-quantities span { padding: 7px; display: flex; flex-direction: column; border-radius: 8px; background: #fff; }
+.history-line-quantities small { color: var(--muted); font-size: 7px; }
+.history-line-quantities b { margin-top: 2px; color: var(--g950); font-size: 10px; }
+.invoice-history-line details { margin-top: 8px; }
+.invoice-history-line summary { cursor: pointer; color: var(--g700); font-size: 8px; font-weight: 900; }
+.invoice-history-line .movement-list > div.reversal { background: #fff1ef; }
+.invoice-history-line .movement-list > div > span:last-child { display: flex; align-items: flex-end; flex-direction: column; gap: 5px; text-align: right; }
 
 @media (max-width: 760px) {
   .intake-modal { padding: 0; place-items: stretch; }
@@ -724,6 +753,10 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
   .intake-footer { bottom: -18px; margin: 10px -10px -18px; padding: 10px; display: grid; grid-template-columns: 1fr; }
   .nested-modal { padding: 10px; }
   .operation-list article > header { flex-direction: column; }
+  .invoice-history-summary { align-items: stretch; flex-direction: column; }
+  .invoice-history-status { align-items: flex-start; text-align: left; }
+  .invoice-history-line > header { flex-direction: column; }
+  .invoice-history-line > header > span { text-align: left; }
 }
 
 @media (max-width: 420px) {
@@ -732,6 +765,8 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
   .invoice-line-grid .wide { grid-column: 1; }
   .quantity-preview { grid-template-columns: 1fr 1fr; }
   .quantity-preview span:last-child { grid-column: 1 / -1; }
+  .quantity-preview.line-progress-preview span:last-child { grid-column: auto; }
+  .history-line-quantities { grid-template-columns: 1fr 1fr; }
   .barcode-field > div { align-items: stretch; flex-direction: column; }
   .barcode-source-card { grid-template-columns: auto 1fr; }
   .barcode-source-card > span { grid-column: 2; justify-self: start; }

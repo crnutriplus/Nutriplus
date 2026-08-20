@@ -49,8 +49,10 @@ Hallazgo pendiente: la carga normal determina actualmente PDF/imagen por MIME de
 
 - Validar entradas en el servidor; las restricciones de interfaz no son controles de seguridad.
 - Mantener operaciones de inventario idempotentes, deduplicadas y auditables.
+- Limitar transaccionalmente cada línea a la cantidad original de la factura, usando la suma neta de ingresos y reversas; una carrera concurrente nunca puede superar ese límite.
 - No modificar inventario al cargar o analizar una factura: solo **Confirmar ingreso** puede hacerlo.
 - Las reversas deben crear movimientos contrarios y conservar el registro original.
+- No eliminar líneas originales para resolver una revisión: usar omisión reversible y conservar el documento completo para auditoría.
 - No confiar en totales o bloques de validación aportados por un ZIP; recalcularlos.
 - No ejecutar restauraciones sobre producción como prueba.
 

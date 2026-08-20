@@ -1,5 +1,6 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { errorResponse } from "@/lib/api-helpers";
+import { documentStatusStatement } from "@/lib/inventory-line-progress";
 import { productFromRow } from "@/lib/pricing";
 import { requestUserLabel } from "@/lib/request-user";
 
@@ -98,7 +99,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         zero_stock_since=CASE WHEN quantity_available-?=0 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,
         restock_purchased_at=CASE WHEN quantity_available-?>minimum_stock THEN NULL ELSE restock_purchased_at END,
         version=version+1,updated_at=? WHERE id=? AND quantity_available>=?`).bind(amount, amount, amount, now, productId, amount));
+      if (movement.document_line_id) {
+        statements.push(db.prepare(`UPDATE inventory_document_lines SET
+          status=CASE WHEN action='ignore' THEN 'ignored' ELSE 'confirmed' END,
+          selected_for_ingress=CASE WHEN action='ignore' THEN 0 ELSE 1 END,updated_at=?
+          WHERE id=?`).bind(now, String(movement.document_line_id)));
+      }
     });
+    if (original.document_id) statements.push(documentStatusStatement(db, String(original.document_id), now));
     statements.push(db.prepare("UPDATE inventory_operations SET status='completed',verification_status='verified',confirmed_at=? WHERE id=?").bind(now, reversalId));
     try { await db.batch(statements); }
     catch (error) {
@@ -115,6 +123,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         const recovered = await resultFor(getD1(), reversalId);
         if (recovered?.operation.status === "completed") return Response.json({ ...recovered, recoveredAfterConnectionCheck: true });
       } catch { /* Se conserva el error original. */ }
+    }
+    const message = error instanceof Error ? error.message : "";
+    if (/INVENTORY_LINE_ACTIVE_NEGATIVE/i.test(message)) {
+      return Response.json({
+        error: "La reversión supera la cantidad actualmente activa de esta línea. Actualizá el historial antes de intentarlo nuevamente; el inventario no fue modificado.",
+        title: "Cantidad de reversión inválida",
+        code: "INVENTORY_REVERSAL_EXCEEDS_ACTIVE",
+      }, { status: 409 });
     }
     return errorResponse(error);
   }

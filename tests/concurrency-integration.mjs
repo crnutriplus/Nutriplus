@@ -90,7 +90,7 @@ const quantities = await call("/api/products/quantities", {
   headers: { "x-mutation-id": "quick-quantity-add-0001" },
   body: JSON.stringify({ entries: [{ code: "QTY-001", quantityAdded: 7 }, { code: "qty-a2", quantityAdded: 0 }], mutationId: "quick-quantity-add-0001" }),
 });
-assert.equal(quantities.response.status, 200);
+assert.equal(quantities.response.status, 200, JSON.stringify(quantities.body));
 assert.equal(quantities.body.updated, 2);
 assert.equal((await call("/api/products?code=QTY-001")).body.product.quantityAvailable, 9);
 assert.equal((await call("/api/products?code=QTY-A2")).body.product.quantityAvailable, 2);

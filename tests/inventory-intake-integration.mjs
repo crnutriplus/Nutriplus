@@ -100,7 +100,7 @@ Pedido realizado 25 de julio de 2026 — N.° de pedido 114-1234567-1234567
 Número de rastreo: SHIP-001
 ASIN: B000123456
 UPC: 036000291452
-2 x NOW Foods Magnesium Citrate 120 Veg Capsules 200 mg`,
+5 x NOW Foods Magnesium Citrate 120 Veg Capsules 200 mg`,
 });
 assert.equal(amazon.response.status, 201);
 assert.equal(amazon.body.document.provider, "amazon");
@@ -343,6 +343,36 @@ assert.notEqual(afterIndividual.body.lines.find((line) => line.id === savedLine.
 assert.equal((await call("/api/products?code=9780306406157")).body.product.quantityAvailable, 1);
 assert.equal((await call("/api/products?code=036000291452")).body.product.quantityAvailable, 15);
 
+const originalDeleteBlocked = await call(`/api/inventory-intake/${saveSubset.body.document.id}`, {
+  method: "PUT",
+  body: JSON.stringify({ metadataChanged: false, lines: [], deletedLineIds: [savedLine.id] }),
+});
+assert.equal(originalDeleteBlocked.response.status, 409);
+assert.equal(originalDeleteBlocked.body.code, "INVENTORY_ORIGINAL_LINE_DELETE_BLOCKED");
+const omittedOriginal = await call(`/api/inventory-intake/${saveSubset.body.document.id}`, {
+  method: "PUT",
+  body: JSON.stringify({
+    metadataChanged: false,
+    lines: [{ ...savedLine, action: "ignore", status: "ignored", selectedForIngress: false }],
+    deletedLineIds: [],
+    reviewedLineIds: [savedLine.id],
+  }),
+});
+assert.equal(omittedOriginal.response.status, 200, JSON.stringify(omittedOriginal.body));
+assert.equal(omittedOriginal.body.lines[0].status, "ignored");
+assert.equal((await call(`/api/inventory-intake/${saveSubset.body.document.id}`)).body.lines.some((line) => line.id === savedLine.id), true);
+const reactivatedOriginal = await call(`/api/inventory-intake/${saveSubset.body.document.id}`, {
+  method: "PUT",
+  body: JSON.stringify({
+    metadataChanged: false,
+    lines: [{ ...savedLine, action: "existing", status: "confirmed", selectedForIngress: true }],
+    deletedLineIds: [],
+    reviewedLineIds: [savedLine.id],
+  }),
+});
+assert.equal(reactivatedOriginal.response.status, 200, JSON.stringify(reactivatedOriginal.body));
+assert.notEqual(reactivatedOriginal.body.lines[0].status, "ignored");
+
 const reversal = await call(`/api/inventory-intake/operations/ingress-package-0001/reverse`, {
   method: "POST",
   body: JSON.stringify({ operationId: "reversal-package-0001", reason: "Prueba de ingreso incorrecto" }),
@@ -355,10 +385,109 @@ const secondReversal = await call(`/api/inventory-intake/operations/ingress-pack
 });
 assert.equal(secondReversal.response.status, 409);
 
+const packageAfterReversal = await analyze({ id: 5, fileName: "other-store.pdf", text: "fingerprint recovery" });
+assert.equal(packageAfterReversal.response.status, 200);
+assert.equal(packageAfterReversal.body.document.id, packageInvoice.body.document.id);
+assert.equal(packageAfterReversal.body.document.status, "partial");
+assert.equal(packageAfterReversal.body.lines[0].activeQuantity, 0);
+assert.equal(packageAfterReversal.body.lines[0].availableQuantity, 6);
+assert.equal(packageAfterReversal.body.lines[0].hasReversals, true);
+assert.equal(packageAfterReversal.body.lines[0].action, "existing");
+const packageReingress = await call(`/api/inventory-intake/${packageInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({
+    operationId: "ingress-package-0002",
+    lines: [{ ...packageAfterReversal.body.lines[0], requestedQuantity: 6, selected: true }],
+  }),
+});
+assert.equal(packageReingress.response.status, 200, JSON.stringify(packageReingress.body));
+assert.equal((await call("/api/products?code=5901234123457")).body.product.quantityAvailable, 6);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_movements WHERE document_line_id=?").bind(packageInvoice.body.lines[0].id).first()).total), 3);
+const omittedHistoryLine = {
+  ...packageAfterReversal.body.lines[0],
+  id: "iline-history-omitted",
+  lineKey: "invoice-history-omitted",
+  originalDescription: "Línea original no agregada",
+  name: "Línea original no agregada",
+  receivedQuantity: 1,
+  billedQuantity: 1,
+  unitsPerPackage: 1,
+  totalToAdd: 1,
+  barcode: "4006381333931",
+  canonicalBarcode: "04006381333931",
+  action: "ignore",
+  status: "ignored",
+  selectedForIngress: false,
+  matchProductId: null,
+  matchNonInventoryId: null,
+};
+const savedOmittedHistoryLine = await call(`/api/inventory-intake/${packageInvoice.body.document.id}`, {
+  method: "PUT",
+  body: JSON.stringify({ metadataChanged: false, lines: [omittedHistoryLine], reviewedLineIds: [omittedHistoryLine.id], deletedLineIds: [] }),
+});
+assert.equal(savedOmittedHistoryLine.response.status, 200, JSON.stringify(savedOmittedHistoryLine.body));
+assert.equal(savedOmittedHistoryLine.body.lines[0].status, "ignored");
+
+const reverseAmazon = await call(`/api/inventory-intake/operations/${confirmId}/reverse`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "reversal-amazon-0001", reason: "Probar reingreso por saldo neto" }),
+});
+assert.equal(reverseAmazon.response.status, 200, JSON.stringify(reverseAmazon.body));
+assert.equal((await call("/api/products?code=036000291452")).body.product.quantityAvailable, 10);
+const amazonAfterReverse = await analyze({ id: 1, fileName: "amazon-invoice.pdf", text: "fingerprint recovery" });
+assert.equal(amazonAfterReverse.body.lines[0].activeQuantity, 0);
+assert.equal(amazonAfterReverse.body.lines[0].availableQuantity, 5);
+assert.equal(amazonAfterReverse.body.document.status, "partial");
+const amazonReingress = await call(`/api/inventory-intake/${amazon.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "ingress-amazon-0002", lines: [{ ...amazonAfterReverse.body.lines[0], requestedQuantity: 5, selected: true }] }),
+});
+assert.equal(amazonReingress.response.status, 200, JSON.stringify(amazonReingress.body));
+assert.equal((await call("/api/products?code=036000291452")).body.product.quantityAvailable, 15);
+const reverseAmazonAgain = await call(`/api/inventory-intake/operations/ingress-amazon-0002/reverse`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "reversal-amazon-0002", reason: "Preparar prueba concurrente" }),
+});
+assert.equal(reverseAmazonAgain.response.status, 200, JSON.stringify(reverseAmazonAgain.body));
+const amazonForRace = await analyze({ id: 1, fileName: "amazon-invoice.pdf", text: "fingerprint recovery" });
+assert.equal(amazonForRace.body.lines[0].availableQuantity, 5);
+const raceIds = ["ingress-amazon-race-a", "ingress-amazon-race-b"];
+const raceResults = await Promise.all(raceIds.map((operationId) => call(`/api/inventory-intake/${amazon.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId, lines: [{ ...amazonForRace.body.lines[0], requestedQuantity: 5, selected: true }] }),
+})));
+assert.deepEqual(raceResults.map((result) => result.response.status).sort((left, right) => left - right), [200, 409]);
+assert.ok(["INVENTORY_QUANTITY_EXCEEDS_AVAILABLE", "INVENTORY_LINE_ALREADY_CONFIRMED"]
+  .includes(raceResults.find((result) => result.response.status === 409).body.code));
+assert.equal((await call("/api/products?code=036000291452")).body.product.quantityAvailable, 15);
+const successfulRaceId = raceIds[raceResults.findIndex((result) => result.response.status === 200)];
+const raceRetry = await call(`/api/inventory-intake/${amazon.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: successfulRaceId, lines: [{ ...amazonForRace.body.lines[0], requestedQuantity: 5, selected: true }] }),
+});
+assert.equal(raceRetry.response.status, 200);
+assert.equal(raceRetry.body.idempotent, true);
+const amazonFinal = await analyze({ id: 1, fileName: "amazon-invoice.pdf", text: "fingerprint recovery" });
+assert.equal(amazonFinal.body.lines[0].activeQuantity, 5);
+assert.equal(amazonFinal.body.lines[0].availableQuantity, 0);
+assert.equal(amazonFinal.body.lines[0].reversedQuantity, 10);
+assert.equal(amazonFinal.body.document.status, "processed");
+assert.equal(Number((await DB.prepare("SELECT COALESCE(SUM(quantity_change),0) AS total FROM inventory_movements WHERE document_line_id=?").bind(amazon.body.lines[0].id).first()).total), 5);
+
 const history = await call("/api/inventory-intake?history=1");
 assert.equal(history.response.status, 200);
 assert.ok(history.body.operations.some((operation) => operation.id === "ingress-package-0001"));
 assert.ok(history.body.operations.some((operation) => operation.id === "reversal-package-0001"));
+assert.equal(history.body.documents.filter((invoice) => invoice.id === packageInvoice.body.document.id).length, 1);
+const packageHistory = history.body.documents.find((invoice) => invoice.id === packageInvoice.body.document.id);
+assert.equal(packageHistory.lines.length, 2);
+assert.equal(packageHistory.lines.filter((line) => line.status === "ignored").length, 1);
+assert.equal(packageHistory.lines.filter((line) => line.activeQuantity === 6).length, 1);
+assert.equal(packageHistory.lines.filter((line) => line.hasReversals).length, 1);
+assert.equal(packageHistory.lines.find((line) => line.hasReversals).movementHistory.length, 3);
+assert.equal(packageHistory.pendingLines, 0);
+assert.equal(packageHistory.omittedLines, 1);
+assert.equal(history.body.documents.filter((invoice) => invoice.id === amazon.body.document.id).length, 1);
 
 DB.close();
-console.log("Invoice recognition, additive inventory, duplicate protection, package conversion, move, history, and reversal checks passed");
+console.log("Invoice recognition, reversible omission, net quantity reingress, concurrency limits, invoice-grouped history, and reversal checks passed");

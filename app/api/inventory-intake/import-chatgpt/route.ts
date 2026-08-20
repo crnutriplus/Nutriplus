@@ -86,6 +86,19 @@ async function restoreMissingProcessedLines(db: D1Database, documentId: string, 
     representedMovementLines.add(targetLineId);
     claimedKeys.add(parsedLine.lineKey);
   }
+  for (const parsedLine of imported.parsedInvoice.lines) {
+    if (existingByKey.has(parsedLine.lineKey) || claimedKeys.has(parsedLine.lineKey)) continue;
+    const restored = resolveParsedLine({
+      id: `iline-${crypto.randomUUID()}`,
+      line: parsedLine,
+      provider: imported.parsedInvoice.provider,
+      products: products.results as never[],
+      quotes: quotes.results as never[],
+      aliases: aliases.results as never[],
+    });
+    statements.push(insertLineStatement(db, documentId, restored, now, imported.parsedInvoice.lines.indexOf(parsedLine)));
+    claimedKeys.add(parsedLine.lineKey);
+  }
   if (statements.length) await db.batch(statements);
 }
 
@@ -115,9 +128,12 @@ async function recoverExistingImport(db: D1Database, documentId: string, importe
       "El análisis no corresponde a la factura",
     );
   }
-  const processedLines = loaded.lines.filter((line) => Boolean(line.processedOperationId) || line.status === "processed").length;
+  const processedLines = loaded.lines.filter((line) => line.status !== "ignored"
+    && Number(line.originalQuantity ?? line.totalToAdd) > 0
+    && Number(line.availableQuantity ?? 0) === 0).length;
   const ignoredLines = loaded.lines.filter((line) => line.action === "ignore" || line.status === "ignored").length;
-  const pendingLines = Math.max(0, loaded.lines.length - processedLines - ignoredLines);
+  const pendingLines = loaded.lines.filter((line) => line.status !== "ignored"
+    && Number(line.availableQuantity ?? line.totalToAdd) > 0).length;
   const recoveryState = pendingLines === 0 ? "completed" : processedLines > 0 || ignoredLines > 0 || loaded.document.status === "partial" ? "partial" : "draft";
   const notice = recoveryState === "completed" ? {
     type: "info",

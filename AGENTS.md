@@ -49,7 +49,7 @@ No considerar terminada una implementación si no compila, falla TypeScript o li
 
 ## 4. Versionado
 
-- La versión pública vive en `lib/public-version.ts` y avanza `2.9 → 2.10 → 2.11 → 2.12`.
+- La versión pública vive en `lib/public-version.ts` y avanza `2.9 → 2.10 → 2.11 → 2.12 → 2.13`.
 - `package.json` expresa la misma versión como SemVer (`2.10.0`, por ejemplo).
 - No usar `2.9.1`, `2.9.2` ni el número de checkpoint/deployment como versión pública salvo instrucción expresa.
 - Checkpoint, deployment y commit son identificadores técnicos independientes; usar siempre los valores realmente generados.
@@ -74,6 +74,15 @@ No considerar terminada una implementación si no compila, falla TypeScript o li
 - Sanitizar entradas y evitar conservar información sensible innecesaria.
 - Seguir la política de logging de `SECURITY.md`: registrar contexto mínimo y nunca documentos completos ni encabezados de autenticación.
 - Las futuras integraciones (Poket, WhatsApp u otras) deben usar secretos de servidor propios, mínimo privilegio y autorización explícita; no inventar credenciales ni contratos.
+
+### Facturas: trazabilidad y saldo por línea
+
+- Cerrar una factura es una acción de interfaz: nunca debe borrar el documento, eliminar el borrador, revertir inventario ni perder progreso persistido.
+- Las líneas originales de una factura no se eliminan mediante acciones normales. Se conservan y se marcan como `ignored`/omitidas de forma reversible; solo una línea manual adicional puede eliminarse cuando no tiene movimientos.
+- `processed_operation_id` es una referencia histórica, no la fuente de verdad de disponibilidad.
+- La cantidad activa de una línea es la suma neta de sus movimientos completados; la cantidad disponible es `max(0, cantidad_original - cantidad_activa)`.
+- Un ingreso, su reversa y un reingreso legítimo deben coexistir en el historial. La idempotencia por `operationId` y la protección transaccional de capacidad deben impedir que la cantidad activa supere la factura aun con confirmaciones concurrentes.
+- La jerarquía principal del historial de Facturas es `factura → líneas originales → movimientos`, sin perder la auditoría técnica de cada operación.
 
 ## 7. OpenAI y consumo
 

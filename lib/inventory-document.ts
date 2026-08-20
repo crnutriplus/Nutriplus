@@ -1,5 +1,6 @@
 import { invoiceAiUsageSummary } from "./invoice-ai";
 import { lineFromRow, type IntakeLineDto } from "./inventory-intake";
+import { applyLineProgress, conceptualDocumentStatus, loadDocumentMovementRows } from "./inventory-line-progress";
 
 function jsonObject(value: unknown) {
   try {
@@ -123,14 +124,17 @@ export async function attachInventoryMatches(db: D1Database, lines: IntakeLineDt
 export async function loadIntakeDocument(db: D1Database, documentId: string) {
   const documentRow = await db.prepare("SELECT * FROM inventory_documents WHERE id=?").bind(documentId).first<Record<string, unknown>>();
   if (!documentRow) return null;
-  const [lineRows, fileRows, analysisRows, usage] = await Promise.all([
+  const [lineRows, fileRows, analysisRows, usage, movementRows] = await Promise.all([
     db.prepare("SELECT * FROM inventory_document_lines WHERE document_id=? ORDER BY line_index,page_number,id").bind(documentId).all<Record<string, unknown>>(),
     db.prepare("SELECT * FROM inventory_document_files WHERE document_id=? ORDER BY file_index").bind(documentId).all<Record<string, unknown>>(),
     db.prepare("SELECT * FROM invoice_ai_analyses WHERE document_id=? ORDER BY analysis_number,created_at,id")
       .bind(documentId).all<Record<string, unknown>>(),
     invoiceAiUsageSummary(db),
+    loadDocumentMovementRows(db, [documentId]),
   ]);
-  const lines = await attachInventoryMatches(db, lineRows.results.map(lineFromRow));
+  const lines = await attachInventoryMatches(db, applyLineProgress(lineRows.results.map(lineFromRow), movementRows));
+  const document = intakeDocumentFromRow(documentRow);
+  document.status = conceptualDocumentStatus(lines, document.status);
   let documentAnalysisCostUsd = 0;
   const analyses = analysisRows.results.map((row) => {
     documentAnalysisCostUsd += Number(row.estimated_cost_microusd || 0) / 1_000_000;
@@ -138,7 +142,7 @@ export async function loadIntakeDocument(db: D1Database, documentId: string) {
   }).filter((row): row is NonNullable<ReturnType<typeof invoiceAnalysisFromRow>> => Boolean(row));
   const activeAnalysis = analyses.find((row) => row.id === String(documentRow.active_analysis_id || "")) || analyses.at(-1) || null;
   return {
-    document: intakeDocumentFromRow(documentRow),
+    document,
     lines,
     files: fileRows.results.map((row) => ({
       id: String(row.id),

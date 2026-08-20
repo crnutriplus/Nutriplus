@@ -19,9 +19,10 @@ npm run build
 - `tests/invoice-reader-unit.test.mjs`: normalización/lectura local de facturas;
 - `tests/invoice-ai-unit.test.mjs`: configuración, modelos y estimación de consumo;
 - `tests/chatgpt-invoice-import-unit.test.mjs`: parser y seguridad del ZIP;
+- `tests/inventory-migration-0014.integration.mjs`: migración desde el índice de v2.11, reingreso tras reversa, límites por saldo y compatibilidad con ingreso rápido;
 - `tests/api-integration.mjs`: productos, ajustes, quotes e importaciones;
 - `tests/concurrency-integration.mjs`: idempotencia y concurrencia;
-- `tests/inventory-intake-integration.mjs`: documentos, confirmación y reversas;
+- `tests/inventory-intake-integration.mjs`: documentos, confirmación, cierre no destructivo a nivel de interfaz, omisión/reactivación, saldo neto, reingreso, concurrencia, historial por factura y reversas;
 - `tests/export-integration.mjs`: Excel/PDF exportados.
 
 Las integraciones ejecutan el artefacto construido con dobles locales de D1/R2 cuando corresponde. No modifican producción.
@@ -34,7 +35,7 @@ Las integraciones ejecutan el artefacto construido con dobles locales de D1/R2 c
 NUTRIPLUS_CHATGPT_IMPORT_ZIP=/ruta/al/NutriPlus_*.zip npm run test:chatgpt-import
 ```
 
-Valida un ZIP real contra el endpoint construido y comprueba borrador, deduplicación, hash, cero llamadas/costo y ausencia de modificación del inventario antes de confirmar. El test instala un `fetch` que falla si el flujo intenta llamar a OpenAI.
+Valida un ZIP real contra el endpoint construido y comprueba borrador, deduplicación, hash, recuperación parcial/completa, reversa, reingreso, historial agrupado, cero llamadas/costo y ausencia de modificación del inventario antes de confirmar. El test instala un `fetch` que falla si el flujo intenta llamar a OpenAI.
 
 ### Contrato de facturas reales sin consumo
 
@@ -63,7 +64,7 @@ No ejecutar una llamada pagada real para probar interfaz, errores, validación o
 ## Qué falta
 
 - no existe una suite E2E de navegador que recorra todos los botones del deployment;
-- no hay prueba automática de migración desde cada snapshot histórico de D1;
+- la migración crítica `0014` sí tiene una prueba automática con datos representativos de v2.11; no existe todavía una matriz desde cada snapshot histórico de D1;
 - no hay prueba automatizada de backup integral/recuperación D1+R2 porque ese mecanismo aún no existe;
 - las pruebas opcionales dependen de rutas de fixtures externas y no forman parte de `npm test`.
 

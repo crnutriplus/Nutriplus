@@ -4,7 +4,7 @@
 
 NutriPlus usa Cloudflare D1, compatible con SQLite. Drizzle ORM describe el esquema en `db/schema.ts`, mientras que los Route Handlers usan tanto Drizzle como sentencias preparadas de D1.
 
-Las migraciones versionadas están en `drizzle/` y el journal registra 13 entradas, de `0000_fluffy_shinobi_shaw.sql` a `0012_breezy_bullseye.sql`.
+Las migraciones versionadas están en `drizzle/` y el journal registra 15 entradas, de `0000_fluffy_shinobi_shaw.sql` a `0014_woozy_madrox.sql`.
 
 ## Entidades
 
@@ -46,6 +46,15 @@ La huella de `inventory_documents` es única. La combinación documento/número 
 | `inventory_movements` | Cambio por producto, cantidad previa, delta y cantidad resultante. |
 
 Una confirmación genera una operación y uno o más movimientos. Una reversa conserva el ingreso original y crea otra operación con movimientos contrarios, enlazada mediante `reversal_of`/`original_movement_id`.
+
+La disponibilidad de una línea no depende del booleano histórico `processed_operation_id`. Se calcula así:
+
+```text
+cantidad_activa = suma(quantity_change) de movimientos completados de la línea
+cantidad_disponible = max(0, total_to_add - cantidad_activa)
+```
+
+La migración `0014` elimina el índice `inventory_movements_invoice_line_unique`, que impedía un reingreso legítimo después de una reversa. Lo reemplaza por triggers que bloquean transaccionalmente una suma activa mayor que `total_to_add` o menor que cero. El índice `(operation_id, document_line_id)` continúa garantizando una sola mutación de esa línea dentro del mismo `operationId`.
 
 ### Importaciones, respaldos y eliminaciones
 

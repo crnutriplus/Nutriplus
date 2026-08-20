@@ -238,9 +238,6 @@ export const inventoryMovements = sqliteTable("inventory_movements", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("inventory_movements_operation_line_unique").on(table.operationId, table.documentLineId),
-  uniqueIndex("inventory_movements_invoice_line_unique")
-    .on(table.documentLineId)
-    .where(sql`${table.originalMovementId} IS NULL AND ${table.documentLineId} LIKE 'iline-%'`),
   index("inventory_movements_product_idx").on(table.productId, table.createdAt),
   index("inventory_movements_operation_idx").on(table.operationId, table.id),
 ]);

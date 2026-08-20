@@ -13,7 +13,7 @@ Funciones implementadas y comprobadas en el código:
 - importación de inventario desde Excel, historial y respaldo previo de productos;
 - exportación del inventario a Excel y PDF;
 - ingreso de inventario por factura en tres modalidades: Automático con IA, Manual e Importar análisis de ChatGPT;
-- revisión, deduplicación, borradores, confirmación explícita, movimientos y reversa de ingresos;
+- revisión, deduplicación, borradores, cierre no destructivo, omisión reversible de líneas, confirmación explícita, movimientos, reversa y reingreso por saldo neto;
 - historial de análisis de facturas y control estimado de consumo de OpenAI.
 
 No existen todavía módulos funcionales de Pedidos, CRM, Poket, portal de clientes, WhatsApp ni agente comercial. Que alguno figure en una herramienta de planificación no lo convierte en parte de esta aplicación.
@@ -103,6 +103,8 @@ No se documentan valores de secretos. Consulte [docs/ENVIRONMENT.md](docs/ENVIRO
 - **Automático con IA:** conserva la factura completa, usa Responses API con Structured Outputs, registra modelo/uso/costo y cae a Manual ante un fallo.
 - **Manual:** no llama a OpenAI; permite completar o revisar las líneas localmente.
 - **Importar análisis de ChatGPT:** recibe un ZIP con `analysis.json` y exactamente una factura, valida su estructura y SHA-256, registra `api_calls = 0` y `api_cost = 0`, y crea un borrador. El inventario cambia únicamente después de **Confirmar ingreso**.
+
+El historial se organiza por factura y conserva todas sus líneas. Para cada una se calcula `cantidad activa = suma neta de movimientos completados` y `cantidad disponible = max(0, cantidad original − cantidad activa)`. Cerrar la vista no borra el documento; una línea original puede omitirse y reactivarse, pero no eliminarse de forma normal.
 
 ## Base de datos, respaldos y despliegue
 

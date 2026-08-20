@@ -5,7 +5,18 @@ NutriPlus mantiene dos identificadores independientes:
 - **Versión pública:** se muestra a las personas usuarias y avanza como `2.3`, `2.4`, `2.5`, etc.
 - **Checkpoint / commit / deployment:** identifica técnicamente un estado del código. Nunca es el número público de NutriPlus.
 
-`package.json` usa SemVer, por lo que representa la versión pública `2.11` como `2.11.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+`package.json` usa SemVer, por lo que representa la versión pública `2.12` como `2.12.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+
+## 2.12 — 2026-08-19
+
+- La X de Facturas ahora cierra únicamente la factura activa y limpia su estado de interfaz; no borra el borrador, no revierte inventario y solo advierte cuando existen ediciones locales sin guardar.
+- “Cambiar paquete” se normalizó como “Cambiar factura”. Cargar otra factura no elimina la anterior.
+- Las líneas originales ya no se eliminan: pueden marcarse como Omitidas y reactivarse, conservando cantidad, identificadores y trazabilidad. Solo las líneas manuales sin movimientos mantienen eliminación explícita.
+- La disponibilidad se calcula por cantidad neta: suma de ingresos menos reversas. Una reversa vuelve a habilitar únicamente el saldo disponible y permite `ingreso → reversa → reingreso` sin borrar movimientos.
+- El índice único por línea de v2.11 se reemplazó mediante la migración `0014` por límites transaccionales de capacidad y saldo no negativo, manteniendo idempotencia por operación y protección frente a confirmaciones concurrentes.
+- El estado de la factura se recalcula como borrador, revisión, parcial o procesada según cantidades activas, pendientes y omitidas, incluso para datos creados antes de esta versión.
+- El historial principal ahora se agrupa factura por factura y muestra todas las líneas originales, cantidades de factura/activas/disponibles, omisiones, reversas y movimientos auditables.
+- Las pruebas cubren cierre no destructivo, texto visible, omitir/reactivar, bloqueo de eliminación original, reingreso después de reversa, carrera concurrente, historial agrupado y recuperación `CHATGPT_IMPORT` con cero llamadas y costo cero.
 
 ## 2.11 — 2026-08-19
 
@@ -63,8 +74,8 @@ Un checkpoint guardado no prueba por sí solo que ese estado haya sido desplegad
 
 La evidencia disponible permite afirmar que el checkpoint 20 tuvo un deployment exitoso y que el 21 era la versión desplegada inmediatamente antes de esta normalización. Sites expone el historial completo de checkpoints guardados, pero no un listado histórico equivalente de todos los deployments; por eso no se atribuye un despliegue independiente a los demás checkpoints cuando no puede probarse. Los checkpoints 1 y 11 están identificados expresamente como prueba privada y parche intermedio, respectivamente, y no como publicaciones públicas independientes.
 
-La publicación actual de este documento corresponde a NutriPlus **v2.11**. Su checkpoint y commit técnicos quedan registrados por Sites y Git al guardar la publicación; no se incrustan en el propio commit porque un commit no puede contener su propio hash.
+La publicación actual de este documento corresponde a NutriPlus **v2.12**. Su checkpoint y commit técnicos quedan registrados por Sites y Git al guardar la publicación; no se incrustan en el propio commit porque un commit no puede contener su propio hash.
 
 ## Regla futura
 
-La próxima implementación publicada después de `2.11` será `2.12`, luego `2.13`, y así sucesivamente. No se usarán `2.0.3`, `2.0.4` ni números de checkpoint o deployment como versiones públicas.
+La próxima implementación publicada después de `2.12` será `2.13`, luego `2.14`, y así sucesivamente. No se usarán `2.0.3`, `2.0.4` ni números de checkpoint o deployment como versiones públicas.

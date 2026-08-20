@@ -3,6 +3,7 @@ import { errorResponse } from "@/lib/api-helpers";
 import { validateBarcode } from "@/lib/barcodes";
 import { loadIntakeDocument } from "@/lib/inventory-document";
 import { lineFromRow } from "@/lib/inventory-intake";
+import { documentStatusStatement, loadDocumentMovementRows, progressForLine } from "@/lib/inventory-line-progress";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   try {
@@ -27,6 +28,14 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
     const db = getD1();
     const document = await db.prepare("SELECT * FROM inventory_documents WHERE id=?").bind(documentId).first<Record<string, unknown>>();
     if (!document) return Response.json({ error: "No se encontró la factura." }, { status: 404 });
+    const storedLines = await db.prepare("SELECT * FROM inventory_document_lines WHERE document_id=?")
+      .bind(documentId).all<Record<string, unknown>>();
+    const storedById = new Map(storedLines.results.map((line) => [String(line.id), line]));
+    const movementRows = await loadDocumentMovementRows(db, [documentId]);
+    const progressById = new Map(storedLines.results.map((line) => {
+      const dto = lineFromRow(line);
+      return [dto.id, progressForLine(dto, movementRows)] as const;
+    }));
     const now = new Date().toISOString();
     const text = (value: unknown, max = 500) => typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, max) : "";
     const statements: D1PreparedStatement[] = [];
@@ -42,13 +51,25 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
       ? payload.reviewedLineIds.map((value) => text(value, 100)).filter(Boolean).slice(0, 500)
       : []);
     const reviewedLineIds = new Set<string>();
+    const protectedOriginalIds = deletedLineIds.filter((id) => {
+      const line = storedById.get(id);
+      return line && !String(line.line_key || "").startsWith("manual-");
+    });
+    if (protectedOriginalIds.length) return Response.json({
+      error: "Una línea original de factura no se puede eliminar. Usá “Omitir” para conservarla en el historial y poder reactivarla después. No se modificó el inventario.",
+      title: "La línea original debe conservarse",
+      code: "INVENTORY_ORIGINAL_LINE_DELETE_BLOCKED",
+      lineIds: protectedOriginalIds,
+    }, { status: 409 });
     deletedLineIds.forEach((id) => statements.push(db.prepare(`DELETE FROM inventory_document_lines
-      WHERE id=? AND document_id=? AND processed_operation_id IS NULL`).bind(id, documentId)));
+      WHERE id=? AND document_id=? AND processed_operation_id IS NULL AND line_key LIKE 'manual-%'`).bind(id, documentId)));
     const lines = Array.isArray(payload.lines) ? payload.lines.slice(0, 500) : [];
     lines.forEach((line, lineIndex) => {
       const storedLineIndex = Number(line.lineIndex);
       const orderedLineIndex = Number.isInteger(storedLineIndex) && storedLineIndex >= 0 && storedLineIndex < 10_000 ? storedLineIndex : lineIndex;
       const id = text(line.id, 100) || `iline-${crypto.randomUUID()}`;
+      const stored = storedById.get(id);
+      const progress = progressById.get(id);
       const name = text(line.name, 500) || "Producto pendiente de identificar";
       const received = line.receivedQuantity == null || line.receivedQuantity === "" ? null : Number(line.receivedQuantity);
       const billed = line.billedQuantity == null || line.billedQuantity === "" ? null : Number(line.billedQuantity);
@@ -91,7 +112,20 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
         level: text(line.barcodeLevel, 30),
         warnings: Array.isArray(line.warnings) ? line.warnings.map(String).slice(0, 30) : [],
       };
+      if (values.action === "ignore" && progress && progress.activeQuantity > 0) {
+        throw new Error(`INVENTORY_ACTIVE_LINE_CANNOT_BE_OMITTED:${name}`);
+      }
       if (values.reviewSavedAt) reviewedLineIds.add(id);
+      if (stored?.processed_operation_id) {
+        statements.push(db.prepare(`UPDATE inventory_document_lines SET
+          selected_for_ingress=?,review_saved_at=COALESCE(review_saved_at,?),status=?,action=?,
+          match_product_id=COALESCE(?,match_product_id),match_non_inventory_id=?,updated_at=?
+          WHERE id=? AND document_id=?`).bind(
+          values.selected, values.reviewSavedAt, values.status, values.action,
+          values.productId, values.quoteId, now, values.id, documentId,
+        ));
+        return;
+      }
       statements.push(db.prepare(`INSERT INTO inventory_document_lines (
         id,document_id,line_key,line_index,original_description,name,brand,presentation,size,flavor,concentration,billed_quantity,
         received_quantity,units_per_package,total_to_add,barcode,canonical_barcode,barcode_type,secondary_id,secondary_type,
@@ -124,16 +158,24 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
         values.level || null, JSON.stringify(values.warnings), now, now,
       ));
     });
-    if (reviewedLineIds.size) {
-      statements.push(db.prepare(`UPDATE inventory_documents SET
-        status=CASE WHEN status='draft' THEN 'reviewing' ELSE status END,updated_at=? WHERE id=?`).bind(now, documentId));
+    if (statements.length) {
+      statements.push(documentStatusStatement(db, documentId, now));
+      await db.batch(statements);
     }
-    if (statements.length) await db.batch(statements);
     const responseIds = [...new Set(lines.map((line) => text(line.id, 100)).filter(Boolean))];
-    const updated = responseIds.length
-      ? await db.prepare(`SELECT * FROM inventory_document_lines WHERE document_id=?
-          AND id IN (SELECT value FROM json_each(?)) ORDER BY line_index,page_number,id`).bind(documentId, JSON.stringify(responseIds)).all<Record<string, unknown>>()
-      : { results: [] as Record<string, unknown>[] };
-    return Response.json({ saved: true, lines: updated.results.map(lineFromRow), reviewedLineIds: [...reviewedLineIds] });
-  } catch (error) { return errorResponse(error); }
+    const loaded = await loadIntakeDocument(db, documentId);
+    const updated = loaded?.lines.filter((line) => responseIds.includes(line.id)) || [];
+    return Response.json({ saved: true, document: loaded?.document, lines: updated, reviewedLineIds: [...reviewedLineIds] });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.startsWith("INVENTORY_ACTIVE_LINE_CANNOT_BE_OMITTED:")) {
+      const name = message.slice("INVENTORY_ACTIVE_LINE_CANNOT_BE_OMITTED:".length);
+      return Response.json({
+        error: `“${name}” todavía tiene unidades activas en inventario. Revertí primero su ingreso si necesitás dejarla como omitida. No se modificó el inventario.`,
+        title: "La línea ya tiene inventario ingresado",
+        code: "INVENTORY_ACTIVE_LINE_CANNOT_BE_OMITTED",
+      }, { status: 409 });
+    }
+    return errorResponse(error);
+  }
 }

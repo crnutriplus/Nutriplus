@@ -62,6 +62,30 @@ export type IntakeLineDto = {
   suggestions: IntakeMatch[];
   warnings: string[];
   processedOperationId: string;
+  originalQuantity?: number;
+  activeQuantity?: number;
+  availableQuantity?: number;
+  reversedQuantity?: number;
+  hasReversals?: boolean;
+  progressInconsistent?: boolean;
+  isOriginalLine?: boolean;
+  movementHistory?: Array<{
+    id: string;
+    operationId: string;
+    documentLineId: string;
+    operationType: string;
+    reversalOf: string;
+    originalMovementId: string;
+    productId: number;
+    productName: string;
+    barcode: string;
+    previousQuantity: number;
+    quantityChange: number;
+    resultingQuantity: number;
+    reason: string;
+    confirmedBy: string;
+    confirmedAt: string;
+  }>;
 };
 
 type ProductIdentityRow = Record<string, unknown> & {

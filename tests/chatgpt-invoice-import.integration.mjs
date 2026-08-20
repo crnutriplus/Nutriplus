@@ -274,10 +274,42 @@ try {
   assert.ok(completedRecovery.body.lines.every((line) => line.status === "processed"));
   assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_movements WHERE operation_id IN (?,?)")
     .bind("ingress-chatgpt-partial-1", "ingress-chatgpt-partial-2").first()).total), 2);
+  const reversedSecond = await callJson("/api/inventory-intake/operations/ingress-chatgpt-partial-2/reverse", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ operationId: "reversal-chatgpt-partial-2", reason: "Prueba de reversa y reingreso" }),
+  });
+  assert.equal(reversedSecond.response.status, 200, JSON.stringify(reversedSecond.body));
+  assert.equal((await DB.prepare("SELECT quantity_available FROM products WHERE code=?").bind("5901234123457").first()).quantity_available, 0);
+  const reversedRecovery = await uploadBytes(partialZip);
+  assert.equal(reversedRecovery.response.status, 200, JSON.stringify(reversedRecovery.body));
+  assert.equal(reversedRecovery.body.recoveryState, "partial");
+  assert.equal(reversedRecovery.body.processedLines, 1);
+  assert.equal(reversedRecovery.body.pendingLines, 1);
+  const availableAgain = reversedRecovery.body.lines.find((line) => line.lineKey === secondLine.lineKey);
+  assert.equal(availableAgain.activeQuantity, 0);
+  assert.equal(availableAgain.availableQuantity, 2);
+  assert.equal(availableAgain.hasReversals, true);
+  assert.equal(availableAgain.action, "existing");
+  const reingressedSecond = await callJson(`/api/inventory-intake/${partialImport.body.document.id}/confirm`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ operationId: "ingress-chatgpt-partial-3", lines: [{ ...availableAgain, barcodeConfirmed: true, barcodeLevel: "unit", requestedQuantity: 2, selected: true }] }),
+  });
+  assert.equal(reingressedSecond.response.status, 200, JSON.stringify(reingressedSecond.body));
+  assert.equal((await DB.prepare("SELECT quantity_available FROM products WHERE code=?").bind("5901234123457").first()).quantity_available, 2);
+  assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_movements WHERE document_line_id=?").bind(availableAgain.id).first()).total), 3);
+  const completedAgain = await uploadBytes(partialZip);
+  assert.equal(completedAgain.body.recoveryState, "completed");
+  assert.equal(completedAgain.body.pendingLines, 0);
+  assert.equal(completedAgain.body.lines.find((line) => line.id === availableAgain.id).activeQuantity, 2);
   const history = await callJson("/api/inventory-intake?history=1");
   assert.equal(history.response.status, 200);
   assert.ok(history.body.operations.some((operation) => operation.id === "ingress-chatgpt-partial-1"));
   assert.ok(history.body.operations.some((operation) => operation.id === "ingress-chatgpt-partial-2"));
+  assert.ok(history.body.operations.some((operation) => operation.id === "reversal-chatgpt-partial-2"));
+  assert.ok(history.body.operations.some((operation) => operation.id === "ingress-chatgpt-partial-3"));
+  assert.equal(history.body.documents.filter((invoice) => invoice.id === partialImport.body.document.id).length, 1);
 
   const invalidZip = await uploadBytes(encoder.encode("not a zip"));
   assert.equal(invalidZip.response.status, 400);
@@ -304,7 +336,7 @@ try {
   assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM invoice_ai_analyses WHERE analysis_origin='CHATGPT_IMPORT' AND (api_calls<>0 OR api_cost_microusd<>0)").first()).total), 0);
   assert.equal(openAiCalls, 0);
 
-  console.log("ChatGPT Import: real ZIP validation plus two-line draft/partial/completed recovery, line idempotency, actionable errors, history, zero duplicate movements, and zero OpenAI calls passed");
+  console.log("ChatGPT Import: real ZIP validation, draft/partial/completed recovery, reversal reingress, invoice history, idempotency, and zero OpenAI calls passed");
 } finally {
   delete globalThis.__NUTRIPLUS_INVOICE_AI_TEST_FETCH__;
   DB.close();

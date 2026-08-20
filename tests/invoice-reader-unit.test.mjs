@@ -28,7 +28,7 @@ test("keeps a valid SHA-256 fingerprint when Web Crypto is unavailable", () => {
   );
 });
 
-test("keeps selected invoice files available and renders errors above the intake modal", async () => {
+test("keeps invoice UI state explicit, closes without deleting, and exposes reversible line actions", async () => {
   const intakeSource = await readFile(new URL("../app/inventory-intake.tsx", import.meta.url), "utf8");
   const analyzeSource = intakeSource.slice(intakeSource.indexOf("async function analyzeFiles"), intakeSource.indexOf("async function saveDraft"));
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
@@ -36,9 +36,14 @@ test("keeps selected invoice files available and renders errors above the intake
   assert.match(styles, /\.toast\s*\{[^}]*z-index:\s*240\b/s);
   assert.match(styles, /\.intake-modal\s*\{\s*z-index:\s*130\b/);
   assert.match(intakeSource, /Confirmar código de barras/);
-  assert.match(intakeSource, /No se agregará/);
-  assert.match(intakeSource, /¿Eliminar este producto\?/);
-  assert.match(intakeSource, /¿Cancelar toda la carga\?/);
+  assert.match(intakeSource, /Cambiar factura/);
+  assert.doesNotMatch(intakeSource, /Cambiar paquete/);
+  assert.match(intakeSource, /function closeInvoiceView\(\)[\s\S]*resetInvoiceReview\(\)[\s\S]*onClose\(\)/);
+  assert.match(intakeSource, /Cerrar factura/);
+  assert.match(intakeSource, /Omitir/);
+  assert.match(intakeSource, /Reactivar/);
+  assert.match(intakeSource, /Historial de facturas/);
+  assert.doesNotMatch(intakeSource, /¿Cancelar toda la carga\?/);
   assert.match(intakeSource, /deletedLineIds/);
 });
 

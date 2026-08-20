@@ -44,7 +44,7 @@ Los 29 Route Handlers de `app/api/` gestionan:
 
 - `db/schema.ts`: definición Drizzle de las tablas.
 - `db/index.ts`: acceso a D1 y compatibilidad/inicialización en tiempo de ejecución.
-- `drizzle/`: 13 migraciones históricas (`0000` a `0012`) y snapshots.
+- `drizzle/`: 15 migraciones históricas (`0000` a `0014`) y snapshots.
 - `lib/invoice-storage.ts`: validación básica, hash y persistencia de facturas en R2.
 - `.openai/hosting.json`: bindings lógicos `DB` y `BUCKET` del proyecto de Sites.
 
@@ -55,6 +55,12 @@ Los detalles están en [DATA_MODEL.md](DATA_MODEL.md).
 OpenAI Responses API se usa exclusivamente en el análisis automático de facturas cuando `INVOICE_AI_ENABLED` está habilitado. El servidor envía el documento completo en el mecanismo admitido por la API, usa Structured Outputs y puede habilitar búsqueda web. La clave no llega al frontend.
 
 El modo Manual y `CHATGPT_IMPORT` no llaman a OpenAI. `CHATGPT_IMPORT` verifica el paquete y crea el mismo tipo de borrador que se revisa antes de confirmar.
+
+### Historial y cierre de factura
+
+La vista principal del historial se construye desde `inventory_documents`, agrega sus líneas originales y anida los movimientos completados. `processed_operation_id` se conserva como referencia histórica, pero no decide por sí solo si una línea está disponible.
+
+Cerrar una factura limpia únicamente el estado React del modal. El documento, sus líneas, análisis, archivos y movimientos continúan en D1/R2. Las líneas originales se omiten mediante `status='ignored'` y `action='ignore'`; solo una línea adicional `manual-*` sin movimientos puede borrarse.
 
 ## Flujos principales
 
@@ -75,6 +81,7 @@ Las importaciones Excel y eliminaciones masivas se modelan como jobs por filas, 
 4. Se crea o actualiza un documento `draft`; un resultado inconsistente requiere revisión.
 5. Un fallo técnico conserva factura y progreso y cambia a Manual.
 6. Solo **Confirmar ingreso** crea la operación y movimientos de inventario.
+7. La disponibilidad se deriva de la suma neta de movimientos de cada línea; una reversa conserva auditoría y vuelve a habilitar el saldo neutralizado.
 
 ### Factura manual
 
@@ -109,7 +116,7 @@ Esto es suficiente solo mientras la política de plataforma mantenga el sitio re
 ### Mejora recomendada
 
 - dividir `app/client-app.tsx` (1.909 líneas) por vistas y dominios;
-- dividir `app/inventory-intake.tsx` (1.326 líneas) por selector, carga, revisión e historial;
+- dividir `app/inventory-intake.tsx` (1.546 líneas) por selector, carga, revisión e historial;
 - separar orquestación y presentación en el endpoint de confirmación de factura;
 - definir contratos compartidos de API para reducir tipos duplicados entre frontend y servidor.
 

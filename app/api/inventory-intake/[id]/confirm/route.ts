@@ -1,6 +1,7 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { validateBarcode } from "@/lib/barcodes";
-import { descriptionSignature, descriptionsCompatible, presentationSignature } from "@/lib/inventory-intake";
+import { descriptionSignature, descriptionsCompatible, lineFromRow, presentationSignature } from "@/lib/inventory-intake";
+import { documentStatusStatement, loadDocumentMovementRows, progressForLine } from "@/lib/inventory-line-progress";
 import { normalizeName, productFromRow } from "@/lib/pricing";
 import { requestUserLabel } from "@/lib/request-user";
 
@@ -33,6 +34,7 @@ type ConfirmLine = {
   matchProductId?: unknown;
   matchNonInventoryId?: unknown;
   selected?: unknown;
+  requestedQuantity?: unknown;
 };
 
 type CleanLine = {
@@ -50,6 +52,7 @@ type CleanLine = {
   receivedQuantity: number;
   unitsPerPackage: number;
   totalToAdd: number;
+  originalTotal: number;
   barcode: string;
   canonicalBarcode: string;
   barcodeType: string;
@@ -88,6 +91,13 @@ function confirmErrorResponse(error: unknown) {
       error: "Este producto ya fue agregado al inventario desde esta factura. No se volverá a sumar.",
       title: "Producto ya ingresado",
       code: "INVENTORY_LINE_ALREADY_CONFIRMED",
+    }, { status: 409 });
+  }
+  if (/INVENTORY_LINE_CAPACITY_EXCEEDED/i.test(message)) {
+    return Response.json({
+      error: "La cantidad solicitada supera las unidades pendientes de esta factura. Volvé a cargar la factura para ver el saldo actual; no se realizaron cambios nuevos en el inventario.",
+      title: "Cantidad mayor a la disponible",
+      code: "INVENTORY_QUANTITY_EXCEEDS_AVAILABLE",
     }, { status: 409 });
   }
   if (/UNIQUE constraint failed/i.test(message)) {
@@ -191,7 +201,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (["credit_note", "return"].includes(String(document.status))) return Response.json({ error: "Una devolución o nota de crédito no puede procesarse como ingreso de inventario." }, { status: 409 });
 
     const storedLines = await db.prepare("SELECT * FROM inventory_document_lines WHERE document_id=?").bind(documentId).all<Record<string, unknown>>();
+    const movementRows = await loadDocumentMovementRows(db, [documentId]);
     const storedById = new Map(storedLines.results.map((line) => [String(line.id), line]));
+    const progressById = new Map(storedLines.results.map((line) => {
+      const dto = lineFromRow(line);
+      return [dto.id, progressForLine(dto, movementRows)] as const;
+    }));
     const productsResult = await db.prepare("SELECT * FROM products").all<Record<string, unknown>>();
     const quotesResult = await db.prepare("SELECT * FROM non_inventory_quotes").all<Record<string, unknown>>();
     const aliasesResult = await db.prepare("SELECT * FROM supplier_product_aliases").all<Record<string, unknown>>();
@@ -200,11 +215,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const errors: string[] = [];
     const alreadyProcessed = sourceLines.flatMap((source) => {
       const id = cleanText(source.id, 100);
-      const stored = storedById.get(id);
-      return stored?.processed_operation_id ? [id] : [];
+      const progress = progressById.get(id);
+      return progress && progress.originalQuantity > 0 && progress.availableQuantity === 0 ? [id] : [];
     });
     if (alreadyProcessed.length) return Response.json({
-      error: "Este producto ya fue agregado al inventario desde esta factura. No se volverá a sumar.",
+      error: "Este producto ya fue agregado completamente al inventario desde esta factura. No quedan unidades pendientes y no se volverá a sumar.",
       title: "Producto ya ingresado",
       code: "INVENTORY_LINE_ALREADY_CONFIRMED",
       lineIds: alreadyProcessed,
@@ -221,8 +236,38 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       const quantityLabel = `El producto “${name || `línea ${index + 1}`}”`;
       const receivedQuantity = cleanInteger(source.receivedQuantity, quantityLabel, 0, 100000);
       const unitsPerPackage = cleanInteger(source.unitsPerPackage, quantityLabel, 1, 10000);
-      const totalToAdd = receivedQuantity * unitsPerPackage;
+      const invoiceTotal = receivedQuantity * unitsPerPackage;
+      const progress = progressById.get(id);
+      if (progress?.progressInconsistent) {
+        throw new InventoryConfirmError(
+          `El historial de cantidades de “${name || `línea ${index + 1}`}” no es consistente con la factura. Revisá sus movimientos antes de continuar; el inventario no fue modificado.`,
+          409,
+          "INVENTORY_LINE_PROGRESS_INCONSISTENT",
+          "Historial de cantidades por revisar",
+        );
+      }
+      const requestedQuantity = source.requestedQuantity == null
+        ? invoiceTotal
+        : cleanInteger(source.requestedQuantity, quantityLabel, 1, 1_000_000);
+      const originalTotal = progress && progress.ingressQuantity > 0 ? progress.originalQuantity : invoiceTotal;
+      const totalToAdd = requestedQuantity;
       if (totalToAdd <= 0) errors.push(`La línea ${index + 1} no agrega ninguna unidad.`);
+      if (progress && totalToAdd > progress.availableQuantity) {
+        throw new InventoryConfirmError(
+          `Intentaste ingresar ${totalToAdd} unidades de “${name || `línea ${index + 1}`}”, pero solo quedan ${progress.availableQuantity} pendientes. Volvé a cargar la factura y confirmá únicamente el saldo disponible. El inventario no fue modificado.`,
+          409,
+          "INVENTORY_QUANTITY_EXCEEDS_AVAILABLE",
+          "Cantidad mayor a la disponible",
+        );
+      }
+      if (!progress && totalToAdd > originalTotal) {
+        throw new InventoryConfirmError(
+          `Intentaste ingresar más unidades que las registradas en la factura para “${name || `línea ${index + 1}`}”. Corregí la cantidad antes de continuar. El inventario no fue modificado.`,
+          409,
+          "INVENTORY_QUANTITY_EXCEEDS_AVAILABLE",
+          "Cantidad mayor a la factura",
+        );
+      }
       const billedRaw = source.billedQuantity;
       const billedQuantity = billedRaw == null || billedRaw === "" ? null : cleanInteger(billedRaw, quantityLabel, 0, 100000);
       const barcode = validateBarcode(source.barcode);
@@ -251,6 +296,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         receivedQuantity,
         unitsPerPackage,
         totalToAdd,
+        originalTotal,
         barcode: barcode.normalized || "",
         canonicalBarcode: barcode.canonical || "",
         barcodeType: barcode.type || "",
@@ -315,7 +361,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         const alias = aliasesResult.results.find((candidate) => String(candidate.provider) === String(document.provider)
           && String(candidate.secondary_type) === line.secondaryType
           && String(candidate.secondary_id).toLowerCase() === line.secondaryId.toLowerCase());
-        if (alias && (String(alias.canonical_barcode) !== line.canonicalBarcode
+        const progress = progressById.get(line.id);
+        const sameHistoricalProduct = Boolean(alias && progress?.ingressQuantity
+          && Number(alias.product_id) === line.matchProductId
+          && String(alias.canonical_barcode) === line.canonicalBarcode);
+        if (alias && !sameHistoricalProduct && (String(alias.canonical_barcode) !== line.canonicalBarcode
           || !descriptionsCompatible(String(alias.description_signature), line.name, String(alias.presentation_signature || ""), line.presentation))) {
           errors.push(`El identificador secundario de la línea ${index + 1} corresponde a otra presentación o código.`);
         }
@@ -356,7 +406,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
           line.id, documentId, line.lineKey, line.lineIndex, line.originalDescription, line.name, line.brand || null, line.presentation || null,
           line.size || null, line.flavor || null, line.concentration || null, line.billedQuantity, line.receivedQuantity, line.unitsPerPackage,
-          line.totalToAdd, line.barcode, line.canonicalBarcode, line.barcodeType, line.secondaryId || null,
+          line.originalTotal, line.barcode, line.canonicalBarcode, line.barcodeType, line.secondaryId || null,
           line.secondaryType || null, line.barcodeMethod, line.barcodeSource, line.barcodeSourceUrl || null,
           line.barcodeSourceTitle || null, JSON.stringify(line.barcodeDifferences), line.barcodeLookupStatus,
           JSON.stringify(line.fieldEvidence), line.barcodeConfirmed ? 1 : 0, 1, now,
@@ -371,7 +421,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           status='confirmed',match_product_id=?,match_non_inventory_id=?,action=?,barcode_level=?,
           updated_at=? WHERE id=? AND document_id=? AND processed_operation_id IS NULL`).bind(
           line.originalDescription, line.name, line.brand || null, line.presentation || null, line.size || null, line.flavor || null,
-          line.concentration || null, line.billedQuantity, line.receivedQuantity, line.unitsPerPackage, line.totalToAdd,
+          line.concentration || null, line.billedQuantity, line.receivedQuantity, line.unitsPerPackage, line.originalTotal,
           line.barcode, line.canonicalBarcode, line.barcodeType, line.secondaryId || null, line.secondaryType || null,
           line.barcodeMethod, line.barcodeSource, line.barcodeSourceUrl || null, line.barcodeSourceTitle || null,
           JSON.stringify(line.barcodeDifferences), line.barcodeLookupStatus, JSON.stringify(line.fieldEvidence), now,
@@ -425,8 +475,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         version=version+1,updated_at=? WHERE id=(${productLookupSql})`).bind(
         line.totalToAdd, line.totalToAdd, line.totalToAdd, now, productLookupValue,
       ));
-      statements.push(db.prepare("UPDATE inventory_document_lines SET processed_operation_id=?,status='processed',updated_at=? WHERE id=? AND processed_operation_id IS NULL")
-        .bind(operationId, now, line.id));
+      statements.push(db.prepare(`UPDATE inventory_document_lines SET
+        processed_operation_id=?,
+        status=CASE WHEN COALESCE((SELECT SUM(quantity_change) FROM inventory_movements WHERE document_line_id=?),0)>=total_to_add
+          THEN 'processed' ELSE 'confirmed' END,
+        selected_for_ingress=CASE WHEN COALESCE((SELECT SUM(quantity_change) FROM inventory_movements WHERE document_line_id=?),0)>=total_to_add
+          THEN 0 ELSE 1 END,
+        match_product_id=(${productLookupSql}),match_non_inventory_id=NULL,action='existing',updated_at=?
+        WHERE id=? AND document_id=?`).bind(
+        operationId, line.id, line.id, productLookupValue, now, line.id, documentId,
+      ));
       if (line.secondaryId) {
         statements.push(db.prepare(`INSERT INTO supplier_product_aliases (
           provider,secondary_type,secondary_id,barcode,canonical_barcode,product_id,description_signature,
@@ -444,9 +502,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       }
     });
 
-    statements.push(db.prepare(`UPDATE inventory_documents SET
-      status=CASE WHEN EXISTS(SELECT 1 FROM inventory_document_lines WHERE document_id=? AND processed_operation_id IS NULL AND action<>'ignore') THEN 'partial' ELSE 'processed' END,
-      confirmed_at=?,confirmed_by=?,updated_at=? WHERE id=?`).bind(documentId, now, user, now, documentId));
+    statements.push(documentStatusStatement(db, documentId, now));
+    statements.push(db.prepare("UPDATE inventory_documents SET confirmed_at=COALESCE(confirmed_at,?),confirmed_by=COALESCE(confirmed_by,?) WHERE id=?")
+      .bind(now, user, documentId));
     statements.push(db.prepare("UPDATE inventory_operations SET status='completed',verification_status='verified',confirmed_at=? WHERE id=?").bind(now, operationId));
 
     try { await db.batch(statements); }
