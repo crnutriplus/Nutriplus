@@ -92,6 +92,23 @@ const pdfPath = path.join(outputDir, captured.find((item) => item.filename.endsW
 const workbook = new ExcelJS.Workbook();
 await workbook.xlsx.readFile(xlsxPath);
 assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["Productos completos", "Productos incompletos", "No inventario"]);
+const expectedHeaders = [
+  "Producto", "Código de barras", "Precio de compra ($)", "Peso ingresado (lb)", "Peso calculado (+0.10 lb)",
+  "Costo del courier ($)", "Precio costo (₡)", "Precio GAM (₡)", "Precio Puerto (₡)", "Cantidad disponible",
+  "Stock mínimo", "Fecha de actualización",
+];
+for (const sheet of workbook.worksheets) {
+  assert.deepEqual(sheet.getRow(4).values.slice(1), expectedHeaders);
+  assert.equal(typeof sheet.getCell("B5").value, "string", `${sheet.name}: barcode must reopen as text`);
+  assert.equal(sheet.getCell("C5").numFmt, '"$"#,##0.00');
+  assert.equal(sheet.getCell("G5").numFmt, '"₡"#,##0');
+  assert.ok(sheet.getCell("L5").value instanceof Date);
+  assert.equal(sheet.getCell("L5").numFmt, "dd/mm/yyyy hh:mm");
+  assert.ok(sheet.autoFilter, `${sheet.name}: filter must remain enabled`);
+}
+assert.equal(workbook.getWorksheet("Productos completos").conditionalFormattings.length, 1);
+assert.equal(workbook.getWorksheet("Productos incompletos").conditionalFormattings.length, 1);
+assert.equal(workbook.getWorksheet("No inventario").conditionalFormattings.length, 0);
 assert.equal(workbook.getWorksheet("No inventario").getCell("A5").value, "Cotización web");
 assert.equal(workbook.getWorksheet("Productos completos").getCell("A6").value, longName);
 assert.equal(workbook.getWorksheet("Productos completos").getCell("B6").value, longCode);

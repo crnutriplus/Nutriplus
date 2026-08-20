@@ -54,6 +54,9 @@ import { InventoryIntakeModal, type IntakeScanEvent } from "./inventory-intake";
 import type { ImportChangedProduct, ImportJobRecord } from "@/lib/import-jobs";
 import type { ProductDeletionJobRecord } from "@/lib/deletion-jobs";
 import { NUTRIPLUS_PUBLIC_VERSION } from "@/lib/public-version";
+import { runSpreadsheetWorker } from "@/lib/spreadsheet-import-client";
+import type { SpreadsheetCellWarning, SpreadsheetParseResult } from "@/lib/spreadsheet-import-parser";
+import { spreadsheetImportErrorMessage, validateSpreadsheetFile } from "@/lib/spreadsheet-import-security";
 import {
   calculatePrices,
   crc,
@@ -654,6 +657,13 @@ function ImportView({ settings, job, deletionJob, productCount, history, summary
   const [firstDataRow, setFirstDataRow] = useState(2);
   const [headers, setHeaders] = useState<string[]>([]);
   const [rows, setRows] = useState<unknown[][]>([]);
+  const [formattedRows, setFormattedRows] = useState<string[][]>([]);
+  const [rowNumbers, setRowNumbers] = useState<number[]>([]);
+  const [cellWarnings, setCellWarnings] = useState<SpreadsheetCellWarning[]>([]);
+  const [codeWarningAcknowledged, setCodeWarningAcknowledged] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [sheetOptions, setSheetOptions] = useState<string[]>([]);
+  const [selectedSheet, setSelectedSheet] = useState("");
   const [mapping, setMapping] = useState<Mapping>({ name: "", purchasePriceUsd: "", weightLb: "", code: "", quantityAvailable: "", minimumStock: "" });
   const [strategy, setStrategy] = useState<"update" | "skip">("update");
   const [busy, setBusy] = useState(false);
@@ -663,11 +673,12 @@ function ImportView({ settings, job, deletionJob, productCount, history, summary
   const [summaryVisibleCount, setSummaryVisibleCount] = useState(4);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const mapped = useMemo(() => rows.map((row, index) => {
-    const codeCell = mapping.code === "" ? null : row[Number(mapping.code)];
+    const codeColumn = mapping.code === "" ? null : Number(mapping.code);
+    const codeCell = codeColumn === null ? null : (formattedRows[index]?.[codeColumn] ?? row[codeColumn]);
     const quantityCell = mapping.quantityAvailable === "" ? null : row[Number(mapping.quantityAvailable)];
     const minimumCell = mapping.minimumStock === "" ? null : row[Number(mapping.minimumStock)];
     return {
-      rowNumber: index + firstDataRow,
+      rowNumber: rowNumbers[index] ?? index + firstDataRow,
       name: mapping.name === "" ? "" : String(row[Number(mapping.name)] ?? "").trim(),
       purchasePriceUsd: mapping.purchasePriceUsd === "" ? null : parseNumber(row[Number(mapping.purchasePriceUsd)]),
       weightLb: mapping.weightLb === "" ? null : parseNumber(row[Number(mapping.weightLb)]),
@@ -680,11 +691,14 @@ function ImportView({ settings, job, deletionJob, productCount, history, summary
       hasQuantity: mapping.quantityAvailable !== "" && String(quantityCell ?? "").trim() !== "",
       hasMinimumStock: mapping.minimumStock !== "" && String(minimumCell ?? "").trim() !== "",
     };
-  }), [firstDataRow, mapping, rows]);
+  }), [firstDataRow, formattedRows, mapping, rowNumbers, rows]);
   const named = mapped.filter((row) => row.name);
   const ready = [...new Map(named.map((row) => [normalizeName(row.name), row])).values()];
   const duplicates = named.length - ready.length;
   const incomplete = ready.filter((row) => !row.hasPurchasePrice || row.purchasePriceUsd === null || !row.hasWeight || row.weightLb === null);
+  const impreciseCodeWarnings = mapping.code === ""
+    ? []
+    : cellWarnings.filter((warning) => warning.columnIndex === Number(mapping.code));
   const running = job?.status === "queued" || job?.status === "running";
   const percentage = job ? Math.min(100, Math.round((job.processedRows / Math.max(1, job.totalRows)) * 100)) : 0;
   const deleting = deletionJob?.status === "queued" || deletionJob?.status === "running";
@@ -699,47 +713,76 @@ function ImportView({ settings, job, deletionJob, productCount, history, summary
     return () => document.removeEventListener("pointerdown", dismiss, true);
   }, [notice]);
 
-  async function pick(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  function applyParsedFile(file: File, parsed: SpreadsheetParseResult) {
+    const normalized = parsed.headers.map(normalizeName);
+    const find = (...tests: RegExp[]) => {
+      const index = normalized.findIndex((head) => tests.some((test) => test.test(head)));
+      return index < 0 ? "" : String(index);
+    };
+    setFileName(file.name);
+    setSheetName(parsed.sheetName);
+    setFirstDataRow(parsed.rowNumbers[0] ?? 2);
+    setHeaders(parsed.headers);
+    setRows(parsed.rows);
+    setFormattedRows(parsed.formattedRows);
+    setRowNumbers(parsed.rowNumbers);
+    setCellWarnings(parsed.warnings);
+    setCodeWarningAcknowledged(false);
+    setPendingFile(null);
+    setSheetOptions([]);
+    setSelectedSheet("");
+    setMapping({
+      name: find(/^producto$/, /nombre/, /descripcion/),
+      purchasePriceUsd: find(/precio.*compra/, /precio.*producto/, /costo.*usd/, /^precio$/),
+      weightLb: find(/^libras$/, /peso.*lb/, /^peso$/, /^lb$/),
+      code: find(/codigo/, /barra/, /barcode/, /^qr$/),
+      quantityAvailable: find(/^cant$/, /cantidad.*disponible/, /existencia/, /stock.*actual/),
+      minimumStock: find(/stock.*minimo/, /cantidad.*minima/, /^minimo$/),
+    });
+  }
+
+  async function readSelectedFile(file: File, requestedSheet?: string) {
     setBusy(true);
     setNotice(null);
     try {
-      const buffer = await file.arrayBuffer();
-      const parsed = await new Promise<{ sheetName: string; headers: string[]; rows: unknown[][]; firstDataRow: number }>((resolve, reject) => {
-        const parser = new Worker(new URL("../lib/import-worker.ts", import.meta.url), { type: "module" });
-        parser.onmessage = (message: MessageEvent<{ ok: boolean; error?: string; sheetName: string; headers: string[]; rows: unknown[][]; firstDataRow: number }>) => {
-          parser.terminate();
-          if (message.data.ok) resolve(message.data);
-          else reject(new Error(message.data.error || "No se pudo leer el archivo."));
-        };
-        parser.onerror = () => { parser.terminate(); reject(new Error("No se pudo leer el archivo.")); };
-        parser.postMessage({ buffer }, [buffer]);
-      });
-      const normalized = parsed.headers.map(normalizeName);
-      const find = (...tests: RegExp[]) => { const index = normalized.findIndex((head) => tests.some((test) => test.test(head))); return index < 0 ? "" : String(index); };
-      setFileName(file.name);
-      setSheetName(parsed.sheetName);
-      setFirstDataRow(parsed.firstDataRow);
-      setHeaders(parsed.headers);
-      setRows(parsed.rows);
-      setMapping({
-        name: find(/^producto$/, /nombre/, /descripcion/),
-        purchasePriceUsd: find(/precio.*compra/, /precio.*producto/, /costo.*usd/, /^precio$/),
-        weightLb: find(/^libras$/, /peso.*lb/, /^peso$/, /^lb$/),
-        code: find(/codigo/, /barra/, /barcode/, /^qr$/),
-        quantityAvailable: find(/^cant$/, /cantidad.*disponible/, /existencia/, /stock.*actual/),
-        minimumStock: find(/stock.*minimo/, /cantidad.*minima/, /^minimo$/),
-      });
+      const { buffer } = await validateSpreadsheetFile(file);
+      const parsed = await runSpreadsheetWorker(buffer, requestedSheet);
+      if (parsed.status === "select_sheet") {
+        setPendingFile(file);
+        setFileName(file.name);
+        setSheetOptions(parsed.sheetNames);
+        setSelectedSheet(parsed.sheetNames[0] || "");
+        return;
+      }
+      applyParsedFile(file, parsed);
     } catch (error) {
-      setNotice({ type: "error", text: error instanceof Error ? error.message : "No se pudo leer el archivo." });
+      setNotice({ type: "error", text: error instanceof Error ? error.message : spreadsheetImportErrorMessage(error) });
     } finally {
       setBusy(false);
-      event.target.value = "";
     }
   }
 
-  const reset = () => { setHeaders([]); setRows([]); setFileName(""); setSheetName(""); setNotice(null); };
+  async function pick(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    await readSelectedFile(file);
+    event.target.value = "";
+  }
+
+  const reset = () => {
+    setHeaders([]);
+    setRows([]);
+    setFormattedRows([]);
+    setRowNumbers([]);
+    setCellWarnings([]);
+    setCodeWarningAcknowledged(false);
+    setPendingFile(null);
+    setSheetOptions([]);
+    setSelectedSheet("");
+    setFileName("");
+    setSheetName("");
+    setNotice(null);
+  };
 
   async function beginImport() {
     setBusy(true);
@@ -761,10 +804,10 @@ function ImportView({ settings, job, deletionJob, productCount, history, summary
 
     {job && job.status !== "completed" && <section className={`surface import-progress ${job.status}`}><div className="progress-head"><div><span className="eyebrow">{running ? deleting && job.status === "queued" ? "Importación en espera segura" : "Importando en segundo plano" : "La importación encontró un problema"}</span><h2>{job.fileName}</h2><p>{job.sheetName ? `Hoja ${job.sheetName} · ` : ""}{job.processedRows} de {job.totalRows} productos procesados</p></div><strong>{`${percentage}%`}</strong></div><div className="progress-track" aria-label={`${percentage}% importado`}><span style={{ width: `${percentage}%` }} /></div><div className="progress-stats"><span><b>{job.importedCount}</b>Nuevos</span><span><b>{job.updatedCount}</b>Actualizados</span><span><b>{job.skippedCount}</b>Omitidos</span><span><b>{job.conflictCount + job.errorCount}</b>Sin cambiar</span></div>{running && <p className="background-note"><Loader2 className="spin" />{deleting && job.status === "queued" ? "El archivo ya quedó guardado. Empezará automáticamente cuando termine esta eliminación." : "Podés seguir usando Calcular, Productos o Ajustes. Guardar un producto manualmente no detiene ni sobrescribe tu cambio."}</p>}</section>}
 
-    {!running && (!headers.length ? <section className="surface upload"><div className="upload-icon"><FileSpreadsheet /></div><h2>{busy ? "Leyendo archivo en segundo plano…" : "Seleccioná tu archivo"}</h2><p>.xlsx, .xlsm, .xls o .csv</p><label className={`btn primary ${busy ? "disabled" : ""}`} htmlFor="nutriplus-import-file">{busy ? <Loader2 className="spin" /> : <Upload />}Elegir archivo</label><input id="nutriplus-import-file" className="native-file-input" ref={input} type="file" accept=".xlsx,.xlsm,.xls,.csv" onChange={pick} disabled={busy} /></section> : <>
+    {!running && (!headers.length ? (sheetOptions.length && pendingFile ? <section className="surface upload sheet-selection"><div className="upload-icon"><FileSpreadsheet /></div><h2>Elegí la hoja que contiene los productos</h2><p>{fileName} tiene varias hojas y ninguna se llama Compu o Solo Compu.</p><label className="field"><span>Hoja a importar</span><select value={selectedSheet} onChange={(event) => setSelectedSheet(event.target.value)}>{sheetOptions.map((name) => <option value={name} key={name}>{name}</option>)}</select></label><div className="sheet-selection-actions"><button className="btn secondary" onClick={reset} disabled={busy}><RotateCcw />Cambiar archivo</button><button className="btn primary" onClick={() => void readSelectedFile(pendingFile, selectedSheet)} disabled={busy || !selectedSheet}>{busy ? <Loader2 className="spin" /> : <Check />}Usar esta hoja</button></div></section> : <section className="surface upload"><div className="upload-icon"><FileSpreadsheet /></div><h2>{busy ? "Leyendo archivo en segundo plano…" : "Seleccioná tu archivo"}</h2><p>.xlsx, .xlsm, .xls o .csv · máximo 10 MiB</p><label className={`btn primary ${busy ? "disabled" : ""}`} htmlFor="nutriplus-import-file">{busy ? <Loader2 className="spin" /> : <Upload />}Elegir archivo</label><input id="nutriplus-import-file" className="native-file-input" ref={input} type="file" accept=".xlsx,.xlsm,.xls,.csv" onChange={pick} disabled={busy} /></section>) : <>
       <section className="surface file-row"><div><FileSpreadsheet /><span><b>{fileName}</b><small>Hoja {sheetName} · {named.length} filas con producto</small></span></div><button className="btn ghost small" onClick={reset}><RotateCcw />Cambiar</button></section>
-      <section className="surface section"><Step n="1" title="Relacioná las columnas" text="Solo Producto es obligatorio. Las demás columnas se importan si están disponibles." /><div className="mapping">{([["name", "Nombre del producto", true], ["code", "Código QR / barras", false], ["purchasePriceUsd", "Precio de compra USD", false], ["weightLb", "Peso en libras", false], ["quantityAvailable", "Cantidad disponible", false], ["minimumStock", "Stock mínimo", false]] as const).map(([key, label, required]) => <label className="field" key={key}><span>{label}{required && <em>*</em>}</span><select value={mapping[key]} onChange={(event) => setMapping({ ...mapping, [key]: event.target.value })}><option value="">No importar esta columna</option>{headers.map((header, index) => <option value={index} key={`${header}-${index}`}>{header}</option>)}</select></label>)}</div></section>
-      <section className="surface section"><Step n="2" title="Cómo tratar los productos existentes" text={`${ready.length} productos listos · ${incomplete.length} incompletos${duplicates ? ` · ${duplicates} repetidos: se conservará la última aparición` : ""}. No se mostrará vista previa.`} /><div className="strategies"><label className={strategy === "update" ? "chosen" : ""}><input type="radio" checked={strategy === "update"} onChange={() => setStrategy("update")} /><span><b>Actualizar existentes</b><small>Solo reemplaza las columnas incluidas. Los cambios manuales posteriores se conservan.</small></span></label><label className={strategy === "skip" ? "chosen" : ""}><input type="radio" checked={strategy === "skip"} onChange={() => setStrategy("skip")} /><span><b>Omitir existentes</b><small>Agrega únicamente productos nuevos.</small></span></label></div><button className="btn primary full" disabled={mapping.name === "" || !ready.length || busy} onClick={() => void beginImport()}>{busy ? <Loader2 className="spin" /> : <Upload />}Importar {ready.length || ""} productos</button></section>
+      <section className="surface section"><Step n="1" title="Relacioná las columnas" text="Solo Producto es obligatorio. Las demás columnas se importan si están disponibles." /><div className="mapping">{([["name", "Nombre del producto", true], ["code", "Código QR / barras", false], ["purchasePriceUsd", "Precio de compra USD", false], ["weightLb", "Peso en libras", false], ["quantityAvailable", "Cantidad disponible", false], ["minimumStock", "Stock mínimo", false]] as const).map(([key, label, required]) => <label className="field" key={key}><span>{label}{required && <em>*</em>}</span><select value={mapping[key]} onChange={(event) => { setMapping({ ...mapping, [key]: event.target.value }); if (key === "code") setCodeWarningAcknowledged(false); }}><option value="">No importar esta columna</option>{headers.map((header, index) => <option value={index} key={`${header}-${index}`}>{header}</option>)}</select></label>)}</div></section>
+      <section className="surface section"><Step n="2" title="Cómo tratar los productos existentes" text={`${ready.length} productos listos · ${incomplete.length} incompletos${duplicates ? ` · ${duplicates} repetidos: se conservará la última aparición` : ""}. No se mostrará vista previa.`} />{impreciseCodeWarnings.length > 0 && <div className="alert warning code-warning"><AlertCircle /><span><b>Revisá {impreciseCodeWarnings.length === 1 ? "un código largo" : `${impreciseCodeWarnings.length} códigos largos`} antes de importar.</b><small>Excel guardó {impreciseCodeWarnings.length === 1 ? "ese valor" : "esos valores"} como número de más de 15 dígitos y puede haber perdido precisión. Filas: {impreciseCodeWarnings.slice(0, 8).map((warning) => warning.rowNumber).join(", ")}{impreciseCodeWarnings.length > 8 ? "…" : ""}.</small><label><input type="checkbox" checked={codeWarningAcknowledged} onChange={(event) => setCodeWarningAcknowledged(event.target.checked)} />Confirmo que revisé los códigos en el archivo original.</label></span></div>}<div className="strategies"><label className={strategy === "update" ? "chosen" : ""}><input type="radio" checked={strategy === "update"} onChange={() => setStrategy("update")} /><span><b>Actualizar existentes</b><small>Solo reemplaza las columnas incluidas. Los cambios manuales posteriores se conservan.</small></span></label><label className={strategy === "skip" ? "chosen" : ""}><input type="radio" checked={strategy === "skip"} onChange={() => setStrategy("skip")} /><span><b>Omitir existentes</b><small>Agrega únicamente productos nuevos.</small></span></label></div><button className="btn primary full" disabled={mapping.name === "" || !ready.length || busy || (impreciseCodeWarnings.length > 0 && !codeWarningAcknowledged)} onClick={() => void beginImport()}>{busy ? <Loader2 className="spin" /> : <Upload />}Importar {ready.length || ""} productos</button></section>
     </>)}
 
     {job?.status === "completed" && <section className="surface section import-summary"><Step n="✓" title="Resumen de la última importación" text={`${job.importedCount} nuevos · ${job.updatedCount} actualizados · ${job.incompleteCount} incompletos`} />{summary.length ? <><div className="summary-list">{summary.slice(0, summaryVisibleCount).map(({ outcome, product }) => { const prices = hasCompletePricing(product) ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; return <article key={`${outcome}-${product.id}`}><div><b>{product.name}</b><small>{outcome === "imported" ? "Nuevo" : "Actualizado"}{product.code ? ` · ${product.code}` : ""}</small></div><span><small>Stock</small><b>{product.quantityAvailable}{product.minimumStockEnabled ? ` / mín. ${product.minimumStock}` : ""}</b></span><span><small>GAM</small><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></span><span><small>Puerto</small><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></span></article>; })}</div>{summaryVisibleCount < summary.length && <button className="btn secondary summary-toggle" onClick={() => setSummaryVisibleCount((current) => current + 5)}>Ver {Math.min(5, summary.length - summaryVisibleCount)} más</button>}</> : <p className="empty-summary">No hubo productos nuevos ni actualizados en esta importación.</p>}</section>}

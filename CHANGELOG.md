@@ -5,7 +5,17 @@ NutriPlus mantiene dos identificadores independientes:
 - **Versión pública:** se muestra a las personas usuarias y avanza como `2.3`, `2.4`, `2.5`, etc.
 - **Checkpoint / commit / deployment:** identifica técnicamente un estado del código. Nunca es el número público de NutriPlus.
 
-`package.json` usa SemVer, por lo que representa la versión pública `2.14` como `2.14.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+`package.json` usa SemVer, por lo que representa la versión pública `2.15` como `2.15.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+
+## 2.15 — 2026-08-20
+
+- SheetJS CE pasó de la versión vulnerable 0.18.5 a la versión oficial 0.20.3, fijada como tarball local inmutable desde el CDN oficial. Se registraron fuente, SHA-256, integridad npm, licencia Apache 2.0 y atribución en `THIRD_PARTY_NOTICES.md`.
+- Los avisos `GHSA-4r6h-8v6p-xvw6` (prototype pollution) y `GHSA-5pgg-2g8v-p4x9` (ReDoS) desaparecieron de `npm audit`; producción quedó con los dos nodos moderados ya conocidos de ExcelJS/uuid.
+- Importar Excel conserva `.xlsx`, `.xlsm`, `.xls` y `.csv`, las hojas `Compu` y `Solo Compu`, selección explícita para libros ambiguos, mapeo, filas incompletas, deduplicación que conserva la última aparición, jobs, respaldos y confirmación antes de escribir datos.
+- Antes de parsear se validan tamaño, extensión, MIME, firma real y estructura OOXML; se bloquean ZIP dañados, traversal, rutas absolutas, symlinks, ejecutables, cifrado, exceso de entradas, tamaño descomprimido y compresión anómala. El parseo continúa dentro del Web Worker con límites de hojas, filas, columnas y 15 segundos.
+- Fórmulas y macros no se ejecutan; se preservan códigos de texto, ceros iniciales, caracteres españoles y códigos alfanuméricos. Los números de más de 15 dígitos requieren una revisión explícita porque Excel puede haber perdido precisión.
+- Se añadieron fixtures sintéticos y pruebas de formatos, límites, archivos dañados, Worker productivo y cerca de 5.000 productos. También pasaron las integraciones existentes y la reapertura de la exportación ExcelJS 4.4.0 con tres hojas, encabezados, textos, monedas, fechas, filtros y formato condicional.
+- No se modificaron ExcelJS, uuid, D1, R2, bindings, migraciones, infraestructura, autenticación, Facturas, Inventario, Pedidos, CRM, Ventas/Gastos, Poket ni OpenAI. `CHATGPT_IMPORT` mantiene cero llamadas y costo cero; el backup integral D1 + R2 continúa bloqueado por Sites.
 
 ## 2.14 — 2026-08-20
 

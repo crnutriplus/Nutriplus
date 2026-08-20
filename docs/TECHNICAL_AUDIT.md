@@ -141,6 +141,24 @@ Pasaron `npm ci`, ESLint, TypeScript, 23/23 pruebas unitarias, todas las integra
 
 No se cambió código de importación o exportación, SheetJS, ExcelJS, uuid, D1, R2, bindings, migraciones, infraestructura, autenticación ni OpenAI. No hubo llamadas pagadas; `CHATGPT_IMPORT` conserva `api_calls = 0` y `api_cost = 0`. `docs/BACKUP_RESTORE.md` permanece intacto y el backup integral D1 + R2 continúa formalmente **BLOQUEADO** por las limitaciones actuales de Sites.
 
+### Lote 2B — SheetJS e importación segura (2026-08-20)
+
+La línea base confirmada fue NutriPlus v2.14, checkpoint técnico 28 y commit `2c7615e4d6d9c51d52debedc63f19dd5b343cf0e`, con el repositorio limpio, Node 24.19.0 y npm 11.9.0. Antes del cambio, `npm audit --omit=dev` informó 3 nodos: 0 críticos, 1 alto, 2 moderados y 0 bajos. El nodo alto era `xlsx@0.18.5` y agrupaba `GHSA-4r6h-8v6p-xvw6` (prototype pollution, afectaba versiones anteriores a 0.19.3) y `GHSA-5pgg-2g8v-p4x9` (ReDoS, afectaba versiones anteriores a 0.20.2).
+
+La documentación oficial de SheetJS confirmó que el registro público de npm quedó detenido en 0.18.5 y que el CDN de SheetJS es la fuente autoritativa. Se incorporó sin modificaciones SheetJS Community Edition 0.20.3 desde `https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`, versionado como `vendor/xlsx-0.20.3.tgz` e instalado mediante `file:`. El archivo tiene SHA-256 `8dc73fc3b00203e72d176e85b50938627c7b086e607c682e8d3c22c02bb99fe8`, integridad npm `sha512-oLDq3jw7AcLqKWH2AhCpVTZl8mf6X2YReP+Neh0SJUzV/BdZYjth94tG5toiMB1PPrYtxOCfaoUCkvtuH+3AJA==` y licencia Apache 2.0. La atribución y ausencia de modificaciones se registraron en `THIRD_PARTY_NOTICES.md`; no existe descarga de SheetJS en tiempo de ejecución.
+
+El flujo conserva `.xlsx`, `.xlsm`, `.xls` y `.csv`, el Web Worker, `XLSX.read`, `sheet_to_json`, el encabezado Producto, el mapeo actual, las filas completas/incompletas, la deduplicación normalizada que conserva la última aparición, precios, peso, cantidades, stock, códigos, jobs, historial, respaldos y la confirmación antes de escribir. Se priorizan exactamente `Compu` y `Solo Compu`; si un libro tiene varias hojas sin esos nombres se exige selección explícita.
+
+Antes del parseo se aplican: archivo máximo 10 MiB; extensión y MIME coherentes; firma ZIP OOXML para XLSX/XLSM, OLE para XLS y texto para CSV; máximo 200 entradas ZIP; 50 MiB descomprimidos; razón de compresión máxima 100:1; rechazo de ZIP corrupto, cifrado, traversal, rutas absolutas, symlinks, ejecutables, nombres duplicados y estructuras solapadas. El parseo usa modo denso, `raw`, `cellFormula=false`, `cellHTML=false`, `bookVBA=false`, solo la hoja necesaria, máximo 10 hojas, 5.001 filas incluido encabezado, 64 columnas y timeout de Worker de 15 segundos con terminación, `onerror`, `onmessageerror` y validación estricta del mensaje. No se extraen archivos ZIP al sistema de archivos.
+
+Los códigos almacenados como texto preservan ceros iniciales, longitudes, caracteres alfanuméricos y contenido español; los códigos numéricos usan el valor formateado cuando corresponde. Un número entero de más de 15 dígitos genera una advertencia por fila y bloquea la confirmación hasta que la persona usuaria declare haber revisado el archivo original. Las fórmulas no se exponen ni evalúan; solo puede usarse un valor almacenado seguro. Los macros no se cargan ni ejecutan.
+
+Después de `npm ci`, `npm audit --omit=dev` informó 2 nodos: 0 críticos, 0 altos, 2 moderados y 0 bajos, correspondientes exclusivamente a ExcelJS/uuid. Ambos avisos de SheetJS desaparecieron. La auditoría completa vigente informó 46 nodos: 0 críticos, 19 altos, 24 moderados y 3 bajos; pertenecen a tooling/desarrollo y a ExcelJS/uuid fuera del alcance de este lote. La cifra se documenta tal como la agrupó npm y no representa 46 raíces independientes.
+
+Pasaron ESLint, TypeScript, 36/36 pruebas unitarias, la prueba del Worker de producción, integraciones de migración, API, concurrencia, Facturas e Inventario, el build y el validador del artefacto Sites. Los fixtures sintéticos cubren formatos válidos, hojas `Compu`/`Solo Compu`, selección múltiple, archivos vacíos/dañados/disfrazados, ZIP anómalos, límites, fórmulas, español, códigos y exactamente 5.000 productos. La exportación ExcelJS 4.4.0 generó y reabrió las tres hojas con encabezados, códigos de barras como texto, monedas, fechas, caracteres españoles, filtros y formato condicional. El artefacto no contiene `xlsx@0.18.5`; el Worker incluye la versión corregida 0.20.3.
+
+No se modificaron ExcelJS 4.4.0, uuid 8.3.2, D1, R2, bindings, migraciones, infraestructura, autenticación, Facturas, Inventario, Pedidos, CRM, Ventas/Gastos, Poket ni OpenAI. No hubo llamadas pagadas; `CHATGPT_IMPORT` conserva `api_calls = 0` y `api_cost = 0`. `docs/BACKUP_RESTORE.md` permanece intacto y el backup integral D1 + R2 continúa formalmente **BLOQUEADO** por las limitaciones actuales de Sites.
+
 ### Uso y peso
 
 - No se identificó una dependencia directa claramente eliminable sin análisis funcional adicional.
@@ -173,7 +191,7 @@ La protección real es la política de Sites. `request-user.ts` atribuye accione
 ## Prioridades para una auditoría posterior
 
 1. **Alta, bloqueada por Sites:** plan y simulacro de recuperación D1/R2 cuando exista exportación integral o infraestructura autorizada.
-2. **Alta:** lote específico para `xlsx`/SheetJS y ExcelJS, con fixtures y regresión de importación/exportación.
+2. **Completada para SheetJS:** el lote 2B corrigió `xlsx` y endureció la importación; ExcelJS/uuid permanecen separados y pendientes de una decisión específica.
 3. **Alta antes de nuevos usuarios:** autorización por servidor y roles.
 4. **Media:** magic bytes para cargas normales y mensajes de error públicos.
 5. **Media:** una sola estrategia de migración y evaluación de claves foráneas.
