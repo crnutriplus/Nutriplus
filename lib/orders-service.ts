@@ -574,6 +574,17 @@ export async function listOrders(db: D1Database, request: Request) {
   if (orderNumber) add("o.order_number LIKE ?", `%${orderNumber}%`);
   const product = cleanText(url.searchParams.get("product"), 200).toLowerCase();
   if (product) add("EXISTS (SELECT 1 FROM order_lines l WHERE l.order_id=o.id AND l.removed_at IS NULL AND lower(l.product_name_snapshot) LIKE ?)", `%${product}%`);
+  const search = cleanText(url.searchParams.get("search"), 250).toLowerCase();
+  if (search) {
+    const phoneSearch = search.replace(/\D/g, "");
+    const like = `%${search}%`;
+    const phoneLike = `%${phoneSearch}%`;
+    add(`(lower(o.order_number) LIKE ? OR lower(o.customer_name_snapshot) LIKE ? OR lower(COALESCE(o.phone_raw,'')) LIKE ?
+      OR replace(replace(replace(replace(COALESCE(o.phone_normalized,''),'+',''),'-',''),' ',''),'(', '') LIKE ?
+      OR EXISTS (SELECT 1 FROM order_lines ls WHERE ls.order_id=o.id AND ls.removed_at IS NULL AND lower(ls.product_name_snapshot) LIKE ?))`,
+    like, like, like, phoneLike, like);
+  }
+  if (url.searchParams.get("active") === "1") add("o.status NOT IN ('DELIVERED','CANCELLED')");
   const paymentStatus = cleanText(url.searchParams.get("paymentStatus"), 20).toUpperCase();
   if (paymentStatus) {
     const paidSql = `COALESCE((SELECT SUM(CASE WHEN px.payment_type='PAYMENT' THEN px.amount ELSE -px.amount END)
@@ -906,6 +917,81 @@ export async function deliverOrder(db: D1Database, orderId: string, payload: Rec
   return { order: await loadOrder(db, orderId), idempotent: false };
 }
 
+export async function fulfillOrder(db: D1Database, orderId: string, payload: Record<string, unknown>) {
+  const operationId = requiredOperationId(payload);
+  if (await completedOperation(db, orderId, "FULFILL", operationId, payload)) {
+    return { order: await loadOrder(db, orderId), idempotent: true };
+  }
+  const version = requiredVersion(payload);
+  const current = await db.prepare("SELECT status,order_type,route_id,scheduled_delivery_date FROM orders WHERE id=? LIMIT 1")
+    .bind(orderId).first<{ status: string; order_type: string; route_id: string | null; scheduled_delivery_date: string | null }>();
+  if (!current) throw new OrderError("No encontramos el pedido. Actualizá la lista; no se realizó ningún cambio.", 404, "ORDER_NOT_FOUND", "Pedido no encontrado");
+  if (current.status !== "PREPARED") {
+    throw new OrderError("Prepará el pedido antes de registrar una entrega total o parcial. No se realizó ningún cambio ni movimiento de inventario.", 409, "ORDER_FULFILL_REQUIRES_PREPARED", "Pedido no preparado");
+  }
+  const lines = await db.prepare(`SELECT l.*,
+    COALESCE((SELECT SUM(fl.quantity) FROM order_fulfillment_lines fl
+      JOIN order_fulfillments f ON f.id=fl.fulfillment_id WHERE fl.order_line_id=l.id),0) AS delivered_quantity
+    FROM order_lines l WHERE l.order_id=? AND l.removed_at IS NULL ORDER BY l.position,l.id`).bind(orderId).all<Row>();
+  const byId = new Map(lines.results.map((line) => [String(line.id), line]));
+  const requested = Array.isArray(payload.lines) ? payload.lines.map(asRow).slice(0, 500) : [];
+  if (!requested.length) {
+    throw new OrderError("Seleccioná al menos un producto y la cantidad entregada. El pedido conserva su estado anterior.", 400, "ORDER_FULFILL_LINES_REQUIRED", "Entrega sin productos");
+  }
+  const parsed = requested.map((source, index) => {
+    const lineId = cleanText(source.orderLineId ?? source.lineId, 100);
+    const line = byId.get(lineId);
+    if (!line) throw new OrderError(`La línea ${index + 1} no pertenece al pedido. Actualizalo; no se realizó ningún cambio.`, 409, "ORDER_FULFILL_LINE_NOT_FOUND", "Producto no encontrado");
+    const quantity = integerValue(source.quantity, `La cantidad entregada de “${String(line.product_name_snapshot)}”`, 1, 100_000);
+    const pending = Math.max(0, Number(line.quantity) - Number(line.delivered_quantity || 0));
+    if (quantity > pending) {
+      throw new OrderError(`Solo quedan ${pending} unidades pendientes de “${String(line.product_name_snapshot)}”. Corregí la cantidad; no se realizó ningún cambio.`, 409, "ORDER_FULFILL_EXCEEDS_PENDING", "Cantidad entregada inválida", { lineId, pending });
+    }
+    return { lineId, line, quantity };
+  });
+  if (new Set(parsed.map((entry) => entry.lineId)).size !== parsed.length) {
+    throw new OrderError("La entrega contiene una línea repetida. Corregila; no se realizó ningún cambio.", 409, "ORDER_DUPLICATE_LINE", "Línea repetida");
+  }
+  const deliveredNow = new Map(parsed.map((entry) => [entry.lineId, entry.quantity]));
+  const completed = lines.results.every((line) => Number(line.delivered_quantity || 0) + (deliveredNow.get(String(line.id)) || 0) >= Number(line.quantity));
+  const pendingDate = completed ? null : costaRicaDate(payload.pendingDeliveryDate ?? payload.scheduledDeliveryDate, "La fecha de la entrega pendiente");
+  const currentRoute = !completed && current.route_id
+    ? await db.prepare("SELECT route_date FROM delivery_routes WHERE id=? LIMIT 1").bind(current.route_id).first<{ route_date: string }>()
+    : null;
+  const removeFromRoute = Boolean(!completed && current.route_id && pendingDate && currentRoute?.route_date !== pendingDate);
+  const claim = await beginOperation(db, orderId, "FULFILL", operationId, payload);
+  if (claim.replayed) return { order: await loadOrder(db, orderId), idempotent: true };
+  const now = new Date().toISOString();
+  const fulfillmentId = newOrderChildId("fulfillment");
+  const statements: D1PreparedStatement[] = [
+    guardStatement(db, operationId, orderId, version, ["PREPARED"]),
+    db.prepare("INSERT INTO order_fulfillments (id,order_id,status,operation_id,delivered_at) VALUES (?,?,?,?,?)")
+      .bind(fulfillmentId, orderId, completed ? "DELIVERED" : "PARTIAL", operationId, now),
+    ...parsed.map((entry) => db.prepare("INSERT INTO order_fulfillment_lines (id,fulfillment_id,order_line_id,quantity) VALUES (?,?,?,?)")
+      .bind(newOrderChildId("fuline"), fulfillmentId, entry.lineId, entry.quantity)),
+    ...(removeFromRoute ? [db.prepare("UPDATE route_orders SET removed_at=? WHERE order_id=? AND removed_at IS NULL").bind(now, orderId)] : []),
+    completed
+      ? db.prepare("UPDATE orders SET status='DELIVERED',delivered_at=?,version=version+1,updated_at=? WHERE id=? AND version=? AND status='PREPARED'")
+        .bind(now, now, orderId, version)
+      : db.prepare("UPDATE orders SET scheduled_delivery_date=COALESCE(?,scheduled_delivery_date),route_id=?,version=version+1,updated_at=? WHERE id=? AND version=? AND status='PREPARED'")
+        .bind(pendingDate, removeFromRoute ? null : current.route_id, now, orderId, version),
+    ...(completed && current.order_type === "SPECIAL_ORDER" ? [db.prepare(`UPDATE special_order_details SET special_order_status='DELIVERED',updated_at=?
+      WHERE order_id=? AND special_order_status='ADDED_TO_ROUTE'`).bind(now, orderId)] : []),
+    ...(completed ? [statusEventStatement(db, orderId, "PREPARED", "DELIVERED", operationId, null, now)] : []),
+    eventStatement(db, orderId, completed ? "order.delivered" : "order.partially_delivered", operationId, {
+      fulfillmentId,
+      completed,
+      deliveredUnits: parsed.reduce((sum, entry) => sum + entry.quantity, 0),
+      pendingDeliveryDate: pendingDate,
+      removedFromRoute: removeFromRoute,
+    }, now),
+    completeOperationStatement(db, operationId, orderId, now),
+  ];
+  try { await db.batch(statements); }
+  catch (error) { await abandonOperation(db, operationId); throw error; }
+  return { order: await loadOrder(db, orderId), idempotent: false };
+}
+
 export async function cancelOrder(db: D1Database, orderId: string, payload: Record<string, unknown>) {
   const operationId = requiredOperationId(payload);
   if (await completedOperation(db, orderId, "CANCEL", operationId, payload)) return { order: await loadOrder(db, orderId), idempotent: true };
@@ -955,14 +1041,19 @@ export async function reprogramOrder(db: D1Database, orderId: string, payload: R
   const status = String(current.status) as OrderStatus;
   if (!["DRAFT", "CONFIRMED", "PREPARED", "REOPENED"].includes(status)) throw new OrderError("El estado actual no permite reprogramar el pedido. No se realizó ningún cambio.", 409, "ORDER_REPROGRAM_FORBIDDEN", "Reprogramación no permitida");
   const reason = optionalText(payload.reason, 1000);
+  const route = current.route_id
+    ? await db.prepare("SELECT route_date FROM delivery_routes WHERE id=? LIMIT 1").bind(String(current.route_id)).first<{ route_date: string }>()
+    : null;
+  const removeFromRoute = Boolean(current.route_id && route?.route_date !== newDate);
   const claim = await beginOperation(db, orderId, "REPROGRAM", operationId, payload);
   if (claim.replayed) return { order: await loadOrder(db, orderId), idempotent: true };
   const now = new Date().toISOString();
   const statements = [
     guardStatement(db, operationId, orderId, version, [status]),
-    db.prepare("UPDATE orders SET scheduled_delivery_date=?,version=version+1,updated_at=? WHERE id=? AND version=? AND status=?")
-      .bind(newDate, now, orderId, version, status),
-    eventStatement(db, orderId, "order.reprogrammed", operationId, { from: current.scheduled_delivery_date || null, to: newDate, reason }, now),
+    ...(removeFromRoute ? [db.prepare("UPDATE route_orders SET removed_at=? WHERE order_id=? AND removed_at IS NULL").bind(now, orderId)] : []),
+    db.prepare("UPDATE orders SET scheduled_delivery_date=?,route_id=?,version=version+1,updated_at=? WHERE id=? AND version=? AND status=?")
+      .bind(newDate, removeFromRoute ? null : current.route_id || null, now, orderId, version, status),
+    eventStatement(db, orderId, "order.reprogrammed", operationId, { from: current.scheduled_delivery_date || null, to: newDate, reason, removedFromRoute: removeFromRoute }, now),
     completeOperationStatement(db, operationId, orderId, now),
   ];
   try { await db.batch(statements); }
@@ -1035,7 +1126,7 @@ export async function transitionSpecialOrder(db: D1Database, orderId: string, pa
     return { order: await loadOrder(db, orderId), idempotent: true };
   }
   const version = requiredVersion(payload);
-  const target = cleanText(payload.status ?? payload.specialOrderStatus, 50).toUpperCase();
+  const target = cleanText(payload.targetStatus ?? payload.status ?? payload.specialOrderStatus, 50).toUpperCase();
   if (!SPECIAL_ORDER_STATUSES.includes(target as SpecialOrderStatus)) {
     throw new OrderError("El estado solicitado para el Encargo no es válido. Actualizá el pedido y elegí una acción disponible; no se realizó ningún cambio.", 400, "SPECIAL_ORDER_STATUS_INVALID", "Estado de Encargo inválido");
   }
@@ -1335,4 +1426,78 @@ export async function assignOrderToRoute(db: D1Database, routeId: string, payloa
   ];
   await db.batch(statements);
   return { order: await loadOrder(db, orderId) };
+}
+
+export async function loadDeliveryRoute(db: D1Database, routeId: string) {
+  const route = await db.prepare("SELECT * FROM delivery_routes WHERE id=? LIMIT 1").bind(routeId).first<Row>();
+  if (!route) throw new OrderError("No encontramos la ruta. Actualizá la fecha y volvé a intentarlo.", 404, "ROUTE_NOT_FOUND", "Ruta no encontrada");
+  const memberships = await db.prepare(`SELECT ro.* FROM route_orders ro
+    WHERE ro.route_id=? AND ro.id=(SELECT latest.id FROM route_orders latest
+      WHERE latest.route_id=ro.route_id AND latest.order_id=ro.order_id ORDER BY latest.assigned_at DESC,latest.id DESC LIMIT 1)
+    ORDER BY ro.removed_at IS NOT NULL,ro.position,ro.assigned_at,ro.id`).bind(routeId).all<Row>();
+  const loaded = await Promise.all(memberships.results.map(async (membership) => ({
+    membership,
+    order: await loadOrder(db, String(membership.order_id)),
+  })));
+  const rows = loaded.flatMap(({ membership, order }) => order ? [{
+    ...order,
+    routeMembership: {
+      position: Number(membership.position),
+      assignedAt: String(membership.assigned_at),
+      removedAt: membership.removed_at ? String(membership.removed_at) : null,
+      active: !membership.removed_at,
+    },
+  }] : []);
+  const active = rows.filter((order) => order.routeMembership.active);
+  const nonCancelled = active.filter((order) => order.status !== "CANCELLED");
+  const methodTotals: Record<PaymentMethod, number> = { CASH: 0, SINPE: 0, CARD: 0, OTHER: 0 };
+  nonCancelled.forEach((order) => (order.payments || []).forEach((payment) => {
+    const method = payment.method as PaymentMethod;
+    if (!PAYMENT_METHODS.includes(method)) return;
+    methodTotals[method] += payment.type === "PAYMENT" ? payment.amount : -payment.amount;
+  }));
+  const pending = active.filter((order) => !["DELIVERED", "CANCELLED"].includes(order.status));
+  const reprogrammed = rows.filter((order) => !order.routeMembership.active && order.scheduledDeliveryDate !== String(route.route_date));
+  return {
+    route: {
+      id: String(route.id),
+      date: String(route.route_date),
+      label: route.label ? String(route.label) : null,
+      status: String(route.status),
+      createdAt: String(route.created_at),
+      closedAt: route.closed_at ? String(route.closed_at) : null,
+    },
+    orders: rows,
+    summary: {
+      delivered: active.filter((order) => order.status === "DELIVERED").length,
+      cancelled: active.filter((order) => order.status === "CANCELLED").length,
+      reprogrammed: reprogrammed.length,
+      pending: pending.length,
+      totalDelivered: active.filter((order) => order.status === "DELIVERED").reduce((sum, order) => sum + order.total, 0),
+      totalCollected: nonCancelled.reduce((sum, order) => sum + order.paidTotal, 0),
+      balancePending: nonCancelled.reduce((sum, order) => sum + order.balance, 0),
+      paymentMethods: methodTotals,
+      shippingTotal: nonCancelled.reduce((sum, order) => sum + order.deliveryFee, 0),
+    },
+    pendingOrders: pending.map((order) => ({ id: order.id, orderNumber: order.orderNumber, customerName: order.customerName, status: order.status })),
+  };
+}
+
+export async function closeDeliveryRoute(db: D1Database, routeId: string, payload: Record<string, unknown>) {
+  requiredOperationId(payload);
+  const snapshot = await loadDeliveryRoute(db, routeId);
+  if (snapshot.route.status === "CLOSED") return { ...snapshot, idempotent: true };
+  if (snapshot.pendingOrders.length && payload.acknowledgePending !== true) {
+    throw new OrderError(
+      `La ruta todavía tiene ${snapshot.pendingOrders.length} pedido${snapshot.pendingOrders.length === 1 ? "" : "s"} pendiente${snapshot.pendingOrders.length === 1 ? "" : "s"}. Revisalos o confirmá expresamente que querés cerrar la ruta sin borrar ni cambiar esos pedidos.`,
+      409,
+      "ROUTE_PENDING_ORDERS",
+      "Ruta con pedidos pendientes",
+      { pendingOrders: snapshot.pendingOrders },
+    );
+  }
+  const now = new Date().toISOString();
+  const result = await db.prepare("UPDATE delivery_routes SET status='CLOSED',closed_at=? WHERE id=? AND status='OPEN'")
+    .bind(now, routeId).run();
+  return { ...(await loadDeliveryRoute(db, routeId)), idempotent: Number(result.meta?.changes || 0) === 0 };
 }

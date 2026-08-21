@@ -179,6 +179,14 @@ Marcar un Encargo recibido no mueve stock. Cada resolución append-only registra
 
 Las nuevas rutas de estado y recepción permanecen bajo el Site owner-only y deberán incorporarse a la autorización interna cuando se reactive Seguridad 3B. No se mezcló `security/phase-3b1`, no se llamó a OpenAI y no se aplicó `0015` a D1 productivo.
 
+## Pedidos — interfaz y operaciones avanzadas locales (2026-08-20)
+
+La interfaz local incorpora Entregas, Encargos e Historial, impresión PDF diaria, orden y cierre de rutas, reapertura/corrección, devolución con decisión de stock y fulfillments parciales. El PDF conserva orden de ruta, encabezados multipágina, total/envío separados, expectativa E/S/T y consolidado final; omite nombre del cliente y NP. Los resúmenes de ruta, saldos e historial son proyecciones de los ledgers existentes y no fabrican dinero ni inventario.
+
+El flujo de Encargos mantiene estado de proveedor separado, recepción explícita por `INVENTORY_NOW` o `ALREADY_INVENTORY`, cantidades parciales, vinculación segura a catálogo, pagos mixtos y entrega bajo el mismo NP. Los endpoints vuelven a validar versión, stock y transición en servidor; los reintentos conservan `operationId` y la entrega parcial no mueve existencias porque el compromiso ya se registró al confirmar.
+
+La batería específica de Fase 3 cubre impresión exacta y multipágina, ruta con pendientes, fulfillments parciales, devoluciones con/sin reingreso, correcciones por delta, búsqueda paginada, saldo de Encargos y ambos caminos de recepción. Esta sección documenta trabajo local previo a la puerta de regresión completa; no implica merge, checkpoint, deploy ni aplicación de `0015` en producción.
+
 ### Uso y peso
 
 - No se identificó una dependencia directa claramente eliminable sin análisis funcional adicional.

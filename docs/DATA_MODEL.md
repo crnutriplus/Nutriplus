@@ -82,6 +82,8 @@ Los importes de Pedidos se almacenan como enteros CRC. Las fechas operativas de 
 
 Los Encargos usan dos máquinas separadas: `orders.status` para logística y `special_order_status` para proveedor/recepción. Marcar recibido no suma stock. Una resolución `INVENTORY_NOW` crea `SPECIAL_ORDER_RECEIPT`; `ALREADY_INVENTORY` registra explícitamente que la entrada ocurrió por Facturas/Inventario y no crea un segundo movimiento. La suma normalizada de `quantity_received` deja preparado el modelo para recepciones parciales.
 
+Cada fila de `order_fulfillments` representa una operación de entrega y sus líneas conservan cantidades positivas por línea original. Las cantidades pendientes se derivan del pedido menos la suma de fulfillments; no se sobrescribe el detalle comprado. Los resúmenes y la impresión de rutas también se derivan de pedidos, pagos netos, fulfillments y posiciones activas, sin tablas duplicadas de cierre.
+
 ### Importaciones, respaldos y eliminaciones
 
 | Tabla | Propósito |

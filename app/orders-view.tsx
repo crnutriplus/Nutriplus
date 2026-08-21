@@ -17,14 +17,18 @@ import {
   MapPin,
   Package,
   PackageCheck,
+  PackageOpen,
   Pencil,
   Phone,
   Plus,
+  Printer,
+  Route as RouteIcon,
   Save,
   Search,
   ShoppingBag,
   Trash2,
   Truck,
+  Undo2,
   UserRound,
   WalletCards,
   X,
@@ -164,6 +168,31 @@ type OrderDraft = {
 
 type Notice = { tone: "success" | "warning" | "error"; title: string; message: string } | null;
 type OrdersSection = "deliveries" | "special" | "history";
+type OrderHistoryRecord = {
+  statusEvents: Array<Record<string, unknown>>;
+  events: Array<Record<string, unknown>>;
+  inventoryMovements: Array<Record<string, unknown>>;
+  payments: Array<Record<string, unknown>>;
+  returns: Array<Record<string, unknown>>;
+  fulfillments: Array<Record<string, unknown>>;
+};
+type RouteSnapshot = {
+  route: { id: string; date: string; label: string | null; status: string; createdAt: string; closedAt: string | null };
+  orders: Array<OrderRecord & { routeMembership: { position: number; assignedAt: string; removedAt: string | null; active: boolean } }>;
+  summary: {
+    delivered: number;
+    cancelled: number;
+    reprogrammed: number;
+    pending: number;
+    totalDelivered: number;
+    totalCollected: number;
+    balancePending: number;
+    paymentMethods: Record<PaymentMethod, number>;
+    shippingTotal: number;
+  };
+  pendingOrders: Array<{ id: string; orderNumber: string; customerName: string; status: OrderStatus }>;
+};
+type ReceiptDraftLine = { orderLineId: string; productName: string; productId: number | null; quantityReceived: string; pending: number; barcode: string | null };
 
 type Props = {
   products: ProductRecord[];
@@ -173,6 +202,7 @@ type Props = {
   onConsumeScan: () => void;
   onRequestScan: () => void;
   onInventoryChanged: () => Promise<void> | void;
+  onCatalogChanged: () => Promise<void> | void;
 };
 
 const STATUS_LABELS: Record<OrderStatus, string> = {
@@ -247,6 +277,25 @@ function elapsedLabel(target: string | null) {
   if (difference === 0) return "Llega hoy";
   if (difference > 0) return `${difference} día${difference === 1 ? "" : "s"} restante${difference === 1 ? "" : "s"}`;
   return `${Math.abs(difference)} día${difference === -1 ? "" : "s"} de atraso`;
+}
+
+function eventLabel(type: string, fallback?: string) {
+  const labels: Record<string, string> = {
+    "order.created": "Pedido creado",
+    "order.updated": "Pedido corregido",
+    "order.confirmed": "Pedido confirmado",
+    "order.prepared": "Pedido preparado",
+    "order.delivered": "Pedido entregado",
+    "order.partially_delivered": "Entrega parcial registrada",
+    "order.cancelled": "Pedido cancelado",
+    "order.reprogrammed": "Entrega reprogramada",
+    "order.reopened": "Pedido reabierto para corrección",
+    "order.returned": "Devolución registrada",
+    "payment.recorded": "Movimiento de pago registrado",
+    "special_order.status_changed": "Estado de Encargo actualizado",
+    "special_order.receipt_resolved": "Recepción de Encargo resuelta",
+  };
+  return labels[type] || fallback || type;
 }
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -336,7 +385,7 @@ function PaymentBadge({ order }: { order: OrderRecord }) {
   </span>;
 }
 
-export function OrdersView({ products, quotes, settings, scannedBarcode, onConsumeScan, onRequestScan, onInventoryChanged }: Props) {
+export function OrdersView({ products, quotes, settings, scannedBarcode, onConsumeScan, onRequestScan, onInventoryChanged, onCatalogChanged }: Props) {
   const today = useMemo(() => costaRicaDate(), []);
   const tomorrow = useMemo(() => addDays(today, 1), [today]);
   const [section, setSection] = useState<OrdersSection>("deliveries");
@@ -369,7 +418,28 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
   const [historyQuery, setHistoryQuery] = useState("");
   const [historyStatus, setHistoryStatus] = useState("");
   const [historyPayment, setHistoryPayment] = useState("");
+  const [historyDate, setHistoryDate] = useState("");
+  const [historyType, setHistoryType] = useState("");
   const [routeBusy, setRouteBusy] = useState(false);
+  const [routeSnapshot, setRouteSnapshot] = useState<RouteSnapshot | null>(null);
+  const [routePanelOpen, setRoutePanelOpen] = useState(false);
+  const [routePanelLoading, setRoutePanelLoading] = useState(false);
+  const [routeCloseConfirm, setRouteCloseConfirm] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [orderHistory, setOrderHistory] = useState<OrderHistoryRecord | null>(null);
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReason, setReopenReason] = useState("");
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnReason, setReturnReason] = useState("");
+  const [returnLines, setReturnLines] = useState<Record<string, { quantity: string; reenterInventory: boolean }>>({});
+  const [fulfillmentLines, setFulfillmentLines] = useState<Record<string, string>>({});
+  const [pendingDeliveryDate, setPendingDeliveryDate] = useState("");
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const [receiptMode, setReceiptMode] = useState<"INVENTORY_NOW" | "ALREADY_INVENTORY">("INVENTORY_NOW");
+  const [receiptLines, setReceiptLines] = useState<ReceiptDraftLine[]>([]);
+  const [specialRouteOpen, setSpecialRouteOpen] = useState(false);
+  const [specialRouteDate, setSpecialRouteDate] = useState(today);
+  const [catalogBusy, setCatalogBusy] = useState<string | null>(null);
 
   const showError = useCallback((error: unknown, fallback: string) => {
     const typed = error as Error & { title?: string };
@@ -385,15 +455,19 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
         params.set("orderType", "STANDARD");
       } else if (section === "special") {
         params.set("orderType", "SPECIAL_ORDER");
+        params.set("active", "1");
       }
       if (section === "history" && historyStatus) params.set("status", historyStatus);
       if (section === "history" && historyPayment) params.set("paymentStatus", historyPayment);
+      if (section === "history" && historyQuery.trim()) params.set("search", historyQuery.trim());
+      if (section === "history" && historyDate) params.set("date", historyDate);
+      if (section === "history" && historyType) params.set("orderType", historyType);
       const result = await api<{ orders: OrderRecord[]; total: number }>(`/api/orders?${params}`);
       setOrders(result.orders);
       setTotal(result.total);
     } catch (error) { showError(error, "No se pudo cargar la lista de pedidos."); }
     finally { setLoading(false); }
-  }, [historyPayment, historyStatus, page, section, selectedDate, showError]);
+  }, [historyDate, historyPayment, historyQuery, historyStatus, historyType, page, section, selectedDate, showError]);
 
   const loadUpcoming = useCallback(async () => {
     try {
@@ -415,8 +489,12 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
   const loadDetail = useCallback(async (id: string) => {
     setDetailLoading(true);
     try {
-      const result = await api<{ order: OrderRecord }>(`/api/orders/${id}`);
+      const [result, history] = await Promise.all([
+        api<{ order: OrderRecord }>(`/api/orders/${id}`),
+        api<OrderHistoryRecord>(`/api/orders/${id}/history`),
+      ]);
       setSelected(result.order);
+      setOrderHistory(history);
       setPreparedChecks(new Set());
       return result.order;
     } catch (error) {
@@ -427,20 +505,18 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
 
   const refreshAfterMutation = useCallback(async (order: OrderRecord, inventoryChanged = false) => {
     setSelected(order);
-    await Promise.all([loadOrders(), loadUpcoming(), inventoryChanged ? Promise.resolve(onInventoryChanged()) : Promise.resolve()]);
+    const [, , , history] = await Promise.all([
+      loadOrders(),
+      loadUpcoming(),
+      inventoryChanged ? Promise.resolve(onInventoryChanged()) : Promise.resolve(),
+      api<OrderHistoryRecord>(`/api/orders/${order.id}/history`),
+    ]);
+    setOrderHistory(history);
   }, [loadOrders, loadUpcoming, onInventoryChanged]);
 
   const visibleOrders = useMemo(() => {
-    if (section !== "history" || !historyQuery.trim()) return orders;
-    const query = normalizeName(historyQuery);
-    return orders.filter((order) => normalizeName([
-      order.orderNumber,
-      order.customerName,
-      order.phoneRaw || "",
-      order.phoneNormalized || "",
-      order.productSummary || "",
-    ].join(" ")).includes(query));
-  }, [historyQuery, orders, section]);
+    return orders;
+  }, [orders]);
 
   const daySummaries = useMemo(() => {
     const grouped = new Map<string, { orders: number; units: number }>();
@@ -620,10 +696,15 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
       setCancelOpen(false);
       setReprogramOpen(false);
       setPaymentOpen(false);
+      setReopenOpen(false);
+      setReturnOpen(false);
+      setReceiptOpen(false);
       setCancelReason("");
       setReprogramReason("");
       setPaymentAmount("");
       setPaymentReference("");
+      setReopenReason("");
+      setReturnReason("");
     } catch (error) { showError(error, "No se pudo actualizar el pedido."); }
     finally { setBusyAction(null); }
   }, [busyAction, refreshAfterMutation, selected, showError]);
@@ -656,16 +737,145 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
     });
   }, [products, selected]);
 
-  const createOrFindRoute = useCallback(async () => {
-    const existing = await api<{ routes: Array<{ id: string }> }>(`/api/delivery-routes?date=${selectedDate}&status=OPEN`);
+  const createOrFindRoute = useCallback(async (date: string) => {
+    const existing = await api<{ routes: Array<{ id: string }> }>(`/api/delivery-routes?date=${date}&status=OPEN`);
     if (existing.routes[0]) return existing.routes[0].id;
     const created = await api<{ route: { id: string } }>("/api/delivery-routes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: selectedDate, label: `Entregas ${dateLabel(selectedDate)}` }),
+      body: JSON.stringify({ date, label: `Entregas ${dateLabel(date)}` }),
     });
     return created.route.id;
-  }, [selectedDate]);
+  }, []);
+
+  const openRoutePanel = useCallback(async () => {
+    setRoutePanelOpen(true);
+    setRoutePanelLoading(true);
+    try {
+      const routeId = await createOrFindRoute(selectedDate);
+      setRouteSnapshot(await api<RouteSnapshot>(`/api/delivery-routes/${routeId}`));
+    } catch (error) { showError(error, "No se pudo abrir la ruta del día."); }
+    finally { setRoutePanelLoading(false); }
+  }, [createOrFindRoute, selectedDate, showError]);
+
+  const closeRoute = useCallback(async () => {
+    if (!routeSnapshot || busyAction) return;
+    setBusyAction("close-route");
+    try {
+      const result = await api<RouteSnapshot>(`/api/delivery-routes/${routeSnapshot.route.id}/close`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operationId: operationId("route-close"), acknowledgePending: true }),
+      });
+      setRouteSnapshot(result);
+      setRouteCloseConfirm(false);
+      setNotice({ tone: "success", title: "Ruta cerrada", message: "El cierre quedó registrado sin reescribir pedidos, pagos ni movimientos de inventario." });
+    } catch (error) { showError(error, "No se pudo cerrar la ruta."); }
+    finally { setBusyAction(null); }
+  }, [busyAction, routeSnapshot, showError]);
+
+  const downloadPrint = useCallback(async () => {
+    if (printing) return;
+    setPrinting(true);
+    try {
+      const response = await fetch(`/api/orders/print?date=${encodeURIComponent(selectedDate)}`);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: string; title?: string };
+        const error = new Error(payload.error || "No se pudo generar la hoja de pedidos.") as Error & { title?: string };
+        error.title = payload.title;
+        throw error;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `pedidos-${selectedDate}.pdf`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setNotice({ tone: "success", title: "Hoja preparada", message: "El PDF conserva el orden de ruta e incluye el consolidado de productos para cargar." });
+    } catch (error) { showError(error, "No se pudo generar la hoja de pedidos."); }
+    finally { setPrinting(false); }
+  }, [printing, selectedDate, showError]);
+
+  const openReceipt = useCallback(() => {
+    if (!selected?.lines) return;
+    setReceiptLines(selected.lines.filter((line) => line.pendingReceiptQuantity > 0).map((line) => {
+      const exact = products.find((product) => product.id === line.productId
+        || (line.barcode && product.code?.trim().toLowerCase() === line.barcode.trim().toLowerCase())
+        || normalizeName(product.name) === normalizeName(line.productName));
+      return {
+        orderLineId: line.id,
+        productName: line.productName,
+        productId: line.productId || exact?.id || null,
+        quantityReceived: String(line.pendingReceiptQuantity),
+        pending: line.pendingReceiptQuantity,
+        barcode: line.barcode,
+      };
+    }));
+    setReceiptMode("INVENTORY_NOW");
+    setReceiptOpen(true);
+  }, [products, selected]);
+
+  const createReceiptProduct = useCallback(async (line: ReceiptDraftLine) => {
+    if (catalogBusy) return;
+    const quote = quotes.find((candidate) => (line.barcode && candidate.code?.trim().toLowerCase() === line.barcode.trim().toLowerCase())
+      || normalizeName(candidate.name) === normalizeName(line.productName));
+    if (!quote) {
+      setNotice({ tone: "warning", title: "Producto no encontrado en No inventario", message: "Crealo primero con el flujo seguro de Productos y luego volvé a seleccionar la vinculación. No se inventó ningún código ni se movió stock." });
+      return;
+    }
+    setCatalogBusy(line.orderLineId);
+    try {
+      const mutationId = operationId("special-product-link");
+      const result = await api<{ product: ProductRecord }>(`/api/quotes/${quote.id}/move-to-inventory`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Mutation-Id": mutationId },
+        body: JSON.stringify({
+          mutationId,
+          name: quote.name,
+          code: quote.code || "",
+          purchasePriceUsd: quote.purchasePriceUsd,
+          weightLb: quote.weightLb,
+          quantityAvailable: 0,
+          minimumStock: 0,
+          minimumStockEnabled: false,
+        }),
+      });
+      if (!result.product?.id) throw new Error("El producto se creó sin una referencia válida.");
+      setReceiptLines((current) => current.map((entry) => entry.orderLineId === line.orderLineId ? { ...entry, productId: result.product.id } : entry));
+      await Promise.resolve(onCatalogChanged());
+      setNotice({ tone: "success", title: "Producto vinculado de forma segura", message: `${result.product.name} se creó con stock 0. La existencia física solo cambiará al confirmar el Camino A.` });
+    } catch (error) { showError(error, "No se pudo crear el producto para la recepción."); }
+    finally { setCatalogBusy(null); }
+  }, [catalogBusy, onCatalogChanged, quotes, showError]);
+
+  const addSpecialToRoute = useCallback(async () => {
+    if (!selected || busyAction || !specialRouteDate) return;
+    setBusyAction("special-route");
+    try {
+      let current = selected;
+      if (current.scheduledDeliveryDate !== specialRouteDate) {
+        const reprogrammed = await api<{ order: OrderRecord }>(`/api/orders/${current.id}/reprogram`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operationId: operationId("special-route-date"), version: current.version, scheduledDeliveryDate: specialRouteDate, reason: "Encargo recibido y programado para entrega" }),
+        });
+        current = reprogrammed.order;
+      }
+      const routeId = await createOrFindRoute(specialRouteDate);
+      const route = await api<RouteSnapshot>(`/api/delivery-routes/${routeId}`);
+      const position = Math.max(0, ...route.orders.filter((order) => order.routeMembership.active).map((order) => order.routeMembership.position)) + 1;
+      const assigned = await api<{ order: OrderRecord }>(`/api/delivery-routes/${routeId}/orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: current.id, position }),
+      });
+      setSpecialRouteOpen(false);
+      setNotice({ tone: "success", title: "Encargo agregado a entrega", message: `${assigned.order.orderNumber} conserva el mismo pedido y NP; no se creó ningún duplicado.` });
+      await refreshAfterMutation(assigned.order);
+    } catch (error) { showError(error, "No se pudo agregar el Encargo a la ruta."); }
+    finally { setBusyAction(null); }
+  }, [busyAction, createOrFindRoute, refreshAfterMutation, selected, showError, specialRouteDate]);
 
   const moveOrder = useCallback(async (index: number, direction: -1 | 1) => {
     if (routeBusy) return;
@@ -676,7 +886,7 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
     setOrders(next);
     setRouteBusy(true);
     try {
-      const routeId = await createOrFindRoute();
+      const routeId = await createOrFindRoute(selectedDate);
       const active = next.filter((order) => !["DELIVERED", "CANCELLED"].includes(order.status));
       for (const [position, order] of active.entries()) {
         await api(`/api/delivery-routes/${routeId}/orders`, {
@@ -691,10 +901,16 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
       showError(error, "No se pudo guardar el orden de la ruta.");
       await loadOrders();
     } finally { setRouteBusy(false); }
-  }, [createOrFindRoute, loadOrders, orders, routeBusy, showError]);
+  }, [createOrFindRoute, loadOrders, orders, routeBusy, selectedDate, showError]);
 
   const totals = editor ? draftTotals(editor.lines, editor.deliveryFee) : null;
   const allPrepared = Boolean(selected?.lines?.length) && selected!.lines!.every((line) => preparedChecks.has(line.id));
+  const selectedSpecialStatus = selected?.specialOrder?.status || selected?.specialOrderStatus || null;
+  const canConfirmSelected = Boolean(selected && (selected.status === "REOPENED"
+    || (selected.status === "DRAFT" && (selected.orderType === "STANDARD"
+      || (Boolean(selected.receiptResolvedAt) && ["RECEIVED_READY", "ADDED_TO_ROUTE"].includes(selectedSpecialStatus || ""))))));
+  const fulfillmentUnits = selected?.lines?.reduce((sum, line) => sum + Math.max(0, Math.min(line.pendingDeliveryQuantity, Number(fulfillmentLines[line.id]) || 0)), 0) || 0;
+  const pendingAfterFulfillment = selected?.lines?.reduce((sum, line) => sum + Math.max(0, line.pendingDeliveryQuantity - (Number(fulfillmentLines[line.id]) || 0)), 0) || 0;
 
   return <div className="view orders-view">
     <header className="view-head orders-head">
@@ -719,7 +935,7 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
         </div>
         {daySummaries.length > 0 && <div className="orders-upcoming"><span>Próximas fechas</span>{daySummaries.map(([date, summary]) => <button className={date === selectedDate ? "active" : ""} onClick={() => setSelectedDate(date)} key={date}><b>{dateLabel(date)}</b><small>{summary.orders} pedido{summary.orders === 1 ? "" : "s"} · {summary.units} unidades</small></button>)}</div>}
       </section>
-      <div className="orders-day-summary"><span><b>{orders.length}</b> pedido{orders.length === 1 ? "" : "s"}</span><span><b>{orders.reduce((sum, order) => sum + order.unitTotal, 0)}</b> unidades</span>{routeBusy && <span><Loader2 className="spin" />Guardando ruta…</span>}</div>
+      <div className="orders-day-summary"><span><b>{orders.length}</b> pedido{orders.length === 1 ? "" : "s"}</span><span><b>{orders.reduce((sum, order) => sum + order.unitTotal, 0)}</b> unidades</span>{routeBusy && <span><Loader2 className="spin" />Guardando ruta…</span>}<div className="orders-day-actions"><button className="btn secondary small" onClick={() => void downloadPrint()} disabled={printing}>{printing ? <Loader2 className="spin" /> : <Printer />}Imprimir hoja</button><button className="btn secondary small" onClick={() => void openRoutePanel()}><RouteIcon />Ruta del día</button></div></div>
     </>}
 
     {section === "special" && <section className="surface special-intro"><ShoppingBag /><div><b>Encargos separados del flujo diario</b><p>Crear el Encargo no mueve inventario. Su recepción y vinculación se resuelven de forma explícita antes de confirmar.</p></div></section>}
@@ -728,6 +944,8 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
       <div className="input-icon grow"><Search /><input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Pedido, cliente, teléfono o producto" /></div>
       <select value={historyStatus} onChange={(event) => { setHistoryStatus(event.target.value); setPage(1); }} aria-label="Filtrar por estado"><option value="">Todos los estados</option>{Object.entries(STATUS_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select>
       <select value={historyPayment} onChange={(event) => { setHistoryPayment(event.target.value); setPage(1); }} aria-label="Filtrar por pago"><option value="">Todos los pagos</option><option value="PENDING">Pendiente</option><option value="PARTIAL">Abonado</option><option value="PAID">Pagado</option></select>
+      <select value={historyType} onChange={(event) => { setHistoryType(event.target.value); setPage(1); }} aria-label="Filtrar por tipo"><option value="">Entregas y Encargos</option><option value="STANDARD">Entrega normal</option><option value="SPECIAL_ORDER">Encargo</option></select>
+      <label className="orders-history-date"><span>Fecha</span><input type="date" value={historyDate} onChange={(event) => { setHistoryDate(event.target.value); setPage(1); }} /></label>
     </section>}
 
     {loading ? <section className="surface orders-loading"><Loader2 className="spin" />Cargando pedidos…</section> : visibleOrders.length === 0 ? <section className="surface orders-empty"><Package /><h2>{section === "history" ? "No hay coincidencias" : section === "special" ? "Todavía no hay Encargos" : "No hay pedidos para esta fecha"}</h2><p>{section === "history" ? "Cambiá los filtros o avanzá de página." : "Creá el primero desde el botón superior."}</p></section> : <section className="orders-list">
@@ -804,14 +1022,26 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
         {selected.orderType === "SPECIAL_ORDER" && <section className="orders-special-detail"><ShoppingBag /><div><b>{SPECIAL_LABELS[selected.specialOrder?.status || selected.specialOrderStatus || ""] || selected.specialOrder?.status}</b><span>Solicitud: {dateTimeLabel(selected.specialOrder?.requestedAt || selected.createdAt)}</span>{selected.estimatedArrivalDate && <span>Estimada: {dateLabel(selected.estimatedArrivalDate)} · {elapsedLabel(selected.estimatedArrivalDate)}</span>}<small>{selected.receiptResolvedAt ? "Recepción resuelta" : "La recepción todavía no autoriza inventario ni confirmación."}</small></div></section>}
         <section className="orders-detail-lines"><header><b>Productos</b><span>{selected.lines?.reduce((sum, line) => sum + line.quantity, 0) || 0} unidades</span></header>{selected.lines?.map((line) => <article key={line.id}><div><b>{line.productName}</b><small>{line.productId ? `Vinculado a inventario #${line.productId}` : "Producto manual · no afecta inventario"}</small></div><span>{line.quantity} × {crc(line.unitPriceSold)}</span><strong>{crc(line.lineTotal)}</strong></article>)}</section>
         <section className="orders-payment-ledger"><header><div><WalletCards /><span><b>Pagos reales</b><small>Ledger separado del método esperado</small></span></div>{selected.status !== "CANCELLED" && selected.balance > 0 && <button className="btn secondary small" onClick={() => { setPaymentAmount(String(selected.balance)); setPaymentOpen(true); }}><Plus />Registrar abono</button>}</header>{selected.payments?.length ? selected.payments.map((payment) => <article key={payment.id}><span><b>{payment.type === "PAYMENT" ? PAYMENT_LABELS[payment.method] : "Reversión"}</b><small>{dateTimeLabel(payment.createdAt)}{payment.reference ? ` · ${payment.reference}` : ""}</small></span><strong className={payment.type === "PAYMENT" ? "" : "reversal"}>{payment.type === "PAYMENT" ? "+" : "-"}{crc(payment.amount)}</strong></article>) : <p>Todavía no hay pagos registrados.</p>}</section>
+        {orderHistory && <section className="orders-timeline"><header><History /><div><b>Historial del pedido</b><small>Estados y operaciones conservados en orden cronológico</small></div></header><div>{[
+          ...orderHistory.statusEvents.map((event) => ({ createdAt: String(event.created_at), label: eventLabel("", STATUS_LABELS[String(event.to_status) as OrderStatus] || String(event.to_status)), detail: event.reason ? String(event.reason) : "Cambio de estado" })),
+          ...orderHistory.events.map((event) => ({ createdAt: String(event.created_at), label: eventLabel(String(event.event_type)), detail: String(event.event_type).includes("reprogrammed") ? "La fecha anterior permanece en el evento" : "Operación trazable" })),
+        ].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).map((event, index) => <article key={`${event.createdAt}-${index}`}><span></span><div><b>{event.label}</b><small>{dateTimeLabel(event.createdAt)} · {event.detail}</small></div></article>)}</div></section>}
         {selected.status === "CONFIRMED" && <section className="orders-prepared-checklist"><header><ClipboardCheck /><div><b>Lista de preparación</b><small>Esta lista es operativa local; el estado se guarda al marcar Preparado.</small></div></header>{selected.lines?.map((line) => <label key={line.id}><input type="checkbox" checked={preparedChecks.has(line.id)} onChange={() => setPreparedChecks((current) => { const next = new Set(current); if (next.has(line.id)) next.delete(line.id); else next.add(line.id); return next; })} /><span>{line.productName} × {line.quantity}</span></label>)}</section>}
         {(selected.internalNotes || selected.deliveryNotes) && <section className="orders-notes">{selected.internalNotes && <div><b>Nota interna</b><p>{selected.internalNotes}</p></div>}{selected.deliveryNotes && <div><b>Nota de entrega</b><p>{selected.deliveryNotes}</p></div>}</section>}
         <footer className="orders-detail-actions">
           {["DRAFT", "CONFIRMED", "REOPENED"].includes(selected.status) && <button className="btn secondary" onClick={() => void openEdit(selected)}><Pencil />Editar</button>}
-          {["DRAFT", "REOPENED"].includes(selected.status) && <button className="btn primary" onClick={() => setConfirmOpen(true)}><Check />Confirmar</button>}
+          {selected.orderType === "SPECIAL_ORDER" && selected.status === "DRAFT" && selectedSpecialStatus === "REQUESTED" && <button className="btn primary" onClick={() => void mutate("special-order/transition", { targetStatus: "ORDERED_FROM_SUPPLIER", estimatedArrivalDate: selected.estimatedArrivalDate }, "Encargo marcado como Pedido al proveedor; no se movió inventario.")}><ShoppingBag />Pedido al proveedor</button>}
+          {selected.orderType === "SPECIAL_ORDER" && selected.status === "DRAFT" && selectedSpecialStatus === "ORDERED_FROM_SUPPLIER" && <button className="btn primary" onClick={() => void mutate("special-order/transition", { targetStatus: "IN_TRANSIT" }, "Encargo en tránsito; no se movió inventario.")}><Truck />Marcar en tránsito</button>}
+          {selected.orderType === "SPECIAL_ORDER" && selected.status === "DRAFT" && selectedSpecialStatus === "IN_TRANSIT" && <button className="btn primary" onClick={() => void mutate("special-order/transition", { targetStatus: "RECEIVED_PENDING_RESOLUTION" }, "Mercadería recibida. La recepción quedó pendiente de resolver y no se incrementó inventario.")}><PackageOpen />Marcar recibido</button>}
+          {selected.orderType === "SPECIAL_ORDER" && selected.status === "DRAFT" && ["RECEIVED_PENDING_RESOLUTION", "PARTIALLY_RECEIVED"].includes(selectedSpecialStatus || "") && <button className="btn primary" onClick={openReceipt}><PackageCheck />Resolver recepción</button>}
+          {selected.orderType === "SPECIAL_ORDER" && selected.status === "DRAFT" && selectedSpecialStatus === "RECEIVED_READY" && <button className="btn primary" onClick={() => { setSpecialRouteDate(selected.scheduledDeliveryDate || today); setSpecialRouteOpen(true); }}><RouteIcon />Agregar a lista de entrega</button>}
+          {canConfirmSelected && <button className="btn primary" onClick={() => setConfirmOpen(true)}><Check />Confirmar</button>}
           {selected.status === "CONFIRMED" && <button className="btn primary" disabled={!allPrepared} onClick={() => void mutate("prepare", {}, "El pedido quedó preparado. Preparar no movió inventario.")}><PackageCheck />Marcar preparado</button>}
-          {selected.status === "PREPARED" && <button className="btn primary" onClick={() => setDeliverOpen(true)}><Truck />Marcar entregado</button>}
+          {selected.status === "PREPARED" && (selected.lines || []).some((line) => line.pendingDeliveryQuantity > 0) && <button className="btn primary" onClick={() => { setFulfillmentLines(Object.fromEntries((selected.lines || []).filter((line) => line.pendingDeliveryQuantity > 0).map((line) => [line.id, String(line.pendingDeliveryQuantity)]))); setPendingDeliveryDate(addDays(selected.scheduledDeliveryDate || today, 1)); setDeliverOpen(true); }}><Truck />Registrar entrega</button>}
+          {selected.status === "PREPARED" && (selected.lines || []).every((line) => line.pendingDeliveryQuantity === 0) && <button className="btn primary" onClick={() => void mutate("deliver", {}, "Corrección cerrada sin movimientos adicionales de inventario.")}><Check />Cerrar corrección</button>}
           {["DRAFT", "CONFIRMED", "PREPARED", "REOPENED"].includes(selected.status) && <button className="btn secondary" onClick={() => { setReprogramDate(selected.scheduledDeliveryDate || today); setReprogramOpen(true); }}><CalendarDays />Reprogramar</button>}
+          {selected.status === "DELIVERED" && <button className="btn secondary" onClick={() => setReopenOpen(true)}><Undo2 />Reabrir/Corregir</button>}
+          {["DELIVERED", "REOPENED"].includes(selected.status) && <button className="btn secondary" onClick={() => { setReturnLines(Object.fromEntries((selected.lines || []).filter((line) => line.deliveredQuantity - line.returnedQuantity > 0).map((line) => [line.id, { quantity: "0", reenterInventory: Boolean(line.productId) }]))); setReturnOpen(true); }}><PackageOpen />Registrar devolución</button>}
           {["DRAFT", "CONFIRMED", "PREPARED"].includes(selected.status) && <button className="btn danger-outline" onClick={() => setCancelOpen(true)}><X />Cancelar pedido</button>}
           {selected.status === "DRAFT" && !selected.payments?.length && <button className="btn danger-outline" onClick={() => void deleteDraft()} disabled={Boolean(busyAction)}><Trash2 />Eliminar borrador</button>}
         </footer>
@@ -826,8 +1056,12 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
       </div>
     </Modal>}
 
-    {deliverOpen && selected && <Modal label="Marcar pedido entregado" onClose={() => setDeliverOpen(false)}>
-      <div className="orders-confirm-card"><header className="orders-modal-head"><div><span className="eyebrow">Entrega</span><h2>Confirmar entrega</h2><p>{selected.customerName} · {selected.orderNumber}</p></div><button className="icon-btn" onClick={() => setDeliverOpen(false)}><X /></button></header><div className="delivery-review"><Truck /><div><b>{selected.lines?.reduce((sum, line) => sum + line.pendingDeliveryQuantity, 0)} unidades pendientes</b><span>Marcar entregado registra el cumplimiento; no vuelve a descontar inventario.</span></div></div><div className="orders-confirm-actions"><button className="btn secondary" onClick={() => setDeliverOpen(false)}>Volver</button><button className="btn primary" disabled={Boolean(busyAction)} onClick={() => void mutate("deliver", {}, "Pedido entregado sin movimientos adicionales de inventario.")}>{busyAction ? <Loader2 className="spin" /> : <Truck />}Confirmar entrega</button></div></div>
+    {deliverOpen && selected && <Modal label="Registrar entrega" onClose={() => setDeliverOpen(false)}>
+      <div className="orders-confirm-card"><header className="orders-modal-head"><div><span className="eyebrow">Entrega total o parcial</span><h2>Registrar lo que recibió el cliente</h2><p>{selected.customerName} · {selected.orderNumber}. Esta operación no vuelve a descontar inventario.</p></div><button className="icon-btn" onClick={() => setDeliverOpen(false)}><X /></button></header>
+        <div className="fulfillment-editor">{selected.lines?.filter((line) => line.pendingDeliveryQuantity > 0).map((line) => <article key={line.id}><div><b>{line.productName}</b><small>Pedido: {line.quantity} · ya entregado: {line.deliveredQuantity} · pendiente: {line.pendingDeliveryQuantity}</small></div><label><span>Entregar ahora</span><input type="number" min="0" max={line.pendingDeliveryQuantity} step="1" value={fulfillmentLines[line.id] || "0"} onChange={(event) => setFulfillmentLines((current) => ({ ...current, [line.id]: event.target.value }))} /></label></article>)}</div>
+        <div className="delivery-review"><Truck /><div><b>{fulfillmentUnits} unidades se registrarán ahora</b><span>{pendingAfterFulfillment > 0 ? `${pendingAfterFulfillment} unidades quedarán pendientes; el pedido seguirá Preparado.` : "No quedarán unidades pendientes; el pedido pasará a Entregado."}</span></div></div>
+        {pendingAfterFulfillment > 0 && <label className="field pending-date-field"><span>Fecha para lo pendiente</span><input type="date" value={pendingDeliveryDate} onChange={(event) => setPendingDeliveryDate(event.target.value)} /><small className="hint">No se borra ninguna línea: la parte pendiente se conserva para la próxima entrega.</small></label>}
+        <div className="orders-confirm-actions"><button className="btn secondary" onClick={() => setDeliverOpen(false)}>Volver</button><button className="btn primary" disabled={Boolean(busyAction) || fulfillmentUnits < 1 || (pendingAfterFulfillment > 0 && !pendingDeliveryDate)} onClick={() => void mutate("fulfillments", { lines: (selected.lines || []).flatMap((line) => Number(fulfillmentLines[line.id]) > 0 ? [{ orderLineId: line.id, quantity: Math.round(Number(fulfillmentLines[line.id])) }] : []), pendingDeliveryDate: pendingAfterFulfillment > 0 ? pendingDeliveryDate : null }, pendingAfterFulfillment > 0 ? "Entrega parcial registrada. Las cantidades pendientes se conservaron y reprogramaron." : "Pedido entregado sin movimientos adicionales de inventario.")}>{busyAction ? <Loader2 className="spin" /> : <Truck />}{pendingAfterFulfillment > 0 ? "Registrar entrega parcial" : "Confirmar entrega"}</button></div></div>
     </Modal>}
 
     {cancelOpen && selected && <Modal label="Cancelar pedido" onClose={() => setCancelOpen(false)}>
@@ -840,6 +1074,30 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
 
     {paymentOpen && selected && <Modal label="Registrar abono" onClose={() => setPaymentOpen(false)}>
       <div className="orders-confirm-card"><header className="orders-modal-head"><div><span className="eyebrow">Movimiento real</span><h2>Registrar abono</h2><p>Saldo actual: {crc(selected.balance)}. El método esperado no se modifica.</p></div><button className="icon-btn" onClick={() => setPaymentOpen(false)}><X /></button></header><div className="orders-payment-form"><label className="field"><span>Monto</span><input type="number" min="1" max={selected.balance} step="1" value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} /></label><label className="field"><span>Método real</span><select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as PaymentMethod)}>{Object.entries(PAYMENT_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label className="field wide"><span>Referencia opcional</span><input value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Comprobante o nota" /></label></div><div className="orders-confirm-actions"><button className="btn secondary" onClick={() => setPaymentOpen(false)}>Volver</button><button className="btn primary" disabled={Number(paymentAmount) < 1 || Number(paymentAmount) > selected.balance || Boolean(busyAction)} onClick={() => void mutate("payments", { amount: Math.round(Number(paymentAmount)), method: paymentMethod, reference: paymentReference }, "Abono registrado en el ledger financiero real.")}><Banknote />Registrar pago</button></div></div>
+    </Modal>}
+
+    {reopenOpen && selected && <Modal label="Reabrir pedido" onClose={() => setReopenOpen(false)}>
+      <div className="orders-confirm-card"><header className="orders-modal-head"><div><span className="eyebrow">Corrección trazable</span><h2>Reabrir/Corregir pedido</h2><p>El histórico entregado no se reescribe. El pedido pasará a Reabierto y cualquier cambio posterior aplicará únicamente el delta de inventario.</p></div><button className="icon-btn" onClick={() => setReopenOpen(false)}><X /></button></header><div className="reopen-consequences"><span><b>Inventario</b><small>Reabrir por sí solo no mueve stock; editar cantidades aplica solo diferencias.</small></span><span><b>Total y pagos</b><small>Los pagos reales permanecen en el ledger y el saldo se vuelve a derivar del total corregido.</small></span></div><label className="field"><span>Motivo obligatorio</span><textarea value={reopenReason} onChange={(event) => setReopenReason(event.target.value)} placeholder="Qué se necesita corregir" /></label><div className="orders-confirm-actions"><button className="btn secondary" onClick={() => setReopenOpen(false)}>Volver</button><button className="btn primary" disabled={reopenReason.trim().length < 3 || Boolean(busyAction)} onClick={() => void mutate("reopen", { reason: reopenReason }, "Pedido reabierto. El motivo quedó en el historial y todavía no se movió inventario.")}><Undo2 />Reabrir para corregir</button></div></div>
+    </Modal>}
+
+    {returnOpen && selected && <Modal label="Registrar devolución" onClose={() => setReturnOpen(false)}>
+      <div className="orders-confirm-card"><header className="orders-modal-head"><div><span className="eyebrow">Pedido original intacto</span><h2>Registrar devolución</h2><p>Elegí cantidades y decidí explícitamente si cada producto apto vuelve al inventario.</p></div><button className="icon-btn" onClick={() => setReturnOpen(false)}><X /></button></header><div className="return-editor">{selected.lines?.filter((line) => line.deliveredQuantity - line.returnedQuantity > 0).map((line) => { const available = line.deliveredQuantity - line.returnedQuantity; const draft = returnLines[line.id] || { quantity: "0", reenterInventory: false }; return <article key={line.id}><div><b>{line.productName}</b><small>Entregado: {line.deliveredQuantity} · ya devuelto: {line.returnedQuantity} · disponible: {available}</small></div><label><span>Cantidad</span><input type="number" min="0" max={available} step="1" value={draft.quantity} onChange={(event) => setReturnLines((current) => ({ ...current, [line.id]: { ...draft, quantity: event.target.value } }))} /></label><label className={`return-stock-choice ${!line.productId ? "disabled" : ""}`}><input type="checkbox" checked={draft.reenterInventory && Boolean(line.productId)} disabled={!line.productId} onChange={(event) => setReturnLines((current) => ({ ...current, [line.id]: { ...draft, reenterInventory: event.target.checked } }))} /><span>¿Reingresar al inventario?<small>{line.productId ? "Sí crea movimiento positivo trazable." : "Producto manual: no puede incrementarse automáticamente."}</small></span></label></article>; })}</div><label className="field"><span>Motivo obligatorio</span><textarea value={returnReason} onChange={(event) => setReturnReason(event.target.value)} /></label><div className="orders-confirm-actions"><button className="btn secondary" onClick={() => setReturnOpen(false)}>Volver</button><button className="btn primary" disabled={returnReason.trim().length < 3 || !Object.values(returnLines).some((line) => Number(line.quantity) > 0) || Boolean(busyAction)} onClick={() => { const lines = Object.entries(returnLines).flatMap(([orderLineId, line]) => Number(line.quantity) > 0 ? [{ orderLineId, quantity: Math.round(Number(line.quantity)), reenterInventory: line.reenterInventory }] : []); void mutate("returns", { reason: returnReason, lines }, "Devolución registrada sin alterar el pedido original.", lines.some((line) => line.reenterInventory)); }}><PackageOpen />Registrar devolución</button></div></div>
+    </Modal>}
+
+    {receiptOpen && selected && <Modal label="Resolver recepción de Encargo" onClose={() => setReceiptOpen(false)} wide>
+      <div className="orders-confirm-card"><header className="orders-modal-head"><div><span className="eyebrow">Decisión obligatoria de inventario</span><h2>Resolver recepción del Encargo</h2><p>Marcar Recibido no sumó existencias. Elegí exactamente uno de los dos caminos para estas unidades físicas.</p></div><button className="icon-btn" onClick={() => setReceiptOpen(false)}><X /></button></header><div className="receipt-mode-picker"><button className={receiptMode === "INVENTORY_NOW" ? "active" : ""} onClick={() => setReceiptMode("INVENTORY_NOW")}><PackageCheck /><span><b>Ingresar estas unidades al inventario ahora</b><small>Crea movimiento SPECIAL_ORDER_RECEIPT por la cantidad real recibida.</small></span></button><button className={receiptMode === "ALREADY_INVENTORY" ? "active" : ""} onClick={() => setReceiptMode("ALREADY_INVENTORY")}><Check /><span><b>Ya fue ingresado mediante Facturas/Inventario</b><small>Vincula el producto sin sumar inventario nuevamente.</small></span></button></div><p className="receipt-critical"><AlertCircle />Nunca elijás el primer camino si la misma unidad física ya fue ingresada por Facturas/Inventario.</p><div className="receipt-lines">{receiptLines.map((line) => <article key={line.orderLineId}><div className="receipt-line-title"><b>{line.productName}</b><small>Pendiente de recibir: {line.pending}</small></div><label><span>Producto existente</span><select value={line.productId || ""} onChange={(event) => setReceiptLines((current) => current.map((entry) => entry.orderLineId === line.orderLineId ? { ...entry, productId: event.target.value ? Number(event.target.value) : null } : entry))}><option value="">Seleccionar producto</option>{products.slice().sort((left, right) => left.name.localeCompare(right.name, "es")).map((product) => <option value={product.id} key={product.id}>{product.name} · stock {product.quantityAvailable}</option>)}</select></label><label><span>Cantidad recibida real</span><input type="number" min="1" max={line.pending} step="1" value={line.quantityReceived} onChange={(event) => setReceiptLines((current) => current.map((entry) => entry.orderLineId === line.orderLineId ? { ...entry, quantityReceived: event.target.value } : entry))} /></label>{!line.productId && receiptMode === "INVENTORY_NOW" && <button className="btn secondary small" disabled={catalogBusy === line.orderLineId} onClick={() => void createReceiptProduct(line)}>{catalogBusy === line.orderLineId ? <Loader2 className="spin" /> : <Plus />}Crear desde No inventario con stock 0</button>}</article>)}</div><div className="orders-confirm-actions"><button className="btn secondary" onClick={() => setReceiptOpen(false)}>Volver</button><button className="btn primary" disabled={Boolean(busyAction) || !receiptLines.length || receiptLines.some((line) => !line.productId || Number(line.quantityReceived) < 1 || Number(line.quantityReceived) > line.pending)} onClick={() => void mutate("special-order/receipts", { mode: receiptMode, lines: receiptLines.map((line) => ({ orderLineId: line.orderLineId, productId: line.productId, quantityReceived: Math.round(Number(line.quantityReceived)) })) }, receiptMode === "INVENTORY_NOW" ? "Recepción resuelta: se incrementó exactamente la cantidad recibida mediante movimientos trazables." : "Recepción resuelta usando stock previamente ingresado; no se creó ningún movimiento de entrada.", receiptMode === "INVENTORY_NOW")}><PackageCheck />Confirmar camino elegido</button></div></div>
+    </Modal>}
+
+    {specialRouteOpen && selected && <Modal label="Agregar Encargo a entrega" onClose={() => setSpecialRouteOpen(false)}>
+      <div className="orders-confirm-card"><header className="orders-modal-head"><div><span className="eyebrow">Mismo pedido · mismo NP</span><h2>Agregar a lista de entrega</h2><p>No se creará un segundo pedido. La recepción ya resuelta se asociará a la ruta de la fecha elegida.</p></div><button className="icon-btn" onClick={() => setSpecialRouteOpen(false)}><X /></button></header><label className="field"><span>Fecha programada de entrega</span><input type="date" value={specialRouteDate} onChange={(event) => setSpecialRouteDate(event.target.value)} /></label><div className="orders-confirm-actions"><button className="btn secondary" onClick={() => setSpecialRouteOpen(false)}>Volver</button><button className="btn primary" disabled={!specialRouteDate || Boolean(busyAction)} onClick={() => void addSpecialToRoute()}><RouteIcon />Agregar a ruta</button></div></div>
+    </Modal>}
+
+    {routePanelOpen && <Modal label="Ruta del día" onClose={() => setRoutePanelOpen(false)} wide>
+      <div className="route-dashboard"><header className="orders-modal-head"><div><span className="eyebrow">Operación del día</span><h2>Ruta · {dateLabel(routeSnapshot?.route.date || selectedDate)}</h2><p>{routeSnapshot?.route.label || "Entregas NutriPlus"}</p></div><button className="icon-btn" onClick={() => setRoutePanelOpen(false)}><X /></button></header>{routePanelLoading || !routeSnapshot ? <div className="orders-loading"><Loader2 className="spin" />Calculando la ruta…</div> : <><div className="route-status-line"><span className={`orders-status ${routeSnapshot.route.status === "CLOSED" ? "delivered" : "confirmed"}`}>{routeSnapshot.route.status === "CLOSED" ? "Ruta cerrada" : "Ruta abierta"}</span>{routeSnapshot.route.closedAt && <small>Cerrada {dateTimeLabel(routeSnapshot.route.closedAt)}</small>}<div><button className="btn secondary small" onClick={() => void downloadPrint()} disabled={printing}><Printer />Imprimir</button>{routeSnapshot.route.status === "OPEN" && <button className="btn primary small" onClick={() => routeSnapshot.pendingOrders.length ? setRouteCloseConfirm(true) : void closeRoute()}><Check />Cerrar ruta</button>}</div></div><section className="route-summary-grid"><span><b>{routeSnapshot.summary.delivered}</b><small>Entregados</small></span><span><b>{routeSnapshot.summary.cancelled}</b><small>Cancelados</small></span><span><b>{routeSnapshot.summary.reprogrammed}</b><small>Reprogramados</small></span><span><b>{routeSnapshot.summary.pending}</b><small>Pendientes</small></span><span><b>{crc(routeSnapshot.summary.totalDelivered)}</b><small>Total entregado</small></span><span><b>{crc(routeSnapshot.summary.totalCollected)}</b><small>Total cobrado</small></span><span><b>{crc(routeSnapshot.summary.balancePending)}</b><small>Saldo pendiente</small></span><span><b>{crc(routeSnapshot.summary.shippingTotal)}</b><small>Total envíos</small></span></section><section className="route-payment-grid">{Object.entries(routeSnapshot.summary.paymentMethods).map(([method, amount]) => <span key={method}><b>{crc(amount)}</b><small>{PAYMENT_LABELS[method as PaymentMethod]}</small></span>)}</section><section className="route-orders-list"><header><b>Pedidos de la ruta</b><span>{routeSnapshot.orders.length}</span></header>{routeSnapshot.orders.map((order) => <article className={order.routeMembership.active ? "" : "removed"} key={order.id}><span className="route-position">{order.routeMembership.position}</span><div><b>{order.orderNumber} · {order.customerName}</b><small>{order.routeMembership.active ? STATUS_LABELS[order.status] : `Reprogramado a ${dateLabel(order.scheduledDeliveryDate)}`} · saldo {crc(order.balance)}</small></div><button className="btn secondary small" onClick={() => { setRoutePanelOpen(false); void loadDetail(order.id); }}><Eye />Abrir</button></article>)}</section></>}</div>
+    </Modal>}
+
+    {routeCloseConfirm && routeSnapshot && <Modal label="Cerrar ruta con pendientes" onClose={() => setRouteCloseConfirm(false)}>
+      <div className="orders-confirm-card"><header className="orders-modal-head"><div><span className="eyebrow">Confirmación explícita</span><h2>La ruta tiene pedidos pendientes</h2><p>Cerrar la ruta no cancela, entrega ni borra esos pedidos. Permanecerán en su estado actual.</p></div><button className="icon-btn" onClick={() => setRouteCloseConfirm(false)}><X /></button></header><div className="pending-route-orders">{routeSnapshot.pendingOrders.map((order) => <article key={order.id}><b>{order.orderNumber} · {order.customerName}</b><small>{STATUS_LABELS[order.status]}</small></article>)}</div><div className="orders-confirm-actions"><button className="btn secondary" onClick={() => setRouteCloseConfirm(false)}>Volver a revisar</button><button className="btn primary" disabled={Boolean(busyAction)} onClick={() => void closeRoute()}><Check />Cerrar y conservar pendientes</button></div></div>
     </Modal>}
   </div>;
 }

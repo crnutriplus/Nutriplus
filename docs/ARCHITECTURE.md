@@ -20,7 +20,7 @@ Navegador/PWA
 
 - `app/page.tsx` monta `NutriPlusApp`.
 - `app/client-app.tsx` concentra navegación, calculadora, productos, importación, ajustes, trabajo sin conexión y modales.
-- `app/orders-view.tsx` concentra la interfaz operativa de Pedidos, búsqueda/escáner, tarjetas diarias, pagos y acciones de estado.
+- `app/orders-view.tsx` concentra la interfaz operativa de Pedidos, búsqueda/escáner, tarjetas diarias, rutas, impresión, pagos, recepciones y acciones de estado.
 - `app/inventory-intake.tsx` concentra el flujo de ingreso por factura.
 - `app/globals.css` contiene los estilos globales.
 - `public/sw.js` y `manifest.webmanifest` proporcionan capacidades PWA.
@@ -38,7 +38,8 @@ Los 42 Route Handlers de `app/api/` gestionan:
 - importaciones masivas, progreso, historial y restauración;
 - documentos de inventario, archivos, análisis, revisión, confirmación, cancelación y reversa;
 - importación de paquetes ChatGPT y búsqueda de códigos;
-- borradores, confirmación, preparación, entrega, cancelación, reapertura, reprogramación, pagos, devoluciones e historial de Pedidos;
+- borradores, confirmación, preparación, entregas totales/parciales, cancelación, reapertura, reprogramación, pagos, devoluciones e historial de Pedidos;
+- hoja PDF diaria, resumen/cierre de rutas y búsqueda paginada de Pedidos;
 - estados de proveedor y resolución idempotente de recepciones de Encargos mediante entrada inmediata o vínculo con inventario previamente ingresado;
 - creación/listado de rutas de entrega y asignación ordenada de pedidos.
 
@@ -107,9 +108,9 @@ La Fase 1 separa cabecera, líneas, pagos, eventos, devoluciones, entregas y rut
 
 Las mutaciones sensibles usan `operationId` con respuesta persistida, y `orders.version` evita sobrescrituras obsoletas. La asignación `NP-000001`, `NP-000002`, etc. usa una secuencia autoincremental en la misma transacción lógica, sin `MAX()+1`. Los importes CRC son enteros y las fechas operativas son valores `YYYY-MM-DD` de Costa Rica, no instantes UTC.
 
-La entrega futura parcial se modela mediante `order_fulfillments` y `order_fulfillment_lines`: el pedido, sus entregas y una venta futura permanecen conceptos distintos. En Fase 1, entregar registra todas las cantidades pendientes. La especificación completa está en [ORDERS.md](ORDERS.md).
+La entrega parcial se modela mediante `order_fulfillments` y `order_fulfillment_lines`: el pedido, sus entregas y una venta futura permanecen conceptos distintos. Cada fulfillment consume solo cantidades pendientes, puede reprogramar el remanente y es idempotente. El cierre completo cambia el estado general; una parcial conserva `PREPARED`. La especificación completa está en [ORDERS.md](ORDERS.md).
 
-La Fase 2 conecta esas reglas con una interfaz responsive. El listado diario consume proyecciones agregadas de líneas y pagos; cada detalle se vuelve a cargar antes de mutar. El cliente bloquea dobles toques y muestra revisiones, pero D1 y los servicios continúan siendo la autoridad sobre totales, stock, versión e idempotencia.
+La interfaz responsive conecta esas reglas con Entregas, Encargos e Historial. El listado diario consume proyecciones agregadas de líneas y pagos; cada detalle se vuelve a cargar antes de mutar. El cliente bloquea dobles toques y muestra revisiones, pero D1 y los servicios continúan siendo la autoridad sobre totales, stock, versión e idempotencia. La impresión y los resúmenes de ruta son proyecciones derivadas: no crean un segundo ledger ni un segundo saldo.
 
 ## Autenticación y permisos
 

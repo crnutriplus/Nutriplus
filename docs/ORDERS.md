@@ -2,7 +2,7 @@
 
 ## Estado y alcance
 
-La implementación local de Pedidos incluye modelo D1, migración, reglas de dominio, inventario transaccional, pagos, devoluciones, rutas, API, interfaz operativa y pruebas. Antes de iniciar la interfaz se amplió de forma aditiva la misma migración `0015`, todavía inédita, para persistir el método esperado de pago y el flujo seguro de Encargos. Está en la rama `feature/orders-phase-1`, creada desde el `main` productivo de NutriPlus v2.15. La impresión y los flujos avanzados se incorporan en la fase siguiente.
+La implementación local de Pedidos incluye modelo D1, migración, reglas de dominio, inventario transaccional, pagos, devoluciones, entregas parciales, rutas, impresión, API, interfaz operativa e historial. Antes de iniciar la interfaz se amplió de forma aditiva la misma migración `0015`, todavía inédita, para persistir el método esperado de pago y el flujo seguro de Encargos. Está en la rama `feature/orders-phase-1`, creada desde el `main` productivo de NutriPlus v2.15.
 
 La migración `0015_quiet_anthem.sql` no se ha aplicado a producción. No hubo merge a `main`, push, checkpoint, deploy, cambio de versión ni escritura en D1/R2 productivos.
 
@@ -73,9 +73,11 @@ Una reversa conserva el pago original, referencia el movimiento corregido y exig
 
 ## Entregas parciales y rutas
 
-El pedido, la entrega y una venta futura son entidades diferentes. `order_fulfillments` agrupa cada entrega y `order_fulfillment_lines` registra la cantidad de cada línea. Esto permite entregar una parte y mantener el resto pendiente o reprogramado sin borrar líneas. La Fase 1 implementa el cierre completo actual, pero el esquema ya admite múltiples entregas parciales.
+El pedido, la entrega y una venta futura son entidades diferentes. `order_fulfillments` agrupa cada entrega y `order_fulfillment_lines` registra la cantidad de cada línea. La API permite entregar una parte, conserva el pedido en `PREPARED` y mantiene el resto pendiente en la misma fecha o lo reprograma sin borrar líneas. Solo la entrega de todas las cantidades pendientes cambia el pedido a `DELIVERED`.
 
-Una ruta tiene fecha operativa, etiqueta y estado. `route_orders` conserva una posición positiva y única por ruta; cada pedido admite como máximo una asignación activa. Los totales futuros de cierre se derivarán de pedidos, pagos y entregas, sin duplicarlos.
+Una ruta tiene fecha operativa, etiqueta y estado. `route_orders` conserva una posición positiva y única por ruta; cada pedido admite como máximo una asignación activa. Su detalle deriva en tiempo real conteos, total bruto, envío y cobros netos por método. El cierre advierte pedidos pendientes y requiere confirmación explícita para cerrarlos sin esconderlos.
+
+La hoja PDF usa el orden persistido de ruta, repite encabezados al cambiar de página y muestra `FECHA`, `TOTAL`, `ENVIO`, teléfono, dirección, productos y el monto pendiente de cobro. La columna `E/S/T` se deriva únicamente de `expected_payment_method`. Al final consolida unidades de inventario por cargar e identifica aparte las líneas manuales; no expone el nombre del cliente ni el número NP.
 
 ## API local
 
@@ -86,6 +88,7 @@ Una ruta tiene fecha operativa, etiqueta y estado. `route_orders` conserva una p
 | `POST /api/orders/:id/confirm` | Confirmar y descontar inventario. |
 | `POST /api/orders/:id/prepare` | Marcar preparado. |
 | `POST /api/orders/:id/deliver` | Registrar entrega sin nuevo descuento. |
+| `POST /api/orders/:id/fulfillments` | Registrar una entrega parcial o completa y reprogramar únicamente el saldo pendiente. |
 | `POST /api/orders/:id/cancel` | Cancelar y restaurar cuando corresponde. |
 | `POST /api/orders/:id/reprogram` | Cambiar fecha sin cancelar ni mover stock. |
 | `POST /api/orders/:id/reopen` | Reabrir una entrega con motivo. |
@@ -94,10 +97,13 @@ Una ruta tiene fecha operativa, etiqueta y estado. `route_orders` conserva una p
 | `GET /api/orders/:id/history` | Obtener eventos, estados, pagos, devoluciones y entregas. |
 | `POST /api/orders/:id/special-order/transition` | Avanzar el estado de proveedor sin mover inventario. |
 | `POST /api/orders/:id/special-order/receipts` | Resolver total o parcialmente una recepción mediante uno de los dos caminos autorizados. |
+| `GET /api/orders/print` | Generar la hoja PDF diaria o su modelo JSON verificable. |
 | `GET/POST /api/delivery-routes` | Listar o crear rutas. |
+| `GET /api/delivery-routes/:id` | Consultar asignaciones y resumen derivado. |
+| `POST /api/delivery-routes/:id/close` | Cerrar la ruta; exige reconocimiento explícito si quedan pendientes. |
 | `POST /api/delivery-routes/:id/orders` | Asignar posición estable. |
 
-El listado admite fecha, rango, estado, estado de pago derivado, teléfono normalizado, número, producto, tipo y paginación limitada.
+El listado admite fecha, rango, estado, estado de pago derivado, teléfono normalizado, número, producto, tipo, búsqueda general de servidor, modo activo y paginación limitada.
 
 ## Interfaz operativa
 
@@ -105,7 +111,9 @@ El listado admite fecha, rango, estado, estado de pago derivado, teléfono norma
 
 El editor permite buscar por nombre/código, usar el escáner existente, seleccionar Inventario o No inventario y agregar una línea manual. El precio sugerido es editable y nunca modifica el precio maestro. Guardar un borrador no mueve stock. Antes de crear, la UI consulta coincidencias por teléfono y fecha y permite abrir el pedido existente o continuar conscientemente.
 
-La ficha del pedido ofrece revisión de stock antes de confirmar, edición por delta, checklist de preparación, entrega, cancelación con motivo/consecuencia, reprogramación, ledger de abonos mixtos y orden de ruta persistente. Los botones sensibles se bloquean durante la solicitud y todas las reglas se vuelven a validar en el servidor.
+La ficha del pedido ofrece revisión de stock antes de confirmar, edición por delta, checklist de preparación, entrega total o parcial, cancelación con motivo/consecuencia, reprogramación, ledger de abonos mixtos y orden de ruta persistente. La corrección reabre con motivo, expone consecuencias antes de editar y conserva el delta en inventario y el historial. Las devoluciones registran por línea si la unidad vuelve o no a existencias.
+
+Rutas permite ordenar, imprimir, revisar totales y cerrar con advertencia de pendientes. Historial busca y pagina en servidor y filtra por fecha, tipo, estado y método. Encargos expone la máquina de proveedor, ambos caminos de recepción, cantidades reales, creación/vinculación segura desde No inventario con stock cero, pagos, incorporación posterior a una ruta y entrega normal bajo el mismo NP.
 
 ## Dinero y tiempo
 
@@ -115,7 +123,7 @@ Todos los importes de esta fase son enteros CRC: ₡12.500 se guarda como `12500
 
 La rama local `security/phase-3b1` permanece intacta y no se mezcló. Mientras esta fase no se publique, las APIs nuevas solo existen localmente. Si se retoman y publican, deberán recibir policies específicas de autorización antes de abrir el Site a empleados o clientes; no se creó una identidad alternativa ni se inventaron actores.
 
-No se envían eventos a CRM, WhatsApp, Poket ni otro servicio. No hay llamadas a OpenAI. La exportación futura de Pedidos no sustituirá un backup; el backup integral D1+R2 continúa **BLOQUEADO** por las limitaciones actuales de Sites.
+No se envían eventos a CRM, WhatsApp, Poket ni otro servicio. No hay llamadas a OpenAI. La impresión PDF de Pedidos no sustituye un backup; el backup integral D1+R2 continúa **BLOQUEADO** por las limitaciones actuales de Sites.
 
 ## Pruebas
 
@@ -123,4 +131,5 @@ No se envían eventos a CRM, WhatsApp, Poket ni otro servicio. No hay llamadas a
 - `tests/orders-phase-1.integration.mjs` valida estados, stock, deltas, rollback, idempotencia, concurrencia, pagos, devoluciones, rutas, snapshots, NP y fechas.
 - `tests/orders-special-foundation.integration.mjs` valida método esperado, máquina de Encargos, ambos caminos de recepción, recepción parcial, idempotencia y concurrencia.
 - `tests/orders-phase-2.integration.mjs` valida el contrato de interfaz, resumen diario, detección de duplicados, acciones operativas, pagos, rutas, filtros, idempotencia, concurrencia y navegación responsive.
-- `npm test` incorpora las cuatro pruebas junto con toda la regresión existente.
+- `tests/orders-phase-3.integration.mjs` valida impresión exacta y multipágina, cierre de ruta, entregas parciales, correcciones, devoluciones, Encargos completos, saldos, historial y contrato móvil.
+- `npm test` incorpora las cinco pruebas de Pedidos junto con toda la regresión existente.

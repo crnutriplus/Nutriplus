@@ -57,7 +57,7 @@ Hallazgo pendiente: la carga normal determina actualmente PDF/imagen por MIME de
 - No ejecutar restauraciones sobre producción como prueba.
 - En Pedidos, `expected_payment_method` es solo una expectativa y nunca autoriza ni fabrica un pago. Las recepciones de Encargos requieren `operationId`, versión vigente, producto existente y una decisión explícita entre entrada nueva o stock ya ingresado; marcar recibido por sí solo no mueve inventario.
 
-Las rutas `/api/orders/*` y `/api/delivery-routes/*`, incluidas `/special-order/transition` y `/special-order/receipts`, dependen actualmente de la política privada de Sites. Deben incorporarse explícitamente a la autorización por rol/recurso antes de abrir el Site a empleados, clientes o público. La rama experimental `security/phase-3b1` no forma parte de esta implementación.
+Las rutas `/api/orders/*` y `/api/delivery-routes/*`, incluidas fulfillments, impresión, cierre, `/special-order/transition` y `/special-order/receipts`, dependen actualmente de la política privada de Sites. Deben incorporarse explícitamente a la autorización por rol/recurso antes de abrir el Site a empleados, clientes o público. La rama experimental `security/phase-3b1` no forma parte de esta implementación.
 
 ## Logging seguro
 

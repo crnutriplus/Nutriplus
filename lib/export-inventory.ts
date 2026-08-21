@@ -1,7 +1,6 @@
 import type { NonInventoryRecord, PricingSettings, ProductRecord } from "./pricing";
 import { calculatePrices, hasCompletePricing } from "./pricing";
-import pdfBoldFontUrl from "dejavu-fonts-ttf/ttf/DejaVuSans-Bold.ttf?url";
-import pdfRegularFontUrl from "dejavu-fonts-ttf/ttf/DejaVuSans.ttf?url";
+import { pdfBoldFontUrl, pdfRegularFontUrl } from "./pdf-fonts";
 
 type InventoryRow = {
   product: ProductRecord | NonInventoryRecord;
