@@ -3,9 +3,9 @@
 ## Production
 
 - Version: v2.17
-- Checkpoint: 31
+- Checkpoint: 32
 - Commit: `ea59f40ab80695666782b45d1cc0df0c223c1554`
-- Deployment: `appgdep_6a88b9ce7d408191afad2991bdebb50d`
+- Deployment: `appgdep_6a88bcfe30448191a9fce3de3dfba92a`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0016_round_scarlet_witch.sql`
 - Access mode: private/custom; one owner/admin, no external visitors

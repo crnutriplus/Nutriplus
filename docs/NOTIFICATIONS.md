@@ -13,7 +13,7 @@ La clasificación técnica es **A. Push completo posible**, con una distinción 
 | C. Web Push / `PushManager` | El cliente exige `PushManager`, `Notification` y Service Worker antes de suscribirse. | No se presenta una notificación local como si fuera push. |
 | D. Notification API | Se solicita permiso únicamente después de tocar **Activar notificaciones**. | No aparece el prompt durante la carga. |
 | E. Persistencia de `PushSubscription` | D1 guarda endpoint y claves públicas de cada dispositivo, con endpoint único y desactivación. | Admite varios dispositivos y reintentos sin duplicar registros. |
-| F. VAPID seguro | Sites admite valores alojados del servidor; el Worker lee tres variables y solo expone la pública. | La clave privada no está en Git, frontend, manifest ni respuestas. Todavía no se configuró. |
+| F. VAPID seguro | Sites aloja el par VAPID y el Worker lee tres variables; solo expone la pública. | La clave privada no está en Git, frontend, manifest ni respuestas. La validación productiva está activa. |
 | G. Entrega backend | El Worker puede hacer `fetch` HTTPS al endpoint del push service después de persistir el evento y la alerta interna. | La página no necesita estar visible para que el push service entregue al Service Worker. Falta validación física. |
 | H. `push` / `notificationclick` | Ambos handlers existen y tienen pruebas locales. | La notificación muestra texto seguro y abre/focaliza una ruta interna validada. |
 | I. Instalación Android | Manifest, HTTPS, `start_url`, `scope`, iconos exactos 192/512 y modo standalone están preparados. | Compatible de forma prevista con Chrome moderno; no se afirma prueba real todavía. |
