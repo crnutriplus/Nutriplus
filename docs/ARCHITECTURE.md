@@ -20,12 +20,13 @@ Navegador/PWA
 
 - `app/page.tsx` monta `NutriPlusApp`.
 - `app/client-app.tsx` concentra navegación, calculadora, productos, importación, ajustes, trabajo sin conexión y modales.
+- `app/orders-view.tsx` concentra la interfaz operativa de Pedidos, búsqueda/escáner, tarjetas diarias, pagos y acciones de estado.
 - `app/inventory-intake.tsx` concentra el flujo de ingreso por factura.
 - `app/globals.css` contiene los estilos globales.
 - `public/sw.js` y `manifest.webmanifest` proporcionan capacidades PWA.
 - PDF.js y Tesseract se cargan bajo demanda para lectura local; ZXing se usa para códigos.
 
-La navegación principal implementada es Calcular, Productos, Importar y Ajustes. Facturas se abre desde **Agregar inventario** en Productos. Pedidos dispone de base de datos, dominio y API en la rama local `feature/orders-phase-1`; su base incluye expectativa de pago y Encargos normalizados, pero todavía no tiene interfaz en este punto de la secuencia. No hay módulos de CRM, Poket, clientes o WhatsApp.
+La navegación principal implementada es Calcular, Pedidos, Productos, Importar y Ajustes. Facturas se abre desde **Agregar inventario** en Productos. Pedidos incluye Entregas, Encargos e Historial, comparte el escáner existente y mantiene expectativa de pago separada del ledger real. No hay módulos de CRM, Poket, clientes o WhatsApp.
 
 ### API y servidor
 
@@ -100,13 +101,15 @@ Guarda la factura y el borrador sin llamada a OpenAI. La persona puede completar
 6. Guarda un análisis con origen `CHATGPT_IMPORT`, cero llamadas y costo cero.
 7. Crea un borrador y exige revisión/confirmación antes de inventario.
 
-### Pedidos — base técnica local
+### Pedidos — base técnica e interfaz local
 
 La Fase 1 separa cabecera, líneas, pagos, eventos, devoluciones, entregas y rutas. Un pedido empieza como `DRAFT` y no mueve inventario. `CONFIRMED` descuenta stock mediante `inventory_movements`; una edición confirmada aplica únicamente el delta y una cancelación desde `CONFIRMED` o `PREPARED` restaura el compromiso vigente. `PREPARED` y `DELIVERED` no vuelven a descontar.
 
 Las mutaciones sensibles usan `operationId` con respuesta persistida, y `orders.version` evita sobrescrituras obsoletas. La asignación `NP-000001`, `NP-000002`, etc. usa una secuencia autoincremental en la misma transacción lógica, sin `MAX()+1`. Los importes CRC son enteros y las fechas operativas son valores `YYYY-MM-DD` de Costa Rica, no instantes UTC.
 
 La entrega futura parcial se modela mediante `order_fulfillments` y `order_fulfillment_lines`: el pedido, sus entregas y una venta futura permanecen conceptos distintos. En Fase 1, entregar registra todas las cantidades pendientes. La especificación completa está en [ORDERS.md](ORDERS.md).
+
+La Fase 2 conecta esas reglas con una interfaz responsive. El listado diario consume proyecciones agregadas de líneas y pagos; cada detalle se vuelve a cargar antes de mutar. El cliente bloquea dobles toques y muestra revisiones, pero D1 y los servicios continúan siendo la autoridad sobre totales, stock, versión e idempotencia.
 
 ## Autenticación y permisos
 

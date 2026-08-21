@@ -24,6 +24,7 @@ npm run validate:artifact
 - `tests/orders-migration-0015.integration.mjs`: migración aditiva desde el esquema productivo actual, conservación de inventario y restricciones/triggers de Pedidos;
 - `tests/orders-phase-1.integration.mjs`: estados, inventario por delta, idempotencia, concurrencia, pagos, devoluciones, rutas, snapshots, numeración NP y fechas de Costa Rica;
 - `tests/orders-special-foundation.integration.mjs`: expectativa de pago, estados de Encargos, ambos caminos de recepción, cantidades parciales, idempotencia y concurrencia;
+- `tests/orders-phase-2.integration.mjs`: contrato de interfaz operativa, tarjetas diarias, duplicados, acciones, pagos, rutas, filtros, responsive, idempotencia y concurrencia;
 - `tests/api-integration.mjs`: productos, ajustes, quotes e importaciones;
 - `tests/concurrency-integration.mjs`: idempotencia y concurrencia;
 - `tests/inventory-intake-integration.mjs`: documentos, confirmación, cierre no destructivo a nivel de interfaz, omisión/reactivación, saldo neto, reingreso, concurrencia, historial por factura y reversas;
@@ -39,9 +40,10 @@ Para validar aisladamente el dominio nuevo:
 node tests/orders-migration-0015.integration.mjs
 node tests/orders-phase-1.integration.mjs
 node tests/orders-special-foundation.integration.mjs
+node tests/orders-phase-2.integration.mjs
 ```
 
-La prueba de Fase 1 cubre borrador sin stock, confirmación única, reintentos, rollback por faltantes, edición confirmada por delta, cancelación, preparación/entrega, reapertura, pagos mixtos, devoluciones, actualización obsoleta, carrera por la última unidad, reprogramación, snapshots, NP concurrente y fecha operativa. La ampliación comprueba además que el método esperado no toca el ledger, que las transiciones de proveedor no mueven inventario, que marcar recibido deja una resolución pendiente y que los caminos `INVENTORY_NOW` y `ALREADY_INVENTORY` conservan idempotencia, trazabilidad, stock real y recepción parcial.
+La prueba de Fase 1 cubre borrador sin stock, confirmación única, reintentos, rollback por faltantes, edición confirmada por delta, cancelación, preparación/entrega, reapertura, pagos mixtos, devoluciones, actualización obsoleta, carrera por la última unidad, reprogramación, snapshots, NP concurrente y fecha operativa. La ampliación comprueba además que el método esperado no toca el ledger, que las transiciones de proveedor no mueven inventario, que marcar recibido deja una resolución pendiente y que los caminos `INVENTORY_NOW` y `ALREADY_INVENTORY` conservan idempotencia, trazabilidad, stock real y recepción parcial. La prueba de Fase 2 recorre las operaciones que consume la interfaz y verifica su contrato responsive sin tocar producción.
 
 Estas pruebas usan una base SQLite temporal compatible con D1. No aplican `0015` a producción, no crean movimientos reales, no usan R2 y no hacen llamadas a OpenAI.
 
@@ -83,7 +85,7 @@ No ejecutar una llamada pagada real para probar interfaz, errores, validación o
 
 - no existe una suite E2E de navegador que recorra todos los botones del deployment;
 - las migraciones críticas `0014` y `0015` tienen pruebas automáticas con datos representativos; no existe todavía una matriz desde cada snapshot histórico de D1;
-- Pedidos Fase 1 no tiene prueba de navegador porque la interfaz queda expresamente fuera de alcance;
+- la interfaz de Pedidos tiene contrato estático responsive e integración real contra el Worker local; la recorrida visual de navegador se reserva para la verificación final del checkpoint;
 - no hay prueba automatizada de backup integral/recuperación D1+R2 porque ese mecanismo aún no existe;
 - las pruebas opcionales dependen de rutas de fixtures externas y no forman parte de `npm test`.
 

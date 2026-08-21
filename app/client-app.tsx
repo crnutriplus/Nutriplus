@@ -51,6 +51,7 @@ import {
 } from "react";
 import Image from "next/image";
 import { InventoryIntakeModal, type IntakeScanEvent } from "./inventory-intake";
+import { OrdersView, type OrderScanEvent } from "./orders-view";
 import type { ImportChangedProduct, ImportJobRecord } from "@/lib/import-jobs";
 import type { ProductDeletionJobRecord } from "@/lib/deletion-jobs";
 import { NUTRIPLUS_PUBLIC_VERSION } from "@/lib/public-version";
@@ -79,9 +80,9 @@ import {
   type QueuedMutation,
 } from "@/lib/offline-store";
 
-type Tab = "calculator" | "products" | "import" | "settings";
+type Tab = "calculator" | "orders" | "products" | "import" | "settings";
 type NumericField = "purchasePriceUsd" | "weightLb" | "code";
-type ScannerIntent = "assign" | "lookup-products" | "lookup-calculator" | "floating" | "intake";
+type ScannerIntent = "assign" | "lookup-products" | "lookup-calculator" | "floating" | "intake" | "orders";
 type Form = {
   id: number | null;
   source: "inventory" | "no_inventory" | null;
@@ -884,6 +885,7 @@ export function NutriPlusApp() {
   const [quantityText, setQuantityText] = useState("");
   const [intakeScanTarget, setIntakeScanTarget] = useState<string | null>(null);
   const [intakeScannedBarcode, setIntakeScannedBarcode] = useState<IntakeScanEvent>(null);
+  const [orderScannedBarcode, setOrderScannedBarcode] = useState<OrderScanEvent>(null);
   const [exportConfirm, setExportConfirm] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("both");
@@ -1405,6 +1407,10 @@ export function NutriPlusApp() {
     else if (scannerIntent === "lookup-products") void lookupCode(code, "products");
     else if (scannerIntent === "lookup-calculator") void lookupCode(code, "calculator");
     else if (scannerIntent === "floating") void lookupCode(code, "floating");
+    else if (scannerIntent === "orders") {
+      setScannerIntent(null);
+      setOrderScannedBarcode({ code, nonce: Date.now() });
+    }
     else if (scannerIntent === "intake" && intakeScanTarget) {
       setScannerIntent(null);
       setIntakeScannedBarcode({ lineId: intakeScanTarget, code, nonce: Date.now() });
@@ -1898,7 +1904,7 @@ export function NutriPlusApp() {
     }
   }
 
-  const nav: Array<[Tab, string, typeof Calculator]> = [["calculator", "Calcular", Calculator], ["products", "Productos", PackageSearch], ["import", "Importar", FileSpreadsheet], ["settings", "Ajustes", Settings]];
+  const nav: Array<[Tab, string, typeof Calculator]> = [["calculator", "Calcular", Calculator], ["orders", "Pedidos", Truck], ["products", "Productos", PackageSearch], ["import", "Importar", FileSpreadsheet], ["settings", "Ajustes", Settings]];
   if (loading) return <main className="loading"><Image className="loading-logo" src="/nutriplus-logo.jpg" alt="NutriPlus Supplements" width={94} height={94} priority /><Loader2 className="spin" />Preparando NutriPlus…</main>;
 
   return <main className="app-shell">
@@ -1906,6 +1912,8 @@ export function NutriPlusApp() {
     {showPriceBar && <StickyPrices price={validPrice ? price : null} weight={validWeight ? weight : null} settings={settings} />}
     <div className="body"><aside className={`side ${showPriceBar ? "under-price" : ""}`}><span>Menú</span>{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}<div className="weight-note"><Weight /><span><b>+{settings.extraWeightLb.toFixed(2)} lb</b><small>en cada cálculo</small></span></div></aside><div className="content">
       {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{form.source === "no_inventory" ? "Actualizar cotización" : form.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearForm}><RotateCcw />Limpiar</button></header><ProductForm form={form} setForm={setForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onExternalCode={(code) => void lookupCode(code, "calculator")} onOpenScanner={() => openScanner("lookup-calculator")} onImageCode={(file) => readCodeFromImage(file, "calculator")} onPasteCode={() => void pasteCode("calculator")} onSubmit={save} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
+
+      {tab === "orders" && <OrdersView products={products} quotes={quotes} settings={settings} scannedBarcode={orderScannedBarcode} onConsumeScan={() => setOrderScannedBarcode(null)} onRequestScan={() => openScanner("orders")} onInventoryChanged={refreshProducts} />}
 
       {tab === "products" && <div className="view"><header className="view-head products-head"><div><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá, agregá o editá cualquier producto guardado.</p></div><button className={`restock-head-btn ${lowStockProducts.length ? "has-items" : ""}`} onClick={() => setRestockOpen(true)} aria-label={`Ver productos por abastecer: ${lowStockProducts.length}`}><BellRing /><span>Por abastecer</span><b>{lowStockProducts.length}</b></button></header>
         <div className="products-toolbar"><button className="btn primary" onClick={addInProducts}><Plus />Agregar producto</button><button className="btn secondary" onClick={() => setNoInventoryOpen(true)}><Package />No inventario ({quotes.length})</button><button className="btn secondary" onClick={() => void openRecent()}><Clock3 />Guardados recientemente</button><button className="btn secondary" onClick={() => setInventoryIntakeOpen(true)}><Upload />Agregar inventario</button><button className={`btn ${selectionMode ? "ghost" : "secondary"}`} onClick={() => { setSelectionMode((current) => !current); setSelectedProductIds(new Set()); }} disabled={!products.length}><Check />{selectionMode ? "Cancelar selección" : "Seleccionar varios"}</button>{selectionMode && selectedProductIds.size > 0 && <button className="btn danger-solid" onClick={() => setBulkDeleteConfirm(true)} disabled={bulkDeleting}><Trash2 />Eliminar ({selectedProductIds.size})</button>}<button className="btn secondary" onClick={() => setExportConfirm(true)} disabled={!products.length && !quotes.length}><Download />Descargar inventario</button></div>

@@ -410,6 +410,7 @@ function orderHeaderFromRow(row: Row) {
     longitude: row.longitude == null ? null : Number(row.longitude),
     scheduledDeliveryDate: row.scheduled_delivery_date ? String(row.scheduled_delivery_date) : null,
     routeId: row.route_id ? String(row.route_id) : null,
+    routePosition: row.route_position == null ? null : Number(row.route_position),
     status: String(row.status),
     currency: String(row.currency),
     subtotal: Number(row.subtotal),
@@ -432,6 +433,9 @@ function orderHeaderFromRow(row: Row) {
     deliveredAt: row.delivered_at ? String(row.delivered_at) : null,
     cancelledAt: row.cancelled_at ? String(row.cancelled_at) : null,
     reopenedAt: row.reopened_at ? String(row.reopened_at) : null,
+    lineCount: Number(row.line_count || 0),
+    unitTotal: Number(row.unit_total || 0),
+    productSummary: row.product_summary ? String(row.product_summary) : null,
   };
 }
 
@@ -585,9 +589,17 @@ export async function listOrders(db: D1Database, request: Request) {
   const [result, count] = await Promise.all([
     db.prepare(`SELECT o.*,sd.special_order_status,sd.estimated_arrival_date,sd.receipt_resolved_at,
       COALESCE((SELECT SUM(CASE WHEN p.payment_type='PAYMENT' THEN p.amount ELSE -p.amount END)
-        FROM order_payments p WHERE p.order_id=o.id AND p.status='POSTED'),0) AS paid_total
+        FROM order_payments p WHERE p.order_id=o.id AND p.status='POSTED'),0) AS paid_total,
+      COALESCE((SELECT COUNT(*) FROM order_lines l WHERE l.order_id=o.id AND l.removed_at IS NULL),0) AS line_count,
+      COALESCE((SELECT SUM(l.quantity) FROM order_lines l WHERE l.order_id=o.id AND l.removed_at IS NULL),0) AS unit_total,
+      (SELECT GROUP_CONCAT(summary,' · ') FROM (
+        SELECT l.product_name_snapshot||' × '||l.quantity AS summary
+        FROM order_lines l WHERE l.order_id=o.id AND l.removed_at IS NULL ORDER BY l.position,l.id
+      )) AS product_summary,
+      (SELECT ro.position FROM route_orders ro WHERE ro.order_id=o.id AND ro.removed_at IS NULL LIMIT 1) AS route_position
       FROM orders o LEFT JOIN special_order_details sd ON sd.order_id=o.id ${where}
-      ORDER BY COALESCE(o.scheduled_delivery_date,'9999-12-31'),o.created_at DESC,o.id DESC LIMIT ? OFFSET ?`)
+      ORDER BY COALESCE(o.scheduled_delivery_date,'9999-12-31'),
+        CASE WHEN route_position IS NULL THEN 1 ELSE 0 END,route_position,o.created_at DESC,o.id DESC LIMIT ? OFFSET ?`)
       .bind(...values, limit, (page - 1) * limit).all<Row>(),
     db.prepare(`SELECT COUNT(*) AS total FROM orders o ${where}`).bind(...values).first<{ total: number }>(),
   ]);
@@ -1303,7 +1315,16 @@ export async function assignOrderToRoute(db: D1Database, routeId: string, payloa
     }
   }
   const now = new Date().toISOString();
-  await db.batch([
+  const occupied = await db.prepare(`SELECT id FROM route_orders
+    WHERE route_id=? AND position=? AND removed_at IS NULL AND order_id<>? LIMIT 1`)
+    .bind(routeId, position, orderId).first<{ id: string }>();
+  const maximum = occupied
+    ? await db.prepare("SELECT COALESCE(MAX(position),0) AS maximum FROM route_orders WHERE route_id=? AND removed_at IS NULL")
+      .bind(routeId).first<{ maximum: number }>()
+    : null;
+  const statements: D1PreparedStatement[] = [
+    ...(occupied ? [db.prepare("UPDATE route_orders SET position=? WHERE id=? AND removed_at IS NULL")
+      .bind(Number(maximum?.maximum || 0) + 1, occupied.id)] : []),
     db.prepare("UPDATE route_orders SET removed_at=? WHERE order_id=? AND removed_at IS NULL").bind(now, orderId),
     db.prepare("INSERT INTO route_orders (id,route_id,order_id,position,assigned_at) VALUES (?,?,?,?,?)")
       .bind(newOrderChildId("routeorder"), routeId, orderId, position, now),
@@ -1311,6 +1332,7 @@ export async function assignOrderToRoute(db: D1Database, routeId: string, payloa
     ...(specialDetail && String(specialDetail.special_order_status) === "RECEIVED_READY"
       ? [db.prepare("UPDATE special_order_details SET special_order_status='ADDED_TO_ROUTE',updated_at=? WHERE order_id=? AND special_order_status='RECEIVED_READY'").bind(now, orderId)]
       : []),
-  ]);
+  ];
+  await db.batch(statements);
   return { order: await loadOrder(db, orderId) };
 }

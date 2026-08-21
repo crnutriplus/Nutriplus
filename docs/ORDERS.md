@@ -1,8 +1,8 @@
-# Pedidos — Fase 1 y ampliación de base para Encargos
+# Pedidos — base técnica e interfaz operativa
 
 ## Estado y alcance
 
-La base técnica local de Pedidos incluye modelo D1, migración, reglas de dominio, inventario transaccional, pagos, devoluciones, rutas, API y pruebas. Antes de iniciar la interfaz se amplió de forma aditiva la misma migración `0015`, todavía inédita, para persistir el método esperado de pago y el flujo seguro de Encargos. Está en la rama `feature/orders-phase-1`, creada desde el `main` productivo de NutriPlus v2.15. En este punto todavía no incluye interfaz ni impresión.
+La implementación local de Pedidos incluye modelo D1, migración, reglas de dominio, inventario transaccional, pagos, devoluciones, rutas, API, interfaz operativa y pruebas. Antes de iniciar la interfaz se amplió de forma aditiva la misma migración `0015`, todavía inédita, para persistir el método esperado de pago y el flujo seguro de Encargos. Está en la rama `feature/orders-phase-1`, creada desde el `main` productivo de NutriPlus v2.15. La impresión y los flujos avanzados se incorporan en la fase siguiente.
 
 La migración `0015_quiet_anthem.sql` no se ha aplicado a producción. No hubo merge a `main`, push, checkpoint, deploy, cambio de versión ni escritura en D1/R2 productivos.
 
@@ -99,6 +99,14 @@ Una ruta tiene fecha operativa, etiqueta y estado. `route_orders` conserva una p
 
 El listado admite fecha, rango, estado, estado de pago derivado, teléfono normalizado, número, producto, tipo y paginación limitada.
 
+## Interfaz operativa
+
+`app/orders-view.tsx` implementa las vistas **Entregas**, **Encargos** e **Historial** dentro de la navegación principal. Entregas ofrece Hoy, Mañana, fecha libre y resumen de próximos días en `America/Costa_Rica`; las tarjetas muestran productos, unidades, total, pago real, método esperado y posición de ruta.
+
+El editor permite buscar por nombre/código, usar el escáner existente, seleccionar Inventario o No inventario y agregar una línea manual. El precio sugerido es editable y nunca modifica el precio maestro. Guardar un borrador no mueve stock. Antes de crear, la UI consulta coincidencias por teléfono y fecha y permite abrir el pedido existente o continuar conscientemente.
+
+La ficha del pedido ofrece revisión de stock antes de confirmar, edición por delta, checklist de preparación, entrega, cancelación con motivo/consecuencia, reprogramación, ledger de abonos mixtos y orden de ruta persistente. Los botones sensibles se bloquean durante la solicitud y todas las reglas se vuelven a validar en el servidor.
+
 ## Dinero y tiempo
 
 Todos los importes de esta fase son enteros CRC: ₡12.500 se guarda como `12500`. No se usan floats. Las fechas de entrega y ruta se validan como `YYYY-MM-DD` y se conservan como fecha civil de `America/Costa_Rica`, evitando desplazamientos por UTC. Los timestamps técnicos siguen la convención UTC existente.
@@ -114,4 +122,5 @@ No se envían eventos a CRM, WhatsApp, Poket ni otro servicio. No hay llamadas a
 - `tests/orders-migration-0015.integration.mjs` valida la migración aditiva desde el esquema anterior y la conservación del inventario.
 - `tests/orders-phase-1.integration.mjs` valida estados, stock, deltas, rollback, idempotencia, concurrencia, pagos, devoluciones, rutas, snapshots, NP y fechas.
 - `tests/orders-special-foundation.integration.mjs` valida método esperado, máquina de Encargos, ambos caminos de recepción, recepción parcial, idempotencia y concurrencia.
-- `npm test` incorpora las tres pruebas junto con toda la regresión existente.
+- `tests/orders-phase-2.integration.mjs` valida el contrato de interfaz, resumen diario, detección de duplicados, acciones operativas, pagos, rutas, filtros, idempotencia, concurrencia y navegación responsive.
+- `npm test` incorpora las cuatro pruebas junto con toda la regresión existente.
