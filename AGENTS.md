@@ -1,139 +1,77 @@
-# Manual permanente para agentes de NutriPlus
+# Reglas permanentes para agentes — NutriPlus
 
-Estas reglas se aplican a todo el repositorio. Las instrucciones explícitas de la tarea actual tienen prioridad cuando sean más restrictivas.
+Aplican a todo el repositorio. La instrucción actual prevalece cuando sea más restrictiva.
 
-## 1. Fuente de verdad y diagnóstico previo
+## Inicio, fuente de verdad y alcance
 
-Antes de implementar o corregir:
+Para una tarea normal:
 
-1. inspeccionar el estado de Git, archivos modificados, commits recientes y documentación existente;
-2. buscar el nombre de la función, rutas, tablas, flags, pruebas y componentes relacionados;
-3. verificar si existe una implementación parcial, desconectada o no publicada;
-4. reutilizar y completar el código existente antes de crear otro flujo;
-5. evitar duplicaciones y eliminar solo código inequívocamente abandonado dentro del alcance.
+1. leer `docs/PROJECT_STATE.md`;
+2. verificar Git mínimamente (`status`, rama y commits recientes);
+3. localizar el alcance con `rg`/`grep` y rangos concretos;
+4. leer y modificar solo los archivos relacionados.
 
-Asana y otras herramientas de planificación no demuestran que una función esté implementada. La fuente de verdad, en este orden, es:
+No reconstruir toda la historia del proyecto. Ampliar la verificación solo para releases, migraciones, seguridad, riesgo de datos, contradicciones, estado aparentemente desactualizado o petición expresa.
 
-1. el código;
-2. el esquema y las migraciones de base de datos;
-3. las pruebas;
-4. la aplicación publicada.
+La fuente de verdad es código → esquema/migraciones → pruebas → aplicación publicada. Asana u otros planes no prueban implementación. Preservar cambios ajenos, evitar Git destructivo y no tocar módulos fuera del alcance.
 
-## 2. Alcance y compatibilidad
+## WORK EFFICIENCY — NUTRIPLUS
 
-- No modificar módulos ajenos a la tarea salvo que sea imprescindible y quede explicado.
-- No hacer refactors masivos por estética.
-- Preservar compatibilidad con Facturas, Inventario, Productos, No inventario, importaciones, exportaciones, trabajo sin conexión, historial y reversas.
-- No reconstruir un módulo que ya funciona ni crear una segunda implementación paralela.
-- Conservar los cambios preexistentes de la persona usuaria y no usar operaciones destructivas de Git.
-- Una implementación funcional no está terminada porque funcione solo localmente.
+- Usar `PROJECT_STATE.md` como estado inicial; actualizarlo solo cuando cambie un dato allí registrado.
+- Buscar antes de explorar; no leer archivos o documentos irrelevantes.
+- No hacer refactors, limpiezas cosméticas ni alternativas completas no solicitadas.
+- Reutilizar helpers, servicios, patrones y suites existentes; no crear infraestructura paralela.
+- No usar web si código, docs o tests ya contienen la respuesta vigente.
+- No repetir una verificación costosa si pasó y nada relacionado cambió.
+- Con especificación cerrada, continuar implementación → pruebas → corrección sin pausas mecánicas.
+- Detenerse ante decisiones nuevas de negocio, seguridad, riesgo de datos, contradicciones o cambios destructivos.
+- No repetir la instrucción ni logs extensos en el reporte. Informar cambios, archivos, pruebas, commit y bloqueos; en release añadir versión, checkpoint, migración, deployment, regresión, audit y smoke test.
+- No ejecutar `npm ci` si `node_modules`, `package.json`, `package-lock.json` y el entorno siguen vigentes. Sí usarlo en entorno limpio, cambio de dependencias o release reproducible.
+- Reservar el build completo para puertas importantes, bundling/configuración, pruebas que consumen `dist` y releases.
 
-## 3. Regla de guardado y publicación
+## Invariantes de negocio
 
-Cuando se solicite una implementación o corrección funcional, salvo indicación expresa en contrario, al terminar se debe:
+- Validar server-side toda operación sensible; el navegador nunca es autoridad.
+- Inventario: cada cambio debe ser trazable mediante movimientos, transaccional, idempotente y concurrente; nunca permitir saldo activo negativo ni aplicar/restaurar unidades dos veces.
+- Facturas: cerrar la interfaz no borra documento, borrador, progreso ni inventario. Las líneas originales se conservan y la omisión es reversible. La disponibilidad se deriva de la suma neta de movimientos completados; ingreso, reversa y reingreso legítimo coexisten. Ver `docs/INVENTORY_INTAKE.md` y `docs/DATA_MODEL.md`.
+- Pedidos: validar estados, versión y stock en servidor. Confirmar descuenta exactamente una vez; cancelar/reabrir/corregir restaura o aplica solo el delta autorizado. Totales, devoluciones y entregas deben conservar historial e idempotencia. Ver `docs/ORDERS.md`.
+- Dinero: importes CRC enteros y cálculos server-side. `order_payments` es el ledger real append-only; el método esperado de pago no representa dinero recibido ni puede fabricar pagos.
+- Usar transacciones/guards/constraints para operaciones de inventario, pagos, facturas y pedidos; proteger retries, doble toque y carreras.
+- Preservar compatibilidad con Productos, No inventario, Facturas, Inventario, Pedidos, importación/exportación, trabajo sin conexión, historial y reversas.
 
-1. guardar todos los cambios;
-2. ejecutar lint;
-3. ejecutar TypeScript;
-4. ejecutar las pruebas relacionadas;
-5. ejecutar build;
-6. corregir errores y volver a ejecutar los controles afectados;
-7. crear commit y checkpoint;
-8. incrementar la versión pública según la regla vigente;
-9. publicar/desplegar;
-10. comprobar el deployment publicado;
-11. verificar que la función aparezca y opere realmente allí;
-12. informar versión pública, checkpoint, commit completo y resultados de pruebas.
+## Base de datos y migraciones
 
-No considerar terminada una implementación si no compila, falla TypeScript o lint, falla una prueba relacionada, falla el deployment o la función no aparece en producción. Una tarea que prohíba publicar debe detenerse después de las comprobaciones locales.
+- Esquema en `db/schema.ts`; acceso/compatibilidad D1 en `db/index.ts`.
+- No borrar ni modificar migraciones ya aplicadas. Crear una nueva migración aditiva, preservar datos y probar esquema, `ensureDatabase()`, índices, triggers y módulos afectados.
+- No ejecutar mutaciones diagnósticas, restauraciones, D1/R2, bindings o infraestructura productiva sin autorización específica.
 
-## 4. Versionado
+## Seguridad, datos y OpenAI
 
-- La versión pública vive en `lib/public-version.ts` y avanza `2.9 → 2.10 → 2.11 → 2.12 → 2.13`.
-- `package.json` expresa la misma versión como SemVer (`2.10.0`, por ejemplo).
-- No usar `2.9.1`, `2.9.2` ni el número de checkpoint/deployment como versión pública salvo instrucción expresa.
-- Checkpoint, deployment y commit son identificadores técnicos independientes; usar siempre los valores realmente generados.
-- Agregar una entrada a `CHANGELOG.md` sin borrar ni reescribir el historial reconstruido. Debe preservarse que `2.0.1` se normalizó a `2.1` y `2.0.2` a `2.2`.
+- Secretos exclusivamente server-side y fuera de Git, frontend, respuestas y logs. Nunca exponer keys, tokens, cookies, headers de autenticación, SQL, stack traces o rutas sensibles.
+- No crear bypass, relajar acceso ni inventar identidad/roles. Mantener separada `security/phase-3b1` hasta instrucción expresa.
+- Tratar PDF, imágenes, JSON, ZIP y hojas como entrada no confiable; validar tamaño, cantidad, firma/MIME, hash, rutas, contenido inesperado, traversal, symlinks, ejecutables y compresión abusiva según corresponda.
+- Seguir `SECURITY.md`: logging mínimo, redactado y sin documentos o datos sensibles innecesarios.
+- No hacer llamadas pagadas a OpenAI para pruebas. Usar fixtures/mocks; respetar `INVOICE_AI_ENABLED` y deduplicar antes del consumo. Una llamada real requiere autorización expresa.
+- `CHATGPT_IMPORT` es independiente de OpenAI API y conserva `api_calls = 0` y `api_cost = 0`.
 
-## 5. Base de datos y migraciones
+## Pruebas escalonadas
 
-- El esquema fuente está en `db/schema.ts`; el acceso a D1 y la compatibilidad en tiempo de ejecución están en `db/index.ts`.
-- No borrar migraciones históricas ni modificar una migración ya aplicada.
-- Para un cambio de esquema, crear una migración nueva, preservar datos y documentar la transición.
-- Revisar compatibilidad entre la nueva migración, el esquema Drizzle, `ensureDatabase()` y pruebas.
-- No ejecutar restauraciones ni mutaciones diagnósticas sobre producción sin autorización específica.
-- Mantener trazabilidad e idempotencia de operaciones de inventario.
+**Nivel 1 — desarrollo:** ejecutar primero el test afectado/nuevo y TypeScript/ESLint necesario; corregir y repetir ese control. `npm run check:fast` es la puerta rápida. No lanzar la suite completa tras cada cambio pequeño.
 
-## 6. Seguridad y datos
+**Nivel 2 — módulo:** al terminar una unidad importante usar `check:orders`, `check:inventory` o `check:invoices`, además de consumidores directos indicados en `docs/TESTING.md`.
 
-- Mantener secretos solo en servidor y fuera de Git. Nunca exponer `OPENAI_API_KEY`, tokens, cookies o credenciales al frontend, respuestas o logs.
-- No crear bypass de acceso, desactivar controles de plataforma o relajar autenticación para facilitar pruebas.
-- No confiar en datos del navegador; validar operaciones sensibles en el servidor.
-- Tratar PDF, imágenes, JSON, ZIP y hojas de cálculo como entrada no confiable.
-- Validar, según el formato, tamaño, cantidad, extensión, MIME real/firma, hash, nombres, rutas, contenido inesperado, traversal, symlinks, ejecutables y ZIP bombs.
-- Sanitizar entradas y evitar conservar información sensible innecesaria.
-- Seguir la política de logging de `SECURITY.md`: registrar contexto mínimo y nunca documentos completos ni encabezados de autenticación.
-- Las futuras integraciones (Poket, WhatsApp u otras) deben usar secretos de servidor propios, mínimo privilegio y autorización explícita; no inventar credenciales ni contratos.
+**Nivel 3 — release:** `npm run check:release` es obligatorio antes de release/merge productivo y para migraciones o cambios transversales de inventario, dinero o concurrencia. La eficiencia nunca reduce cobertura, E2E, secret scan, audit ni regresión productiva.
 
-### Facturas: trazabilidad y saldo por línea
+Si un control falla, corregir y repetir primero el afectado. No repetir una puerta completa que ya pasó si después solo cambió documentación sin impacto en ella.
 
-- Cerrar una factura es una acción de interfaz: nunca debe borrar el documento, eliminar el borrador, revertir inventario ni perder progreso persistido.
-- Las líneas originales de una factura no se eliminan mediante acciones normales. Se conservan y se marcan como `ignored`/omitidas de forma reversible; solo una línea manual adicional puede eliminarse cuando no tiene movimientos.
-- `processed_operation_id` es una referencia histórica, no la fuente de verdad de disponibilidad.
-- La cantidad activa de una línea es la suma neta de sus movimientos completados; la cantidad disponible es `max(0, cantidad_original - cantidad_activa)`.
-- Un ingreso, su reversa y un reingreso legítimo deben coexistir en el historial. La idempotencia por `operationId` y la protección transaccional de capacidad deben impedir que la cantidad activa supere la factura aun con confirmaciones concurrentes.
-- La jerarquía principal del historial de Facturas es `factura → líneas originales → movimientos`, sin perder la auditoría técnica de cada operación.
+## Publicación, versión y documentación
 
-## 7. OpenAI y consumo
+- Una tarea funcional normal continúa hasta pruebas, commit, checkpoint, deployment y verificación publicada, salvo prohibición o gate explícito. Una tarea local se detiene tras sus controles locales.
+- Antes de publicar, verificar realidad Git/Sites, diff, migraciones, secretos y HIGH/CRITICAL. Después comprobar deployment terminal, versión visible y flujo afectado sin mutaciones destructivas.
+- Versión pública en `lib/public-version.ts` y SemVer equivalente en `package.json`; checkpoint, deployment y commit son identificadores distintos. Actualizar `CHANGELOG.md` sin reescribir historia.
+- Antes de cada release verificar la realidad y actualizar `docs/PROJECT_STATE.md`. No modificarlo por cambios triviales ni crear archivos paralelos de memoria/contexto.
+- Actualizar documentación solo cuando cambie arquitectura, esquema, variables, seguridad, pruebas, despliegue o comportamiento real; no documentar planes como existentes.
 
-- No hacer llamadas pagadas reales solo para probar interfaz, validaciones, errores o facturas ya procesadas.
-- Preferir fixtures, mocks, respuestas almacenadas y archivos previamente procesados.
-- Respetar `INVOICE_AI_ENABLED`; si está deshabilitado, no se llama a OpenAI.
-- Mantener la deduplicación antes de cualquier consumo automático.
-- Una prueba con consumo real requiere autorización expresa para ese caso. Si falta, detenerse antes de llamar.
-- La importación `CHATGPT_IMPORT` es independiente de OpenAI API y debe conservar `api_calls = 0` y `api_cost = 0`.
+## Errores comprensibles
 
-## 8. Calidad y documentación
-
-Controles mínimos:
-
-```bash
-npm run lint
-npx tsc --noEmit
-npm test
-npm run build
-```
-
-Ejecutar además las pruebas específicas del módulo. `npm test` ya incluye un build; un build explícito puede repetirse cuando la tarea o el diagnóstico lo exijan.
-
-Actualizar README, documentación y CHANGELOG cuando cambien arquitectura, esquema, variables, seguridad, pruebas, despliegue o comportamiento público. No documentar funciones planeadas como existentes. No incluir secretos ni datos reales de clientes o facturas.
-
-## 9. Verificación y entrega
-
-Antes de publicar, revisar el diff para confirmar que no hay cambios accidentales, secretos ni artefactos temporales. Después de publicar:
-
-- comprobar el estado terminal del deployment;
-- comprobar la versión pública visible o su metadata en la URL publicada;
-- verificar el flujo modificado sin hacer operaciones destructivas ni consumo no autorizado;
-- informar con claridad pruebas ejecutadas, límites de la verificación y cualquier riesgo pendiente.
-
-## 10. Mensajes de error y recuperación
-
-Todo error visible al usuario debe ser claro, específico y accionable. Siempre que la causa sea conocida, el mensaje debe explicar:
-
-1. qué ocurrió;
-2. por qué ocurrió en lenguaje comprensible;
-3. qué puede hacer la persona usuaria para solucionarlo;
-4. qué ocurrió con sus datos o inventario.
-
-Usar la regla: **PROBLEMA + CAUSA COMPRENSIBLE + ACCIÓN RECOMENDADA + ESTADO DE LOS DATOS**.
-
-- Evitar mensajes genéricos si existe información suficiente para ser más específico.
-- Registrar los detalles técnicos en logs seguros; no mostrarlos como experiencia principal.
-- Nunca mostrar stack traces, SQL, secretos, API keys, tokens, cookies ni rutas internas sensibles.
-- Diferenciar situaciones recuperables de errores definitivos.
-- Si una operación falla después de realizar parcialmente una acción, indicar qué parte quedó guardada.
-- Si ninguna modificación ocurrió, indicarlo explícitamente.
-- Si existe riesgo de repetir una operación que afecte inventario, pagos, facturas o pedidos, implementar idempotencia y comunicar si ya había sido procesada.
-
-Esta regla aplica a Productos, Inventario, Facturas, Importaciones, Pedidos, autenticación, CRM, página de clientes, pagos, Poket, WhatsApp y futuras integraciones.
+Todo error visible usa: **PROBLEMA + CAUSA COMPRENSIBLE + QUÉ HACER + ESTADO DE LOS DATOS**. Diferenciar fallos recuperables/definitivos y explicar si algo quedó guardado o si nada cambió. Nunca mostrar detalles internos sensibles.

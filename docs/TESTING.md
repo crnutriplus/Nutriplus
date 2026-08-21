@@ -1,16 +1,33 @@
 # Pruebas y calidad
 
-## Puerta de calidad obligatoria
+## Flujo escalonado
 
 ```bash
-npm run lint
-npx tsc --noEmit
-npm test
-npm run build
-npm run validate:artifact
+npm run check:fast
+npm run check:orders
+npm run check:inventory
+npm run check:invoices
+npm run check:release
 ```
 
-`npm test` ya ejecuta `npm run build`; el build explícito se conserva como verificación final cuando una tarea lo exige.
+- **Nivel 1 — desarrollo:** test afectado/nuevo y `check:fast`. No incluye instalación, build ni E2E.
+- **Nivel 2 — módulo:** usar el alias del módulo al cerrar una unidad importante. Estos aliases construyen una vez porque sus integraciones consumen `dist`.
+- **Nivel 3 — release:** ejecutar `check:release` una sola vez al final. Incluye TypeScript, ESLint, build, suite completa, integraciones/E2E, migraciones, concurrencia, validador Sites, secret scan y audit de producción. No hace llamadas pagadas a OpenAI.
+
+`npm test` ya ejecuta un build y la regresión completa. No repetir un build explícito si esa puerta pasó y no cambió código relacionado.
+
+### Regresión mínima recomendada
+
+| Cambio en | Puerta mínima |
+|---|---|
+| UI/helper aislado | Test afectado + `check:fast` |
+| Pedidos/Encargos | `check:orders` |
+| Facturas/ingreso por factura | `check:invoices` |
+| Movimientos o saldo de inventario | `check:inventory` (incluye consumidores de Facturas/Pedidos) |
+| Migración | Prueba de migración + módulos afectados; luego `check:release` |
+| Código compartido/transversal | Consumidores directos; luego `check:release` si toca inventario, dinero o concurrencia |
+
+No repetir `npm ci` con dependencias instaladas y manifests sin cambios. Usarlo en entornos limpios, cambios de dependencias o una release reproducible.
 
 ## Suite principal
 
@@ -101,4 +118,4 @@ Estas carencias deben tratarse en tareas separadas. No se debe compensar ejecuta
 
 ## Criterio de finalización
 
-Una tarea no está completa si falla lint, TypeScript, una prueba relacionada, el build o el deployment. Después de publicar se debe comprobar la versión y, para cambios funcionales, el flujo afectado en la aplicación publicada.
+Una tarea no está completa si falla el nivel correspondiente. Una release exige `check:release`, revisión de cualquier HIGH/CRITICAL y comprobación del deployment, versión y flujo afectado después de publicar.
