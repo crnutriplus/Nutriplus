@@ -5,7 +5,13 @@ NutriPlus mantiene dos identificadores independientes:
 - **Versión pública:** se muestra a las personas usuarias y avanza como `2.3`, `2.4`, `2.5`, etc.
 - **Checkpoint / commit / deployment:** identifica técnicamente un estado del código. Nunca es el número público de NutriPlus.
 
-`package.json` usa SemVer, por lo que representa la versión pública `2.16` como `2.16.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+`package.json` usa SemVer, por lo que representa la versión pública `2.17` como `2.17.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+
+## 2.17 — 2026-08-21
+
+- Centro centralizado de notificaciones con alertas de Inventario, Pedidos y Encargos, preferencias, deduplicación persistente y base Web Push/PWA.
+- La migración aditiva `0016_round_scarlet_witch.sql` conserva el esquema existente y agrega eventos, alertas, preferencias, suscripciones y deliveries.
+- Web Push requiere VAPID server-side; no existe scheduler autónomo en Sites y la validación física de Android con la aplicación cerrada queda pendiente del usuario.
 
 ## 2.16 — 2026-08-20
 
