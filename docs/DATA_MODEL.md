@@ -4,7 +4,7 @@
 
 NutriPlus usa Cloudflare D1, compatible con SQLite. Drizzle ORM describe el esquema en `db/schema.ts`, mientras que los Route Handlers usan tanto Drizzle como sentencias preparadas de D1.
 
-Las migraciones versionadas están en `drizzle/` y el journal registra 16 entradas, de `0000_fluffy_shinobi_shaw.sql` a `0015_quiet_anthem.sql`. La migración `0015` pertenece a Pedidos Fase 1 y permanece validada solo de forma local hasta que exista una publicación autorizada.
+Las migraciones versionadas están en `drizzle/` y el journal registra 17 entradas, de `0000_fluffy_shinobi_shaw.sql` a `0016_round_scarlet_witch.sql`. La migración `0015` de Pedidos ya pertenece a producción v2.16. `0016` es una ampliación aditiva local para notificaciones y no se aplicó a producción.
 
 ## Entidades
 
@@ -84,6 +84,21 @@ Los Encargos usan dos máquinas separadas: `orders.status` para logística y `sp
 
 Cada fila de `order_fulfillments` representa una operación de entrega y sus líneas conservan cantidades positivas por línea original. Las cantidades pendientes se derivan del pedido menos la suma de fulfillments; no se sobrescribe el detalle comprado. Los resúmenes y la impresión de rutas también se derivan de pedidos, pagos netos, fulfillments y posiciones activas, sin tablas duplicadas de cierre.
 
+### Notificaciones
+
+| Tabla | Propósito |
+|---|---|
+| `notification_events` | Hechos durables, payload mínimo, estado de procesamiento, operación de origen opcional y clave única de deduplicación. |
+| `notifications` | Centro de alertas: presentación, severidad, entidad/ruta, lectura, descarte y estado agregado de entrega. |
+| `notification_preferences` | Preferencias owner/admin actuales con `principal_id` nullable para evolución multiusuario. |
+| `push_subscriptions` | Endpoint y claves públicas de Web Push por dispositivo, última actividad y desactivación. |
+| `notification_deliveries` | Intentos por alerta/subscription, respuesta, error, reintentos y fecha de entrega. |
+| `notification_resource_states` | Estado/ciclo por entidad para deduplicación y rearmado de umbrales. |
+
+Las transiciones de `products.quantity_available` se clasifican como `NORMAL`, `LOW_STOCK` u `OUT_OF_STOCK`. Solo los cruces crean eventos; bajar repetidamente dentro del mismo estado no genera spam. Salir de agotado registra `inventory.back_in_stock` y permite un cruce futuro válido. Evento, notificación y destino de entrega tienen índices únicos independientes.
+
+`notification_events` es la frontera durable. Web Push es un efecto posterior: no forma parte de la autoridad de inventario/pedidos y su fallo no revierte la mutación. Los resúmenes temporales usan fechas `YYYY-MM-DD` de `America/Costa_Rica`; Sites no aporta un scheduler, de modo que se generan por reconciliación al abrir/actualizar la app.
+
 ### Importaciones, respaldos y eliminaciones
 
 | Tabla | Propósito |
@@ -99,7 +114,7 @@ Los campos `claim_token` y `claimed_at` permiten que los procesos se reanuden si
 
 ## Relaciones y restricciones
 
-Las tablas históricas no declaran `FOREIGN KEY`; sus campos `document_id`, `operation_id`, `product_id`, `import_id`, `backup_id` y `deletion_id` continúan como relaciones lógicas. Las tablas nuevas de Pedidos sí declaran claves foráneas entre sus entidades y aplican `CASCADE`, `RESTRICT` o `SET NULL` según la conservación histórica requerida.
+Las tablas históricas no declaran `FOREIGN KEY`; sus campos `document_id`, `operation_id`, `product_id`, `import_id`, `backup_id` y `deletion_id` continúan como relaciones lógicas. Las tablas nuevas de Pedidos y Notificaciones sí declaran claves foráneas entre sus entidades y aplican `CASCADE`, `RESTRICT` o `SET NULL` según la conservación histórica requerida.
 
 Implicaciones:
 

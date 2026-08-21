@@ -2,9 +2,9 @@
 
 ## Estado y alcance
 
-La implementación local de Pedidos incluye modelo D1, migración, reglas de dominio, inventario transaccional, pagos, devoluciones, entregas parciales, rutas, impresión, API, interfaz operativa e historial. Antes de iniciar la interfaz se amplió de forma aditiva la misma migración `0015`, todavía inédita, para persistir el método esperado de pago y el flujo seguro de Encargos. Está en la rama `feature/orders-phase-1`, creada desde el `main` productivo de NutriPlus v2.15.
+La implementación de Pedidos publicada en NutriPlus v2.16 incluye modelo D1, migración, reglas de dominio, inventario transaccional, pagos, devoluciones, entregas parciales, rutas, impresión, API, interfaz operativa e historial. Antes de su publicación se amplió de forma aditiva la misma migración `0015` para persistir el método esperado de pago y el flujo seguro de Encargos.
 
-La migración `0015_quiet_anthem.sql` se desarrolló sin aplicarla anticipadamente a producción y se publica únicamente mediante el flujo normal de Sites para v2.16, después de la regresión completa. No existe una migración correctiva adicional: toda la ampliación inédita quedó en `0015` de forma aditiva.
+La migración `0015_quiet_anthem.sql` se publicó mediante el flujo normal de Sites para v2.16. No existe una migración correctiva de Pedidos: toda la ampliación previa a esa release quedó en `0015`. Las funciones nuevas posteriores deben usar una migración numerada nueva y no modificar `0015`.
 
 ## Entidades
 

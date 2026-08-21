@@ -28,6 +28,9 @@ ChatGPT Sites ejecuta el Worker de `worker/index.ts`, conecta los recursos decla
 | `INVOICE_AI_ENABLED` | Variable de servidor | No | Solo `1`, `true`, `yes` u `on` (sin distinguir mayúsculas) habilitan la llamada. Si falta o es falso, no hay llamada. |
 | `INVOICE_AI_MODEL` | Variable de servidor | No | Modelo automático. Predeterminado: `gpt-5.6-terra`. |
 | `INVOICE_AI_MONTHLY_LIMIT_USD` | Variable de servidor | No | Tope mensual estimado; predeterminado `5`. Un valor inválido o negativo vuelve al predeterminado. |
+| `VAPID_PUBLIC_KEY` | Valor alojado de servidor | Solo para Web Push | Clave pública P-256 codificada base64url. Es la única parte VAPID que puede entregarse al navegador. |
+| `VAPID_PRIVATE_KEY` | Secreto de servidor | Solo para Web Push | Escalar privado P-256 codificado base64url. Nunca debe llegar a frontend, Git, logs ni JSON de API. |
+| `VAPID_SUBJECT` | Valor alojado de servidor | Solo para Web Push | Contacto `mailto:` administrativo o URL HTTPS válida usado en el JWT VAPID. |
 
 El reanálisis administrativo con Sol usa la constante de servidor `gpt-5.6-sol` y requiere confirmación expresa en la interfaz. No es un fallback automático.
 
@@ -60,6 +63,8 @@ Son rutas locales a fixtures; no deben apuntar a archivos sensibles compartidos 
 4. Probar primero con `INVOICE_AI_ENABLED=false` y mocks.
 5. Habilitar IA únicamente después de verificar clave, modelo, límite y política de datos.
 6. Al rotar una clave, actualizar el secreto de servidor y revocar el anterior; no cambiar el frontend.
+7. Generar VAPID fuera del frontend y guardar la privada exclusivamente en valores alojados de Sites; no pegarla en archivos `.env` versionados.
+8. No configurar VAPID ni registrar subscriptions en producción hasta que la migración `0016` y la publicación de Notificaciones estén autorizadas.
 
 ## Diagnóstico sin exponer secretos
 
@@ -70,3 +75,5 @@ El endpoint de configuración de facturas devuelve únicamente valores seguros c
 - confirme solo que la clave exista, nunca su contenido;
 - revise el estado del deployment y códigos de error redactados;
 - no agregue `console.log(env)` ni devuelva el objeto de entorno al navegador.
+
+Para Web Push, `/api/notifications/push/public-key` solo informa disponibilidad y la clave pública. Un `503 PUSH_SERVER_NOT_CONFIGURED` significa que la alerta interna continúa funcionando; confirme la presencia de las tres variables VAPID desde el administrador de Sites sin imprimir sus valores. El scheduler no es una variable faltante: el proyecto de Sites no expone cron/background jobs, por lo que las alertas temporales usan reconciliación al abrir o actualizar NutriPlus.

@@ -5,7 +5,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: `NutriPlus v${NUTRIPLUS_PUBLIC_VERSION} | Calculadora de precios`,
   applicationName: "NutriPlus",
-  description: "Calculadora privada de precios para productos NutriPlus.",
+  description: "Inventario, pedidos, encargos y alertas operativas de NutriPlus.",
   manifest: "/manifest.webmanifest",
   other: {
     "codex-preview": "development",
@@ -15,5 +15,5 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="es"><body>{children}</body></html>;
+  return <html lang="es-CR"><body>{children}</body></html>;
 }

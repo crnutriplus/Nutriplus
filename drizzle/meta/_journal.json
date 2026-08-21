@@ -113,6 +113,13 @@
       "when": 1787266692733,
       "tag": "0015_quiet_anthem",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1787295455258,
+      "tag": "0016_round_scarlet_witch",
+      "breakpoints": true
     }
   ]
 }

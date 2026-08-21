@@ -14,9 +14,11 @@ Funciones implementadas y comprobadas en el código:
 - exportación del inventario a Excel y PDF;
 - ingreso de inventario por factura en tres modalidades: Automático con IA, Manual e Importar análisis de ChatGPT;
 - revisión, deduplicación, borradores, cierre no destructivo, omisión reversible de líneas, confirmación explícita, movimientos, reversa y reingreso por saldo neto;
-- historial de análisis de facturas y control estimado de consumo de OpenAI.
+- historial de análisis de facturas y control estimado de consumo de OpenAI;
+- Pedidos y Encargos con números NP, pagos reales separados de expectativa, inventario transaccional, entregas, rutas, impresión, recepciones e historial;
+- en `feature/notifications`, base local todavía no publicada para Centro de alertas, preferencias, eventos de Inventario/Pedidos/Encargos y Web Push seguro.
 
-No existen todavía módulos funcionales de Pedidos, CRM, Poket, portal de clientes, WhatsApp ni agente comercial. Que alguno figure en una herramienta de planificación no lo convierte en parte de esta aplicación.
+No existen todavía módulos funcionales de CRM, Poket, portal de clientes, WhatsApp ni agente comercial. Que alguno figure en una herramienta de planificación no lo convierte en parte de esta aplicación. La base de Notificaciones no forma parte de la producción v2.16 hasta que exista autorización de publicación.
 
 ## Arquitectura actual
 
@@ -28,6 +30,7 @@ No existen todavía módulos funcionales de Pedidos, CRM, Poket, portal de clien
 | Archivos | Cloudflare R2 para los PDF e imágenes originales de facturas |
 | Procesamiento local | PDF.js, Tesseract.js, ZXing, SheetJS, ExcelJS y PDF-lib |
 | Servicio externo | OpenAI Responses API, solo en el modo automático de facturas y cuando está habilitado |
+| Notificaciones | D1 + Service Worker + Web Push HTTPS opcional; sin scheduler del Site |
 | Publicación | ChatGPT Sites, configurado mediante `.openai/hosting.json` |
 
 El Worker recibe los bindings `DB` y `BUCKET`, además de la configuración opcional de OpenAI, y los expone únicamente al código de servidor. Los componentes de interfaz consumen los endpoints internos; no reciben la clave de OpenAI.
@@ -38,6 +41,7 @@ Más detalle en:
 - [Modelo de datos](docs/DATA_MODEL.md)
 - [Ambientes y variables](docs/ENVIRONMENT.md)
 - [Pruebas](docs/TESTING.md)
+- [Notificaciones](docs/NOTIFICATIONS.md)
 - [Despliegue](docs/DEPLOYMENT.md)
 - [Respaldos y recuperación](docs/BACKUP_RESTORE.md)
 - [Auditoría técnica](docs/TECHNICAL_AUDIT.md)
@@ -93,6 +97,7 @@ Los nombres de configuración de servidor que utiliza el código son:
 - `INVOICE_AI_ENABLED`: habilita las llamadas automáticas cuando tiene un valor verdadero;
 - `INVOICE_AI_MODEL`: modelo principal; el código usa `gpt-5.6-terra` si falta;
 - `INVOICE_AI_MONTHLY_LIMIT_USD`: límite mensual estimado; el valor predeterminado es `5`;
+- `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` y `VAPID_SUBJECT`: configuración server-side para Web Push; la privada nunca se expone y todavía no debe configurarse en producción;
 - `DB`: binding lógico de Cloudflare D1;
 - `BUCKET`: binding lógico de Cloudflare R2.
 

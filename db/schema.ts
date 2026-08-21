@@ -545,6 +545,117 @@ export const inventoryMovements = sqliteTable("inventory_movements", {
   uniqueIndex("inventory_movements_order_operation_line_unique").on(table.operationId, table.orderLineId, table.movementType).where(sql`${table.orderLineId} IS NOT NULL`),
 ]);
 
+export const notificationEvents = sqliteTable("notification_events", {
+  id: text("id").primaryKey(),
+  eventType: text("event_type").notNull(),
+  entityType: text("entity_type").notNull(),
+  entityId: text("entity_id"),
+  sourceOperationId: text("source_operation_id"),
+  dedupeKey: text("dedupe_key").notNull(),
+  payloadJson: text("payload_json").notNull().default("{}"),
+  processingState: text("processing_state").notNull().default("PENDING"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  lastErrorCode: text("last_error_code"),
+  occurredAt: text("occurred_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  processedAt: text("processed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("notification_events_dedupe_unique").on(table.dedupeKey),
+  index("notification_events_pending_idx").on(table.processingState, table.occurredAt, table.id),
+  index("notification_events_entity_idx").on(table.entityType, table.entityId, table.occurredAt),
+  check("notification_events_state_check", sql`${table.processingState} IN ('PENDING','MATERIALIZED','SKIPPED','FAILED')`),
+]);
+
+export const notifications = sqliteTable("notifications", {
+  id: text("id").primaryKey(),
+  eventId: text("event_id").notNull().references(() => notificationEvents.id, { onDelete: "restrict" }),
+  eventType: text("event_type").notNull(),
+  title: text("title").notNull(),
+  message: text("message").notNull(),
+  severity: text("severity").notNull().default("INFO"),
+  entityType: text("entity_type").notNull(),
+  entityId: text("entity_id"),
+  targetUrl: text("target_url"),
+  deliveryState: text("delivery_state").notNull().default("IN_APP_ONLY"),
+  dedupeKey: text("dedupe_key").notNull(),
+  metadataJson: text("metadata_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  readAt: text("read_at"),
+  dismissedAt: text("dismissed_at"),
+}, (table) => [
+  uniqueIndex("notifications_event_unique").on(table.eventId),
+  uniqueIndex("notifications_dedupe_unique").on(table.dedupeKey),
+  index("notifications_unread_idx").on(table.dismissedAt, table.readAt, table.createdAt, table.id),
+  index("notifications_entity_idx").on(table.entityType, table.entityId, table.createdAt),
+  check("notifications_severity_check", sql`${table.severity} IN ('INFO','WARNING','CRITICAL')`),
+  check("notifications_delivery_state_check", sql`${table.deliveryState} IN ('IN_APP_ONLY','PUSH_PENDING','PUSH_SENT','PUSH_PARTIAL','PUSH_FAILED')`),
+]);
+
+export const notificationPreferences = sqliteTable("notification_preferences", {
+  id: integer("id").primaryKey(),
+  principalId: text("principal_id"),
+  pushEnabled: integer("push_enabled", { mode: "boolean" }).notNull().default(false),
+  lowStockEnabled: integer("low_stock_enabled", { mode: "boolean" }).notNull().default(true),
+  outOfStockEnabled: integer("out_of_stock_enabled", { mode: "boolean" }).notNull().default(true),
+  ordersEnabled: integer("orders_enabled", { mode: "boolean" }).notNull().default(true),
+  specialOrdersEnabled: integer("special_orders_enabled", { mode: "boolean" }).notNull().default(true),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  check("notification_preferences_singleton_check", sql`${table.id} = 1`),
+  check("notification_preferences_boolean_check", sql`${table.pushEnabled} IN (0,1) AND ${table.lowStockEnabled} IN (0,1) AND ${table.outOfStockEnabled} IN (0,1) AND ${table.ordersEnabled} IN (0,1) AND ${table.specialOrdersEnabled} IN (0,1)`),
+]);
+
+export const pushSubscriptions = sqliteTable("push_subscriptions", {
+  id: text("id").primaryKey(),
+  principalId: text("principal_id"),
+  endpoint: text("endpoint").notNull(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  contentEncoding: text("content_encoding").notNull().default("aes128gcm"),
+  deviceLabel: text("device_label"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  disabledAt: text("disabled_at"),
+  disabledReason: text("disabled_reason"),
+}, (table) => [
+  uniqueIndex("push_subscriptions_endpoint_unique").on(table.endpoint),
+  index("push_subscriptions_active_idx").on(table.disabledAt, table.lastSeenAt, table.id),
+  check("push_subscriptions_encoding_check", sql`${table.contentEncoding} = 'aes128gcm'`),
+]);
+
+export const notificationDeliveries = sqliteTable("notification_deliveries", {
+  id: text("id").primaryKey(),
+  notificationId: text("notification_id").notNull().references(() => notifications.id, { onDelete: "cascade" }),
+  subscriptionId: text("subscription_id").notNull().references(() => pushSubscriptions.id, { onDelete: "restrict" }),
+  channel: text("channel").notNull().default("PUSH"),
+  state: text("state").notNull().default("PENDING"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  responseStatus: integer("response_status"),
+  errorCode: text("error_code"),
+  lastAttemptAt: text("last_attempt_at"),
+  deliveredAt: text("delivered_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("notification_deliveries_target_unique").on(table.notificationId, table.subscriptionId, table.channel),
+  index("notification_deliveries_state_idx").on(table.state, table.createdAt, table.id),
+  check("notification_deliveries_channel_check", sql`${table.channel} = 'PUSH'`),
+  check("notification_deliveries_state_check", sql`${table.state} IN ('PENDING','SENT','FAILED','DISABLED')`),
+]);
+
+export const notificationResourceStates = sqliteTable("notification_resource_states", {
+  id: text("id").primaryKey(),
+  entityType: text("entity_type").notNull(),
+  entityId: text("entity_id").notNull(),
+  stateKey: text("state_key").notNull(),
+  stateValue: text("state_value").notNull(),
+  cycle: integer("cycle").notNull().default(0),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("notification_resource_states_unique").on(table.entityType, table.entityId, table.stateKey),
+  index("notification_resource_states_value_idx").on(table.entityType, table.stateKey, table.stateValue, table.updatedAt),
+  check("notification_resource_states_cycle_check", sql`${table.cycle} >= 0`),
+]);
+
 export const importJobs = sqliteTable("import_jobs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   fileName: text("file_name").notNull(),

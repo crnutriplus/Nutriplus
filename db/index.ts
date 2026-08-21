@@ -3,6 +3,10 @@ import {
   INVENTORY_MOVEMENT_CAPACITY_TRIGGER_SQL,
   INVENTORY_MOVEMENT_NONNEGATIVE_TRIGGER_SQL,
 } from "../lib/inventory-movement-guard-sql";
+import {
+  NOTIFICATION_DATABASE_SQL,
+  NOTIFICATION_DATABASE_TRIGGER_SQL,
+} from "../lib/notifications-database";
 import { ORDER_DATABASE_SQL, ORDER_DATABASE_TRIGGER_SQL } from "../lib/orders-database";
 import * as schema from "./schema";
 
@@ -377,6 +381,11 @@ export async function ensureDatabase() {
       if (!orderColumnNames.has("expected_payment_method")) {
         await db.prepare("ALTER TABLE orders ADD COLUMN expected_payment_method TEXT CHECK (expected_payment_method IS NULL OR expected_payment_method IN ('CASH','SINPE','CARD','OTHER'))").run();
       }
+
+      await db.batch([
+        ...NOTIFICATION_DATABASE_SQL.map((statement) => db.prepare(statement)),
+        ...NOTIFICATION_DATABASE_TRIGGER_SQL.map((statement) => db.prepare(statement)),
+      ]);
 
       const intakeDocumentColumns = await db.prepare("PRAGMA table_info(inventory_documents)").all<{ name: string }>();
       const intakeDocumentColumnNames = new Set(intakeDocumentColumns.results.map((column) => column.name));

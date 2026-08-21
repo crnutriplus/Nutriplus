@@ -197,6 +197,29 @@ Después de instalación limpia pasaron ESLint, TypeScript, 36/36 pruebas unitar
 
 `npm audit --omit=dev` informó 2 nodos: 0 críticos, 0 altos, 2 moderados y 0 bajos, limitados a ExcelJS/uuid ya conocidos. El Site debe seguir owner/admin-only: las APIs de Pedidos están documentadas para incorporarse a autorización por rol cuando Seguridad 3B se retome, pero `security/phase-3b1` no se integra en v2.16. El backup integral D1+R2 permanece **BLOQUEADO** y no se presenta como resuelto.
 
+## Notificaciones — base local sobre v2.16 (2026-08-21)
+
+La rama `feature/notifications` parte del `main` local optimizado `ebc35492a487b10c5cef1c57c00df137ff159652`; `origin/main` y producción permanecen en `4805ca548e4bb6cfa735b23330e7d90168c18c9a` (v2.16, checkpoint 30). `security/phase-3b1` continúa separado en `ccf0837574f0c9a66414a8c72fabb0db7e1d30f2`. Esta base no autoriza merge, push, deployment, checkpoint, versión ni migración productiva.
+
+La puerta de factibilidad revisó el artefacto real y la documentación/capacidades de Sites. El proyecto sirve un Service Worker y manifest bajo HTTPS, usa APIs estándar `Notification`/`PushManager`, D1 puede persistir subscriptions, los valores alojados de Sites permiten conservar VAPID exclusivamente server-side y el Worker puede entregar por HTTPS a push services. Por ello la arquitectura de push completo es viable. La recepción con NutriPlus cerrado no se presenta como demostrada: requiere publicar la rama, configurar VAPID y probar Android Chrome/PWA con la sesión privada owner/admin, acciones expresamente prohibidas en esta fase.
+
+Sites no expone cron, Scheduled Worker, alarmas ni background jobs para este proyecto. Inventario usa eventos por transición; Pedidos y Encargos temporales usan reconciliación al abrir/actualizar la aplicación. No se promete una hora automática con la app cerrada.
+
+La migración aditiva `0016_round_scarlet_witch.sql` agrega eventos, alertas, preferencias, subscriptions, deliveries y estado/ciclo de recursos. No modifica `0015`, ya aplicada en producción. El Service Worker excluye `/api/*` de caché, valida rutas same-origin y maneja `push`/`notificationclick`; la aplicación solicita permiso solo tras acción explícita. La clave VAPID privada no existe en el repositorio ni se expone por API.
+
+La puerta local final ejecutada el 2026-08-21 pasó completa: instalación limpia (`npm ci`), TypeScript, ESLint, build, las 5 pruebas focalizadas de Notificaciones, las 39 pruebas unitarias de la suite general y las 14 integraciones/E2E encadenadas por `npm test` (migraciones `0014`–`0016`, Pedidos/Encargos Fases 1–4, Inventario, Facturas, APIs, importación, exportación y concurrencia). También pasaron `git diff --check` y el validador del artefacto Sites. El secret scan sobre fuentes propias no encontró credenciales; los falsos positivos iniciales quedaron limitados a binarios OCR vendorizados y se excluyeron del análisis textual. No hubo llamadas pagadas a OpenAI ni a un push service real.
+
+`npm audit --omit=dev` informó exactamente 2 vulnerabilidades moderadas, 0 altas y 0 críticas: `uuid` sin corrección disponible y su nodo padre `exceljs`. Son los dos avisos conocidos de v2.16; no apareció una vulnerabilidad nueva alta/crítica y no se cambió el árbol de dependencias para ocultarlos.
+
+Riesgos/limitaciones abiertas:
+
+- identidad propia multiusuario sigue ausente; `principal_id` permanece nullable bajo el Site owner-only;
+- VAPID no está configurado en ningún ambiente por esta tarea;
+- compatibilidad física Android/iOS y entrega cerrada siguen pendientes;
+- el click puede volver a encontrar la puerta privada de Sites si la sesión perdió acceso;
+- un scheduler externo futuro necesitaría autorización y controles separados;
+- la duplicación histórica del esquema en `db/index.ts` continúa, ahora incluyendo compatibilidad de Notificaciones.
+
 ### Uso y peso
 
 - No se identificó una dependencia directa claramente eliminable sin análisis funcional adicional.

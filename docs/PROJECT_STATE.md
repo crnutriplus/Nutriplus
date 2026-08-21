@@ -12,7 +12,7 @@
 
 ## Current development
 
-- `feature/notifications` at `b92896aaa720a4fcf371f70b180105b3c7abb97f` is local, separate from `main` and not published.
+- `feature/notifications` is local, based on `main` at `ebc35492a487b10c5cef1c57c00df137ff159652`, separate from production and not published.
 - Its migration `0016_round_scarlet_witch.sql` is not a production migration.
 
 ## Security

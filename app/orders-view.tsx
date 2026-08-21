@@ -33,7 +33,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   calculatePrices,
   crc,
@@ -440,6 +440,18 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
   const [specialRouteOpen, setSpecialRouteOpen] = useState(false);
   const [specialRouteDate, setSpecialRouteDate] = useState(today);
   const [catalogBusy, setCatalogBusy] = useState<string | null>(null);
+  const initialDeepLinkHandled = useRef(false);
+
+  useEffect(() => {
+    const deepLinkTimer = window.setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      const requestedSection = params.get("section");
+      if (["deliveries", "special", "history"].includes(requestedSection || "")) setSection(requestedSection as OrdersSection);
+      const requestedDate = params.get("date");
+      if (requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) setSelectedDate(requestedDate);
+    }, 0);
+    return () => window.clearTimeout(deepLinkTimer);
+  }, []);
 
   const showError = useCallback((error: unknown, fallback: string) => {
     const typed = error as Error & { title?: string };
@@ -502,6 +514,15 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
       return null;
     } finally { setDetailLoading(false); }
   }, [showError]);
+
+  useEffect(() => {
+    if (initialDeepLinkHandled.current) return;
+    const orderId = new URLSearchParams(window.location.search).get("order")?.trim();
+    if (!orderId) return;
+    initialDeepLinkHandled.current = true;
+    const timer = window.setTimeout(() => void loadDetail(orderId), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadDetail]);
 
   const refreshAfterMutation = useCallback(async (order: OrderRecord, inventoryChanged = false) => {
     setSelected(order);

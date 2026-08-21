@@ -6,12 +6,14 @@ NutriPlus es una aplicación full stack monolítica desplegada como Cloudflare W
 
 ```text
 Navegador/PWA
-  ├─ interfaz React y procesamiento local de PDF/OCR/códigos/Excel
+  ├─ interfaz React, Centro de alertas y procesamiento local de PDF/OCR/códigos/Excel
+  ├─ Service Worker: shell seguro, push y notificationclick
   └─ /api/*
        └─ Worker Vinext
             ├─ D1: datos operativos, auditoría y análisis
             ├─ R2: PDF e imágenes de facturas
-            └─ OpenAI Responses API: solo modo automático habilitado
+            ├─ OpenAI Responses API: solo modo automático habilitado
+            └─ Push services HTTPS: efecto posterior opcional
 ```
 
 ## Capas
@@ -21,16 +23,17 @@ Navegador/PWA
 - `app/page.tsx` monta `NutriPlusApp`.
 - `app/client-app.tsx` concentra navegación, calculadora, productos, importación, ajustes, trabajo sin conexión y modales.
 - `app/orders-view.tsx` concentra la interfaz operativa de Pedidos, búsqueda/escáner, tarjetas diarias, rutas, impresión, pagos, recepciones y acciones de estado.
+- `app/notification-center.tsx` contiene campana, badge, Centro de alertas, preferencias y consentimiento explícito de Web Push.
 - `app/inventory-intake.tsx` concentra el flujo de ingreso por factura.
 - `app/globals.css` contiene los estilos globales.
-- `public/sw.js` y `manifest.webmanifest` proporcionan capacidades PWA.
+- `public/sw.js` y `manifest.webmanifest` proporcionan capacidades PWA. El Service Worker no intercepta `/api/*`: navegación usa network-first y solo el shell/activos estáticos pueden quedar en caché.
 - PDF.js y Tesseract se cargan bajo demanda para lectura local; ZXing se usa para códigos.
 
 La navegación principal implementada es Calcular, Pedidos, Productos, Importar y Ajustes. Facturas se abre desde **Agregar inventario** en Productos. Pedidos incluye Entregas, Encargos e Historial, comparte el escáner existente y mantiene expectativa de pago separada del ledger real. No hay módulos de CRM, Poket, clientes o WhatsApp.
 
 ### API y servidor
 
-Los 42 Route Handlers de `app/api/` gestionan:
+Los Route Handlers de `app/api/` gestionan:
 
 - productos, cantidades, abastecimiento y eliminaciones;
 - No inventario y traslado a inventario;
@@ -41,15 +44,16 @@ Los 42 Route Handlers de `app/api/` gestionan:
 - borradores, confirmación, preparación, entregas totales/parciales, cancelación, reapertura, reprogramación, pagos, devoluciones e historial de Pedidos;
 - hoja PDF diaria, resumen/cierre de rutas y búsqueda paginada de Pedidos;
 - estados de proveedor y resolución idempotente de recepciones de Encargos mediante entrada inmediata o vínculo con inventario previamente ingresado;
-- creación/listado de rutas de entrega y asignación ordenada de pedidos.
+- creación/listado de rutas de entrega y asignación ordenada de pedidos;
+- eventos, alertas internas, lectura/descarte, preferencias, reconciliación y subscriptions Web Push.
 
-`worker/index.ts` es la entrada de Cloudflare. Inyecta D1, R2 y la configuración de IA en variables globales del runtime de servidor antes de delegar en Vinext. No existe un backend independiente ni una API pública separada.
+`worker/index.ts` es la entrada de Cloudflare. Inyecta D1, R2, la configuración de IA y la configuración VAPID en variables globales exclusivas del runtime de servidor antes de delegar en Vinext. Después de mutaciones/navegaciones usa `waitUntil` para reconciliar alertas sin acoplar un fallo push a la transacción de negocio. No existe un backend independiente ni una API pública separada.
 
 ### Datos y archivos
 
 - `db/schema.ts`: definición Drizzle de las tablas.
 - `db/index.ts`: acceso a D1 y compatibilidad/inicialización en tiempo de ejecución.
-- `drizzle/`: 16 migraciones (`0000` a `0015`) y snapshots; `0015` es aditiva, se probó desde las 17 tablas de v2.15 y pertenece a la release v2.16.
+- `drizzle/`: 17 migraciones (`0000` a `0016`) y snapshots; `0015` pertenece a la release productiva v2.16 y `0016` agrega localmente la base de notificaciones sin modificar `0015` ni datos existentes.
 - `lib/invoice-storage.ts`: validación básica, hash y persistencia de facturas en R2.
 - `.openai/hosting.json`: bindings lógicos `DB` y `BUCKET` del proyecto de Sites.
 
@@ -112,9 +116,17 @@ La entrega parcial se modela mediante `order_fulfillments` y `order_fulfillment_
 
 La interfaz responsive conecta esas reglas con Entregas, Encargos e Historial. El listado diario consume proyecciones agregadas de líneas y pagos; cada detalle se vuelve a cargar antes de mutar. El cliente bloquea dobles toques y muestra revisiones, pero D1 y los servicios continúan siendo la autoridad sobre totales, stock, versión e idempotencia. La impresión y los resúmenes de ruta son proyecciones derivadas: no crean un segundo ledger ni un segundo saldo.
 
+### Notificaciones y Centro de alertas
+
+La arquitectura separa el hecho (`notification_events`), su representación interna (`notifications`), las preferencias, las subscriptions y cada intento de entrega. Los eventos usan claves únicas persistentes; los estados por recurso permiten rearmar el umbral de inventario después de una recuperación. Un fallo de Web Push no borra la alerta interna ni revierte Inventario o Pedidos.
+
+Inventario es event-driven mediante transiciones D1. Los resúmenes de Pedidos y los hitos de Encargos se evalúan en `America/Costa_Rica` al abrir/actualizar NutriPlus porque Sites no expone scheduler del proyecto. No se promete ejecución temporal con la aplicación cerrada. El contrato completo y la factibilidad están en [NOTIFICATIONS.md](NOTIFICATIONS.md).
+
 ## Autenticación y permisos
 
 La protección efectiva actual es la política de acceso de Sites. `app/chatgpt-auth.ts` contiene helpers opcionales de Sign in with ChatGPT, pero no está conectado a las páginas ni a los endpoints. No hay roles propios.
+
+Las preferencias y subscriptions actuales pertenecen operativamente al único owner/admin: `principal_id` permanece nullable y no se inventa un `user_id`. Antes de ampliar acceso se necesita identidad y autorización de servidor por principal.
 
 Esto es suficiente solo mientras la política de plataforma mantenga el sitio restringido. La apertura a empleados o clientes requiere autorización de servidor antes de exponer más usuarios. Las APIs locales de Pedidos deberán recibir policies propias cuando se retome la rama `security/phase-3b1`; esa rama no se mezcló con Pedidos.
 

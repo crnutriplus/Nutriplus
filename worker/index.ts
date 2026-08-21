@@ -1,6 +1,8 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { ensureDatabase } from "../db";
+import { reconcileNotifications } from "../lib/notifications";
 
 interface Env {
   ASSETS: Fetcher;
@@ -10,6 +12,9 @@ interface Env {
   INVOICE_AI_ENABLED?: string;
   INVOICE_AI_MODEL?: string;
   INVOICE_AI_MONTHLY_LIMIT_USD?: string;
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  VAPID_SUBJECT?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -38,6 +43,9 @@ const worker = {
     globalThis.__NUTRIPLUS_INVOICE_AI_ENABLED__ = env.INVOICE_AI_ENABLED;
     globalThis.__NUTRIPLUS_INVOICE_AI_MODEL__ = env.INVOICE_AI_MODEL;
     globalThis.__NUTRIPLUS_INVOICE_AI_MONTHLY_LIMIT_USD__ = env.INVOICE_AI_MONTHLY_LIMIT_USD;
+    globalThis.__NUTRIPLUS_VAPID_PUBLIC_KEY__ = env.VAPID_PUBLIC_KEY;
+    globalThis.__NUTRIPLUS_VAPID_PRIVATE_KEY__ = env.VAPID_PRIVATE_KEY;
+    globalThis.__NUTRIPLUS_VAPID_SUBJECT__ = env.VAPID_SUBJECT;
     const url = new URL(request.url);
 
     if (url.pathname === "/_vinext/image") {
@@ -51,7 +59,16 @@ const worker = {
       }, allowedWidths);
     }
 
-    return handler.fetch(request, env, ctx);
+    const response = await handler.fetch(request, env, ctx);
+    const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(request.method.toUpperCase());
+    const isNavigation = request.method === "GET" && request.headers.get("accept")?.includes("text/html");
+    if ((isMutation || isNavigation) && url.pathname !== "/api/notifications/reconcile") {
+      ctx.waitUntil((async () => {
+        await ensureDatabase();
+        await reconcileNotifications(env.DB, { evaluateScheduled: isNavigation });
+      })().catch(() => undefined));
+    }
+    return response;
   },
 };
 
