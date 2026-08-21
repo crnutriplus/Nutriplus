@@ -227,6 +227,7 @@ export const orders = sqliteTable("orders", {
   discountTotal: integer("discount_total").notNull().default(0),
   deliveryFee: integer("delivery_fee").notNull().default(0),
   total: integer("total").notNull().default(0),
+  expectedPaymentMethod: text("expected_payment_method"),
   internalNotes: text("internal_notes"),
   deliveryNotes: text("delivery_notes"),
   source: text("source").notNull().default("MANUAL"),
@@ -249,6 +250,7 @@ export const orders = sqliteTable("orders", {
   check("orders_status_check", sql`${table.status} IN ('DRAFT','CONFIRMED','PREPARED','DELIVERED','CANCELLED','REOPENED')`),
   check("orders_currency_check", sql`length(trim(${table.currency})) = 3`),
   check("orders_source_check", sql`${table.source} IN ('MANUAL','WHATSAPP','INSTAGRAM_FACEBOOK','WEB','CRM','OTHER')`),
+  check("orders_expected_payment_method_check", sql`${table.expectedPaymentMethod} IS NULL OR ${table.expectedPaymentMethod} IN ('CASH','SINPE','CARD','OTHER')`),
   check("orders_money_check", sql`${table.subtotal} >= 0 AND ${table.discountTotal} >= 0 AND ${table.deliveryFee} >= 0 AND ${table.total} >= 0`),
   check("orders_total_check", sql`${table.total} = ${table.subtotal} - ${table.discountTotal} + ${table.deliveryFee}`),
   check("orders_version_check", sql`${table.version} > 0`),
@@ -281,6 +283,54 @@ export const orderLines = sqliteTable("order_lines", {
   check("order_lines_position_check", sql`${table.position} > 0`),
   check("order_lines_money_check", sql`${table.unitPriceSold} >= 0 AND ${table.discountAmount} >= 0 AND ${table.lineSubtotal} >= 0 AND ${table.lineTotal} >= 0`),
   check("order_lines_totals_check", sql`${table.lineSubtotal} = ${table.quantity} * ${table.unitPriceSold} AND ${table.discountAmount} <= ${table.lineSubtotal} AND ${table.lineTotal} = ${table.lineSubtotal} - ${table.discountAmount}`),
+]);
+
+export const specialOrderDetails = sqliteTable("special_order_details", {
+  orderId: text("order_id").primaryKey().references(() => orders.id, { onDelete: "cascade" }),
+  specialOrderStatus: text("special_order_status").notNull().default("REQUESTED"),
+  requestedAt: text("requested_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  orderedAt: text("ordered_at"),
+  estimatedArrivalDate: text("estimated_arrival_date"),
+  receivedAt: text("received_at"),
+  receiptResolvedAt: text("receipt_resolved_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("special_order_details_status_idx").on(table.specialOrderStatus, table.updatedAt, table.orderId),
+  index("special_order_details_estimated_idx").on(table.estimatedArrivalDate, table.orderId),
+  check("special_order_details_status_check", sql`${table.specialOrderStatus} IN (
+    'REQUESTED','ORDERED_FROM_SUPPLIER','IN_TRANSIT','RECEIVED_PENDING_RESOLUTION',
+    'PARTIALLY_RECEIVED','RECEIVED_READY','ADDED_TO_ROUTE','DELIVERED','CANCELLED'
+  )`),
+]);
+
+export const specialOrderReceipts = sqliteTable("special_order_receipts", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "restrict" }),
+  resolutionMode: text("resolution_mode").notNull(),
+  operationId: text("operation_id").notNull(),
+  resolvedAt: text("resolved_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("special_order_receipts_order_idx").on(table.orderId, table.resolvedAt, table.id),
+  uniqueIndex("special_order_receipts_operation_unique").on(table.operationId),
+  check("special_order_receipts_mode_check", sql`${table.resolutionMode} IN ('INVENTORY_NOW','ALREADY_INVENTORY')`),
+]);
+
+export const specialOrderReceiptLines = sqliteTable("special_order_receipt_lines", {
+  id: text("id").primaryKey(),
+  receiptId: text("receipt_id").notNull().references(() => specialOrderReceipts.id, { onDelete: "cascade" }),
+  orderLineId: text("order_line_id").notNull().references(() => orderLines.id, { onDelete: "restrict" }),
+  productId: integer("product_id").notNull().references(() => products.id, { onDelete: "restrict" }),
+  quantityReceived: integer("quantity_received").notNull(),
+  inventoryMovementCreated: integer("inventory_movement_created", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("special_order_receipt_lines_receipt_idx").on(table.receiptId, table.id),
+  index("special_order_receipt_lines_order_line_idx").on(table.orderLineId, table.createdAt, table.id),
+  uniqueIndex("special_order_receipt_lines_unique").on(table.receiptId, table.orderLineId),
+  check("special_order_receipt_lines_quantity_check", sql`${table.quantityReceived} > 0`),
+  check("special_order_receipt_lines_movement_check", sql`${table.inventoryMovementCreated} IN (0,1)`),
 ]);
 
 export const orderOperations = sqliteTable("order_operations", {

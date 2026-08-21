@@ -372,6 +372,12 @@ export async function ensureDatabase() {
         ...ORDER_DATABASE_TRIGGER_SQL.map((statement) => db.prepare(statement)),
       ]);
 
+      const orderColumns = await db.prepare("PRAGMA table_info(orders)").all<{ name: string }>();
+      const orderColumnNames = new Set(orderColumns.results.map((column) => column.name));
+      if (!orderColumnNames.has("expected_payment_method")) {
+        await db.prepare("ALTER TABLE orders ADD COLUMN expected_payment_method TEXT CHECK (expected_payment_method IS NULL OR expected_payment_method IN ('CASH','SINPE','CARD','OTHER'))").run();
+      }
+
       const intakeDocumentColumns = await db.prepare("PRAGMA table_info(inventory_documents)").all<{ name: string }>();
       const intakeDocumentColumnNames = new Set(intakeDocumentColumns.results.map((column) => column.name));
       const intakeDocumentAdditions = [];

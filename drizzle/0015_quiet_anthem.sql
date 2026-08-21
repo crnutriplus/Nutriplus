@@ -206,6 +206,7 @@ CREATE TABLE `orders` (
 	`discount_total` integer DEFAULT 0 NOT NULL,
 	`delivery_fee` integer DEFAULT 0 NOT NULL,
 	`total` integer DEFAULT 0 NOT NULL,
+	`expected_payment_method` text,
 	`internal_notes` text,
 	`delivery_notes` text,
 	`source` text DEFAULT 'MANUAL' NOT NULL,
@@ -221,6 +222,7 @@ CREATE TABLE `orders` (
 	CONSTRAINT "orders_status_check" CHECK("orders"."status" IN ('DRAFT','CONFIRMED','PREPARED','DELIVERED','CANCELLED','REOPENED')),
 	CONSTRAINT "orders_currency_check" CHECK(length(trim("orders"."currency")) = 3),
 	CONSTRAINT "orders_source_check" CHECK("orders"."source" IN ('MANUAL','WHATSAPP','INSTAGRAM_FACEBOOK','WEB','CRM','OTHER')),
+	CONSTRAINT "orders_expected_payment_method_check" CHECK("orders"."expected_payment_method" IS NULL OR "orders"."expected_payment_method" IN ('CASH','SINPE','CARD','OTHER')),
 	CONSTRAINT "orders_money_check" CHECK("orders"."subtotal" >= 0 AND "orders"."discount_total" >= 0 AND "orders"."delivery_fee" >= 0 AND "orders"."total" >= 0),
 	CONSTRAINT "orders_total_check" CHECK("orders"."total" = "orders"."subtotal" - "orders"."discount_total" + "orders"."delivery_fee"),
 	CONSTRAINT "orders_version_check" CHECK("orders"."version" > 0)
@@ -248,6 +250,56 @@ CREATE INDEX `route_orders_route_idx` ON `route_orders` (`route_id`,`position`,`
 CREATE INDEX `route_orders_order_idx` ON `route_orders` (`order_id`,`removed_at`);--> statement-breakpoint
 CREATE UNIQUE INDEX `route_orders_position_unique` ON `route_orders` (`route_id`,`position`) WHERE "route_orders"."removed_at" IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX `route_orders_active_order_unique` ON `route_orders` (`order_id`) WHERE "route_orders"."removed_at" IS NULL;--> statement-breakpoint
+CREATE TABLE `special_order_details` (
+	`order_id` text PRIMARY KEY NOT NULL,
+	`special_order_status` text DEFAULT 'REQUESTED' NOT NULL,
+	`requested_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	`ordered_at` text,
+	`estimated_arrival_date` text,
+	`received_at` text,
+	`receipt_resolved_at` text,
+	`created_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	`updated_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	FOREIGN KEY (`order_id`) REFERENCES `orders`(`id`) ON UPDATE no action ON DELETE cascade,
+	CONSTRAINT "special_order_details_status_check" CHECK("special_order_details"."special_order_status" IN (
+    'REQUESTED','ORDERED_FROM_SUPPLIER','IN_TRANSIT','RECEIVED_PENDING_RESOLUTION',
+    'PARTIALLY_RECEIVED','RECEIVED_READY','ADDED_TO_ROUTE','DELIVERED','CANCELLED'
+  ))
+);
+--> statement-breakpoint
+CREATE INDEX `special_order_details_status_idx` ON `special_order_details` (`special_order_status`,`updated_at`,`order_id`);--> statement-breakpoint
+CREATE INDEX `special_order_details_estimated_idx` ON `special_order_details` (`estimated_arrival_date`,`order_id`);--> statement-breakpoint
+CREATE TABLE `special_order_receipts` (
+	`id` text PRIMARY KEY NOT NULL,
+	`order_id` text NOT NULL,
+	`resolution_mode` text NOT NULL,
+	`operation_id` text NOT NULL,
+	`resolved_at` text NOT NULL,
+	`created_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	FOREIGN KEY (`order_id`) REFERENCES `orders`(`id`) ON UPDATE no action ON DELETE restrict,
+	CONSTRAINT "special_order_receipts_mode_check" CHECK("special_order_receipts"."resolution_mode" IN ('INVENTORY_NOW','ALREADY_INVENTORY'))
+);
+--> statement-breakpoint
+CREATE INDEX `special_order_receipts_order_idx` ON `special_order_receipts` (`order_id`,`resolved_at`,`id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `special_order_receipts_operation_unique` ON `special_order_receipts` (`operation_id`);--> statement-breakpoint
+CREATE TABLE `special_order_receipt_lines` (
+	`id` text PRIMARY KEY NOT NULL,
+	`receipt_id` text NOT NULL,
+	`order_line_id` text NOT NULL,
+	`product_id` integer NOT NULL,
+	`quantity_received` integer NOT NULL,
+	`inventory_movement_created` integer DEFAULT false NOT NULL,
+	`created_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	FOREIGN KEY (`receipt_id`) REFERENCES `special_order_receipts`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`order_line_id`) REFERENCES `order_lines`(`id`) ON UPDATE no action ON DELETE restrict,
+	FOREIGN KEY (`product_id`) REFERENCES `products`(`id`) ON UPDATE no action ON DELETE restrict,
+	CONSTRAINT "special_order_receipt_lines_quantity_check" CHECK("special_order_receipt_lines"."quantity_received" > 0),
+	CONSTRAINT "special_order_receipt_lines_movement_check" CHECK("special_order_receipt_lines"."inventory_movement_created" IN (0,1))
+);
+--> statement-breakpoint
+CREATE INDEX `special_order_receipt_lines_receipt_idx` ON `special_order_receipt_lines` (`receipt_id`,`id`);--> statement-breakpoint
+CREATE INDEX `special_order_receipt_lines_order_line_idx` ON `special_order_receipt_lines` (`order_line_id`,`created_at`,`id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `special_order_receipt_lines_unique` ON `special_order_receipt_lines` (`receipt_id`,`order_line_id`);--> statement-breakpoint
 ALTER TABLE `inventory_movements` ADD `order_id` text;--> statement-breakpoint
 ALTER TABLE `inventory_movements` ADD `order_line_id` text;--> statement-breakpoint
 ALTER TABLE `inventory_movements` ADD `movement_type` text;--> statement-breakpoint

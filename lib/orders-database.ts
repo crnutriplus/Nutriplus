@@ -28,6 +28,7 @@ export const ORDER_DATABASE_SQL = [
     discount_total INTEGER NOT NULL DEFAULT 0 CHECK (discount_total>=0),
     delivery_fee INTEGER NOT NULL DEFAULT 0 CHECK (delivery_fee>=0),
     total INTEGER NOT NULL DEFAULT 0 CHECK (total>=0 AND total=subtotal-discount_total+delivery_fee),
+    expected_payment_method TEXT CHECK (expected_payment_method IS NULL OR expected_payment_method IN ('CASH','SINPE','CARD','OTHER')),
     internal_notes TEXT,
     delivery_notes TEXT,
     source TEXT NOT NULL DEFAULT 'MANUAL' CHECK (source IN ('MANUAL','WHATSAPP','INSTAGRAM_FACEBOOK','WEB','CRM','OTHER')),
@@ -71,6 +72,44 @@ export const ORDER_DATABASE_SQL = [
   "CREATE INDEX IF NOT EXISTS order_lines_order_idx ON order_lines (order_id,position,id)",
   "CREATE INDEX IF NOT EXISTS order_lines_product_idx ON order_lines (product_id,order_id)",
   "CREATE UNIQUE INDEX IF NOT EXISTS order_lines_position_unique ON order_lines (order_id,position) WHERE removed_at IS NULL",
+  `CREATE TABLE IF NOT EXISTS special_order_details (
+    order_id TEXT PRIMARY KEY NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    special_order_status TEXT NOT NULL DEFAULT 'REQUESTED' CHECK (special_order_status IN (
+      'REQUESTED','ORDERED_FROM_SUPPLIER','IN_TRANSIT','RECEIVED_PENDING_RESOLUTION',
+      'PARTIALLY_RECEIVED','RECEIVED_READY','ADDED_TO_ROUTE','DELIVERED','CANCELLED'
+    )),
+    requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ordered_at TEXT,
+    estimated_arrival_date TEXT,
+    received_at TEXT,
+    receipt_resolved_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  "CREATE INDEX IF NOT EXISTS special_order_details_status_idx ON special_order_details (special_order_status,updated_at,order_id)",
+  "CREATE INDEX IF NOT EXISTS special_order_details_estimated_idx ON special_order_details (estimated_arrival_date,order_id)",
+  `CREATE TABLE IF NOT EXISTS special_order_receipts (
+    id TEXT PRIMARY KEY NOT NULL,
+    order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE RESTRICT,
+    resolution_mode TEXT NOT NULL CHECK (resolution_mode IN ('INVENTORY_NOW','ALREADY_INVENTORY')),
+    operation_id TEXT NOT NULL,
+    resolved_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  "CREATE INDEX IF NOT EXISTS special_order_receipts_order_idx ON special_order_receipts (order_id,resolved_at,id)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS special_order_receipts_operation_unique ON special_order_receipts (operation_id)",
+  `CREATE TABLE IF NOT EXISTS special_order_receipt_lines (
+    id TEXT PRIMARY KEY NOT NULL,
+    receipt_id TEXT NOT NULL REFERENCES special_order_receipts(id) ON DELETE CASCADE,
+    order_line_id TEXT NOT NULL REFERENCES order_lines(id) ON DELETE RESTRICT,
+    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+    quantity_received INTEGER NOT NULL CHECK (quantity_received>0),
+    inventory_movement_created INTEGER NOT NULL DEFAULT 0 CHECK (inventory_movement_created IN (0,1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  "CREATE INDEX IF NOT EXISTS special_order_receipt_lines_receipt_idx ON special_order_receipt_lines (receipt_id,id)",
+  "CREATE INDEX IF NOT EXISTS special_order_receipt_lines_order_line_idx ON special_order_receipt_lines (order_line_id,created_at,id)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS special_order_receipt_lines_unique ON special_order_receipt_lines (receipt_id,order_line_id)",
   `CREATE TABLE IF NOT EXISTS order_operations (
     operation_id TEXT PRIMARY KEY NOT NULL,
     order_id TEXT NOT NULL,
@@ -238,6 +277,36 @@ export const ORDER_DATABASE_TRIGGER_SQL = [
     BEFORE DELETE ON order_events
     WHEN EXISTS (SELECT 1 FROM orders WHERE id=OLD.order_id AND status<>'DRAFT')
     BEGIN SELECT RAISE(ABORT,'ORDER_EVENT_APPEND_ONLY'); END`,
+  `CREATE TRIGGER IF NOT EXISTS special_order_details_type_guard
+    BEFORE INSERT ON special_order_details
+    WHEN NOT EXISTS (SELECT 1 FROM orders WHERE id=NEW.order_id AND order_type='SPECIAL_ORDER')
+    BEGIN SELECT RAISE(ABORT,'SPECIAL_ORDER_TYPE_REQUIRED'); END`,
+  `CREATE TRIGGER IF NOT EXISTS special_order_status_transition_guard
+    BEFORE UPDATE OF special_order_status ON special_order_details
+    WHEN OLD.special_order_status<>NEW.special_order_status
+    BEGIN
+      SELECT CASE WHEN NOT (
+        (OLD.special_order_status='REQUESTED' AND NEW.special_order_status IN ('ORDERED_FROM_SUPPLIER','CANCELLED')) OR
+        (OLD.special_order_status='ORDERED_FROM_SUPPLIER' AND NEW.special_order_status IN ('IN_TRANSIT','CANCELLED')) OR
+        (OLD.special_order_status='IN_TRANSIT' AND NEW.special_order_status IN ('RECEIVED_PENDING_RESOLUTION','CANCELLED')) OR
+        (OLD.special_order_status='RECEIVED_PENDING_RESOLUTION' AND NEW.special_order_status IN ('PARTIALLY_RECEIVED','RECEIVED_READY','CANCELLED')) OR
+        (OLD.special_order_status='PARTIALLY_RECEIVED' AND NEW.special_order_status IN ('RECEIVED_READY','CANCELLED')) OR
+        (OLD.special_order_status='RECEIVED_READY' AND NEW.special_order_status IN ('ADDED_TO_ROUTE','CANCELLED')) OR
+        (OLD.special_order_status='ADDED_TO_ROUTE' AND NEW.special_order_status IN ('DELIVERED','CANCELLED'))
+      ) THEN RAISE(ABORT,'SPECIAL_ORDER_INVALID_TRANSITION') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS special_order_receipts_no_update
+    BEFORE UPDATE ON special_order_receipts
+    BEGIN SELECT RAISE(ABORT,'SPECIAL_ORDER_RECEIPT_APPEND_ONLY'); END`,
+  `CREATE TRIGGER IF NOT EXISTS special_order_receipts_no_delete
+    BEFORE DELETE ON special_order_receipts
+    BEGIN SELECT RAISE(ABORT,'SPECIAL_ORDER_RECEIPT_APPEND_ONLY'); END`,
+  `CREATE TRIGGER IF NOT EXISTS special_order_receipt_lines_no_update
+    BEFORE UPDATE ON special_order_receipt_lines
+    BEGIN SELECT RAISE(ABORT,'SPECIAL_ORDER_RECEIPT_APPEND_ONLY'); END`,
+  `CREATE TRIGGER IF NOT EXISTS special_order_receipt_lines_no_delete
+    BEFORE DELETE ON special_order_receipt_lines
+    BEGIN SELECT RAISE(ABORT,'SPECIAL_ORDER_RECEIPT_APPEND_ONLY'); END`,
   `CREATE TRIGGER IF NOT EXISTS order_payments_no_update
     BEFORE UPDATE ON order_payments
     BEGIN SELECT RAISE(ABORT,'ORDER_PAYMENT_APPEND_ONLY'); END`,

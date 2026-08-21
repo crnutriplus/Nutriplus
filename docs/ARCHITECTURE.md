@@ -25,7 +25,7 @@ Navegador/PWA
 - `public/sw.js` y `manifest.webmanifest` proporcionan capacidades PWA.
 - PDF.js y Tesseract se cargan bajo demanda para lectura local; ZXing se usa para códigos.
 
-La navegación principal implementada es Calcular, Productos, Importar y Ajustes. Facturas se abre desde **Agregar inventario** en Productos. Pedidos dispone únicamente de base de datos, dominio y API en la rama local `feature/orders-phase-1`; todavía no tiene interfaz. No hay un directorio `components/` ni módulos de CRM, Poket, clientes o WhatsApp.
+La navegación principal implementada es Calcular, Productos, Importar y Ajustes. Facturas se abre desde **Agregar inventario** en Productos. Pedidos dispone de base de datos, dominio y API en la rama local `feature/orders-phase-1`; su base incluye expectativa de pago y Encargos normalizados, pero todavía no tiene interfaz en este punto de la secuencia. No hay módulos de CRM, Poket, clientes o WhatsApp.
 
 ### API y servidor
 
@@ -38,6 +38,7 @@ Los 42 Route Handlers de `app/api/` gestionan:
 - documentos de inventario, archivos, análisis, revisión, confirmación, cancelación y reversa;
 - importación de paquetes ChatGPT y búsqueda de códigos;
 - borradores, confirmación, preparación, entrega, cancelación, reapertura, reprogramación, pagos, devoluciones e historial de Pedidos;
+- estados de proveedor y resolución idempotente de recepciones de Encargos mediante entrada inmediata o vínculo con inventario previamente ingresado;
 - creación/listado de rutas de entrega y asignación ordenada de pedidos.
 
 `worker/index.ts` es la entrada de Cloudflare. Inyecta D1, R2 y la configuración de IA en variables globales del runtime de servidor antes de delegar en Vinext. No existe un backend independiente ni una API pública separada.

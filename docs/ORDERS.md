@@ -1,8 +1,8 @@
-# Pedidos — Fase 1
+# Pedidos — Fase 1 y ampliación de base para Encargos
 
 ## Estado y alcance
 
-Esta fase implementa únicamente la base técnica local de Pedidos: modelo D1, migración, reglas de dominio, inventario transaccional, pagos, devoluciones, rutas, API y pruebas. Está en la rama `feature/orders-phase-1`, creada desde el `main` productivo de NutriPlus v2.15. No incluye interfaz, impresión, CRM, WhatsApp, Poket, Ventas/Gastos ni Encargos completos.
+La base técnica local de Pedidos incluye modelo D1, migración, reglas de dominio, inventario transaccional, pagos, devoluciones, rutas, API y pruebas. Antes de iniciar la interfaz se amplió de forma aditiva la misma migración `0015`, todavía inédita, para persistir el método esperado de pago y el flujo seguro de Encargos. Está en la rama `feature/orders-phase-1`, creada desde el `main` productivo de NutriPlus v2.15. En este punto todavía no incluye interfaz ni impresión.
 
 La migración `0015_quiet_anthem.sql` no se ha aplicado a producción. No hubo merge a `main`, push, checkpoint, deploy, cambio de versión ni escritura en D1/R2 productivos.
 
@@ -16,9 +16,24 @@ La migración `0015_quiet_anthem.sql` no se ha aplicado a producción. No hubo m
 | Dinero | `order_payments` | Ledger de pagos/reversiones; saldo y estado derivados. |
 | Entrega | `delivery_routes`, `route_orders`, `order_fulfillments`, `order_fulfillment_lines` | Ruta estable y entrega separada del pedido. |
 | Correcciones | `order_returns`, `order_return_lines` | Devolución auditable con reingreso de stock explícito. |
+| Encargos | `special_order_details`, `special_order_receipts`, `special_order_receipt_lines` | Estado de proveedor separado, recepción normalizada y decisión trazable sobre el ingreso de inventario. |
 | Integraciones | `order_external_references` | IDs externos desacoplados, sin conectar servicios en esta fase. |
 
 `customer_id` es nullable. El pedido conserva nombre, teléfono y dirección como snapshots aunque en el futuro se vincule a un CRM. `product_id` también es nullable: una línea manual queda en el historial, pero nunca mueve inventario.
+
+`orders.expected_payment_method` es nullable y admite `CASH`, `SINPE`, `CARD` u `OTHER`. Es una expectativa operativa editable mientras el pedido admite edición normal. No representa dinero recibido, no crea filas en `order_payments` y nunca sustituye el ledger financiero real.
+
+## Encargos y recepción
+
+`orders.status` mantiene el flujo logístico general. `special_order_details.special_order_status` mantiene, de forma separada, el flujo de adquisición:
+
+`REQUESTED → ORDERED_FROM_SUPPLIER → IN_TRANSIT → RECEIVED_PENDING_RESOLUTION → PARTIALLY_RECEIVED/RECEIVED_READY → ADDED_TO_ROUTE → DELIVERED`.
+
+La cancelación usa `CANCELLED` y solo se permite desde estados todavía abiertos. Las transiciones se validan en el servicio y mediante trigger D1. Marcar recibido solo establece `RECEIVED_PENDING_RESOLUTION`: no incrementa existencias.
+
+Cada resolución crea una cabecera y líneas append-only. `INVENTORY_NOW` vincula la línea a un producto existente y crea movimientos `SPECIAL_ORDER_RECEIPT`; `ALREADY_INVENTORY` vincula sin crear entrada porque la unidad ya fue registrada por Facturas/Inventario. Ambas opciones requieren producto válido e `operationId`. La suma por línea permite recepciones parciales sin afirmar que llegó la cantidad completa.
+
+Un Encargo solo puede confirmarse cuando la recepción completa está resuelta, todas las líneas están vinculadas y el stock real vuelve a pasar la comprobación concurrente. Confirmar usa el movimiento normal `ORDER_CONFIRM`; cancelar antes de confirmar no restaura stock y cancelar después de confirmar restaura exactamente lo reservado.
 
 ## Estados
 
@@ -77,6 +92,8 @@ Una ruta tiene fecha operativa, etiqueta y estado. `route_orders` conserva una p
 | `GET/POST /api/orders/:id/payments` | Consultar o registrar ledger de pagos. |
 | `POST /api/orders/:id/returns` | Registrar devolución y reingreso opcional. |
 | `GET /api/orders/:id/history` | Obtener eventos, estados, pagos, devoluciones y entregas. |
+| `POST /api/orders/:id/special-order/transition` | Avanzar el estado de proveedor sin mover inventario. |
+| `POST /api/orders/:id/special-order/receipts` | Resolver total o parcialmente una recepción mediante uno de los dos caminos autorizados. |
 | `GET/POST /api/delivery-routes` | Listar o crear rutas. |
 | `POST /api/delivery-routes/:id/orders` | Asignar posición estable. |
 
@@ -96,4 +113,5 @@ No se envían eventos a CRM, WhatsApp, Poket ni otro servicio. No hay llamadas a
 
 - `tests/orders-migration-0015.integration.mjs` valida la migración aditiva desde el esquema anterior y la conservación del inventario.
 - `tests/orders-phase-1.integration.mjs` valida estados, stock, deltas, rollback, idempotencia, concurrencia, pagos, devoluciones, rutas, snapshots, NP y fechas.
-- `npm test` incorpora ambas pruebas junto con toda la regresión existente.
+- `tests/orders-special-foundation.integration.mjs` valida método esperado, máquina de Encargos, ambos caminos de recepción, recepción parcial, idempotencia y concurrencia.
+- `npm test` incorpora las tres pruebas junto con toda la regresión existente.

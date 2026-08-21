@@ -1,6 +1,9 @@
 import { calculatePrices, settingsFromRow } from "./pricing";
 import {
   ORDER_SOURCES,
+  PAYMENT_METHODS,
+  SPECIAL_ORDER_RECEIPT_MODES,
+  SPECIAL_ORDER_STATUSES,
   OrderError,
   cleanText,
   costaRicaDate,
@@ -17,6 +20,9 @@ import {
   requiredVersion,
   type OrderSource,
   type OrderStatus,
+  type PaymentMethod,
+  type SpecialOrderReceiptMode,
+  type SpecialOrderStatus,
 } from "./orders";
 
 type Row = Record<string, unknown>;
@@ -51,8 +57,10 @@ type ParsedOrder = {
   latitude: number | null;
   longitude: number | null;
   scheduledDeliveryDate: string | null;
-  orderType: "STANDARD";
+  orderType: "STANDARD" | "SPECIAL_ORDER";
   currency: "CRC";
+  expectedPaymentMethod: PaymentMethod | null;
+  estimatedArrivalDate: string | null;
   source: OrderSource;
   internalNotes: string | null;
   deliveryNotes: string | null;
@@ -92,6 +100,15 @@ function sourceValue(value: unknown, fallback: unknown): OrderSource {
   return source as OrderSource;
 }
 
+function expectedPaymentMethodValue(value: unknown, fallback: unknown): PaymentMethod | null {
+  const method = cleanText(value ?? fallback, 20).toUpperCase();
+  if (!method) return null;
+  if (!PAYMENT_METHODS.includes(method as PaymentMethod)) {
+    throw new OrderError("El método esperado de pago no es válido. Seleccioná Efectivo, SINPE, Tarjeta u Otro; no se realizó ningún cambio ni pago.", 400, "ORDER_EXPECTED_PAYMENT_METHOD_INVALID", "Método esperado inválido");
+  }
+  return method as PaymentMethod;
+}
+
 function productCostSnapshot(product: Row, settings: Row | null) {
   if (!settings || product.purchase_price_usd_cents == null || product.weight_milli_lb == null) return null;
   const prices = calculatePrices(
@@ -108,8 +125,8 @@ async function parseOrderPayload(db: D1Database, payload: Record<string, unknown
     throw new OrderError("Agregá al menos un producto al pedido. El pedido conserva su estado anterior y el inventario no fue modificado.", 400, "ORDER_LINES_REQUIRED", "Pedido sin productos");
   }
   const orderType = cleanText(payload.orderType ?? existingOrder?.order_type ?? "STANDARD", 30).toUpperCase();
-  if (orderType !== "STANDARD") {
-    throw new OrderError("El flujo de Encargos todavía no está habilitado. Usá un pedido Estándar; no se realizó ningún cambio.", 409, "ORDER_SPECIAL_ORDER_NOT_IMPLEMENTED", "Encargos pendientes");
+  if (!['STANDARD', 'SPECIAL_ORDER'].includes(orderType)) {
+    throw new OrderError("El tipo de pedido no es válido. Elegí Entrega o Encargo; no se realizó ningún cambio.", 400, "ORDER_TYPE_INVALID", "Tipo de pedido inválido");
   }
   const currency = cleanText(payload.currency ?? existingOrder?.currency ?? "CRC", 3).toUpperCase();
   if (currency !== "CRC") {
@@ -196,8 +213,12 @@ async function parseOrderPayload(db: D1Database, payload: Record<string, unknown
     latitude: optionalCoordinate(payload.latitude ?? existingOrder?.latitude, "La latitud", -90, 90),
     longitude: optionalCoordinate(payload.longitude ?? existingOrder?.longitude, "La longitud", -180, 180),
     scheduledDeliveryDate: costaRicaDate(payload.scheduledDeliveryDate ?? existingOrder?.scheduled_delivery_date, "La fecha de entrega"),
-    orderType: "STANDARD" as const,
+    orderType: orderType as "STANDARD" | "SPECIAL_ORDER",
     currency: "CRC" as const,
+    expectedPaymentMethod: expectedPaymentMethodValue(payload.expectedPaymentMethod, existingOrder?.expected_payment_method),
+    estimatedArrivalDate: orderType === "SPECIAL_ORDER"
+      ? costaRicaDate(payload.estimatedArrivalDate ?? existingOrder?.estimated_arrival_date, "La fecha estimada de llegada")
+      : null,
     source: sourceValue(payload.source, existingOrder?.source ?? "MANUAL"),
     internalNotes: optionalText(payload.internalNotes ?? existingOrder?.internal_notes, 3000),
     deliveryNotes: optionalText(payload.deliveryNotes ?? existingOrder?.delivery_notes, 3000),
@@ -294,7 +315,7 @@ function orderHeaderBindings(parsed: ParsedOrder) {
     parsed.orderType, parsed.customerId, parsed.customerNameSnapshot, parsed.phoneRaw, parsed.phoneNormalized,
     parsed.deliveryAddress, parsed.deliveryInstructions, parsed.province, parsed.canton, parsed.district,
     parsed.latitude, parsed.longitude, parsed.scheduledDeliveryDate, parsed.currency, parsed.subtotal,
-    parsed.discountTotal, parsed.deliveryFee, parsed.total, parsed.internalNotes, parsed.deliveryNotes, parsed.source,
+    parsed.discountTotal, parsed.deliveryFee, parsed.total, parsed.expectedPaymentMethod, parsed.internalNotes, parsed.deliveryNotes, parsed.source,
   ];
 }
 
@@ -395,6 +416,10 @@ function orderHeaderFromRow(row: Row) {
     discountTotal: Number(row.discount_total),
     deliveryFee: Number(row.delivery_fee),
     total: Number(row.total),
+    expectedPaymentMethod: row.expected_payment_method ? String(row.expected_payment_method) : null,
+    specialOrderStatus: row.special_order_status ? String(row.special_order_status) : null,
+    estimatedArrivalDate: row.estimated_arrival_date ? String(row.estimated_arrival_date) : null,
+    receiptResolvedAt: row.receipt_resolved_at ? String(row.receipt_resolved_at) : null,
     ...paymentSummary(Number(row.total), paid),
     internalNotes: row.internal_notes ? String(row.internal_notes) : null,
     deliveryNotes: row.delivery_notes ? String(row.delivery_notes) : null,
@@ -414,6 +439,7 @@ function lineFromRow(row: Row) {
   const quantity = Number(row.quantity);
   const deliveredQuantity = Number(row.delivered_quantity || 0);
   const returnedQuantity = Number(row.returned_quantity || 0);
+  const receivedQuantity = Number(row.received_quantity || 0);
   return {
     id: String(row.id),
     position: Number(row.position),
@@ -431,6 +457,8 @@ function lineFromRow(row: Row) {
     deliveredQuantity,
     pendingDeliveryQuantity: Math.max(0, quantity - deliveredQuantity),
     returnedQuantity,
+    receivedQuantity,
+    pendingReceiptQuantity: Math.max(0, quantity - receivedQuantity),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     removedAt: row.removed_at ? String(row.removed_at) : null,
@@ -439,22 +467,50 @@ function lineFromRow(row: Row) {
 }
 
 export async function loadOrder(db: D1Database, orderId: string) {
-  const row = await db.prepare(`SELECT o.*,
+  const row = await db.prepare(`SELECT o.*,sd.special_order_status,sd.requested_at,sd.ordered_at,
+    sd.estimated_arrival_date,sd.received_at,sd.receipt_resolved_at,
+    sd.created_at AS special_created_at,sd.updated_at AS special_updated_at,
     COALESCE((SELECT SUM(CASE WHEN p.payment_type='PAYMENT' THEN p.amount ELSE -p.amount END)
       FROM order_payments p WHERE p.order_id=o.id AND p.status='POSTED'),0) AS paid_total
-    FROM orders o WHERE o.id=? LIMIT 1`).bind(orderId).first<Row>();
+    FROM orders o LEFT JOIN special_order_details sd ON sd.order_id=o.id WHERE o.id=? LIMIT 1`).bind(orderId).first<Row>();
   if (!row) return null;
-  const [lines, payments, route] = await Promise.all([
+  const [lines, payments, route, receiptLines] = await Promise.all([
     db.prepare(`SELECT l.*,
       COALESCE((SELECT SUM(fl.quantity) FROM order_fulfillment_lines fl
         JOIN order_fulfillments f ON f.id=fl.fulfillment_id WHERE fl.order_line_id=l.id),0) AS delivered_quantity,
       COALESCE((SELECT SUM(rl.quantity) FROM order_return_lines rl
         JOIN order_returns r ON r.id=rl.return_id WHERE rl.order_line_id=l.id AND r.status='COMPLETED'),0) AS returned_quantity
+      ,COALESCE((SELECT SUM(srl.quantity_received) FROM special_order_receipt_lines srl
+        JOIN special_order_receipts sr ON sr.id=srl.receipt_id WHERE srl.order_line_id=l.id AND sr.order_id=l.order_id),0) AS received_quantity
       FROM order_lines l WHERE l.order_id=? ORDER BY l.removed_at IS NOT NULL,l.position,l.id`).bind(orderId).all<Row>(),
     db.prepare("SELECT * FROM order_payments WHERE order_id=? ORDER BY created_at,id").bind(orderId).all<Row>(),
     db.prepare(`SELECT ro.*,r.route_date,r.label,r.status AS route_status FROM route_orders ro
       JOIN delivery_routes r ON r.id=ro.route_id WHERE ro.order_id=? AND ro.removed_at IS NULL LIMIT 1`).bind(orderId).first<Row>(),
+    db.prepare(`SELECT sr.id AS receipt_id,sr.resolution_mode,sr.operation_id,sr.resolved_at,sr.created_at,
+      srl.id AS receipt_line_id,srl.order_line_id,srl.product_id,srl.quantity_received,srl.inventory_movement_created
+      FROM special_order_receipts sr JOIN special_order_receipt_lines srl ON srl.receipt_id=sr.id
+      WHERE sr.order_id=? ORDER BY sr.resolved_at,sr.id,srl.id`).bind(orderId).all<Row>(),
   ]);
+  const receiptMap = new Map<string, { id: string; resolutionMode: string; operationId: string; resolvedAt: string; createdAt: string; lines: Array<Record<string, unknown>> }>();
+  receiptLines.results.forEach((entry) => {
+    const receiptId = String(entry.receipt_id);
+    const receipt = receiptMap.get(receiptId) || {
+      id: receiptId,
+      resolutionMode: String(entry.resolution_mode),
+      operationId: String(entry.operation_id),
+      resolvedAt: String(entry.resolved_at),
+      createdAt: String(entry.created_at),
+      lines: [],
+    };
+    receipt.lines.push({
+      id: String(entry.receipt_line_id),
+      orderLineId: String(entry.order_line_id),
+      productId: Number(entry.product_id),
+      quantityReceived: Number(entry.quantity_received),
+      inventoryMovementCreated: Number(entry.inventory_movement_created) === 1,
+    });
+    receiptMap.set(receiptId, receipt);
+  });
   return {
     ...orderHeaderFromRow(row),
     lines: lines.results.filter((line) => !line.removed_at).map(lineFromRow),
@@ -478,6 +534,17 @@ export async function loadOrder(db: D1Database, orderId: string) {
       label: route.label ? String(route.label) : null,
       status: String(route.route_status),
       position: Number(route.position),
+    } : null,
+    specialOrder: String(row.order_type) === "SPECIAL_ORDER" ? {
+      status: String(row.special_order_status),
+      requestedAt: String(row.requested_at),
+      orderedAt: row.ordered_at ? String(row.ordered_at) : null,
+      estimatedArrivalDate: row.estimated_arrival_date ? String(row.estimated_arrival_date) : null,
+      receivedAt: row.received_at ? String(row.received_at) : null,
+      receiptResolvedAt: row.receipt_resolved_at ? String(row.receipt_resolved_at) : null,
+      createdAt: String(row.special_created_at),
+      updatedAt: String(row.special_updated_at),
+      receipts: [...receiptMap.values()],
     } : null,
   };
 }
@@ -516,10 +583,11 @@ export async function listOrders(db: D1Database, request: Request) {
   const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const [result, count] = await Promise.all([
-    db.prepare(`SELECT o.*,
+    db.prepare(`SELECT o.*,sd.special_order_status,sd.estimated_arrival_date,sd.receipt_resolved_at,
       COALESCE((SELECT SUM(CASE WHEN p.payment_type='PAYMENT' THEN p.amount ELSE -p.amount END)
         FROM order_payments p WHERE p.order_id=o.id AND p.status='POSTED'),0) AS paid_total
-      FROM orders o ${where} ORDER BY COALESCE(o.scheduled_delivery_date,'9999-12-31'),o.created_at DESC,o.id DESC LIMIT ? OFFSET ?`)
+      FROM orders o LEFT JOIN special_order_details sd ON sd.order_id=o.id ${where}
+      ORDER BY COALESCE(o.scheduled_delivery_date,'9999-12-31'),o.created_at DESC,o.id DESC LIMIT ? OFFSET ?`)
       .bind(...values, limit, (page - 1) * limit).all<Row>(),
     db.prepare(`SELECT COUNT(*) AS total FROM orders o ${where}`).bind(...values).first<{ total: number }>(),
   ]);
@@ -538,13 +606,16 @@ export async function createOrder(db: D1Database, payload: Record<string, unknow
     db.prepare(`INSERT INTO orders (
       id,order_number,order_type,customer_id,customer_name_snapshot,phone_raw,phone_normalized,
       delivery_address,delivery_instructions,province,canton,district,latitude,longitude,scheduled_delivery_date,
-      route_id,status,currency,subtotal,discount_total,delivery_fee,total,internal_notes,delivery_notes,source,
+      route_id,status,currency,subtotal,discount_total,delivery_fee,total,expected_payment_method,internal_notes,delivery_notes,source,
       version,created_at,updated_at
-    ) SELECT ?,'NP-'||printf('%06d',sequence),?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,'DRAFT',?,?,?,?,?,?,?,?,1,?,?
+    ) SELECT ?,'NP-'||printf('%06d',sequence),?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,'DRAFT',?,?,?,?,?,?,?,?,?,1,?,?
       FROM order_number_allocations WHERE order_id=?`).bind(
       claim.orderId, ...orderHeaderBindings(parsed), now, now, claim.orderId,
     ),
     ...parsed.lines.map((line) => lineInsertStatement(db, claim.orderId, line, now)),
+    ...(parsed.orderType === "SPECIAL_ORDER" ? [db.prepare(`INSERT INTO special_order_details (
+      order_id,special_order_status,requested_at,estimated_arrival_date,created_at,updated_at
+    ) VALUES (?,'REQUESTED',?,?,?,?)`).bind(claim.orderId, now, parsed.estimatedArrivalDate, now, now)] : []),
     statusEventStatement(db, claim.orderId, null, "DRAFT", operationId, null, now),
     eventStatement(db, claim.orderId, "order.created", operationId, { source: parsed.source }, now),
     completeOperationStatement(db, operationId, claim.orderId, now),
@@ -562,7 +633,8 @@ export async function updateOrder(db: D1Database, orderId: string, payload: Reco
   const operationId = requiredOperationId(payload);
   if (await completedOperation(db, orderId, "UPDATE", operationId, payload)) return { order: await loadOrder(db, orderId), idempotent: true };
   const version = requiredVersion(payload);
-  const current = await db.prepare("SELECT * FROM orders WHERE id=? LIMIT 1").bind(orderId).first<Row>();
+  const current = await db.prepare(`SELECT o.*,sd.special_order_status,sd.estimated_arrival_date,sd.receipt_resolved_at
+    FROM orders o LEFT JOIN special_order_details sd ON sd.order_id=o.id WHERE o.id=? LIMIT 1`).bind(orderId).first<Row>();
   if (!current) throw new OrderError("No encontramos el pedido. Actualizá la lista; no se realizó ningún cambio.", 404, "ORDER_NOT_FOUND", "Pedido no encontrado");
   const status = String(current.status) as OrderStatus;
   if (!["DRAFT", "CONFIRMED", "REOPENED"].includes(status)) {
@@ -577,6 +649,23 @@ export async function updateOrder(db: D1Database, orderId: string, payload: Reco
   }
   const existingResult = await db.prepare("SELECT * FROM order_lines WHERE order_id=? AND removed_at IS NULL ORDER BY position,id").bind(orderId).all<Row>();
   const parsed = await parseOrderPayload(db, payload, current, existingResult.results);
+  if (parsed.orderType !== String(current.order_type)) {
+    throw new OrderError("El tipo Entrega/Encargo no puede cambiarse después de crear el pedido. Creá un pedido del tipo correcto; no se realizó ningún cambio.", 409, "ORDER_TYPE_IMMUTABLE", "Tipo de pedido protegido");
+  }
+  if (parsed.orderType === "SPECIAL_ORDER") {
+    const receiptCount = await db.prepare("SELECT COUNT(*) AS total FROM special_order_receipts WHERE order_id=?").bind(orderId).first<{ total: number }>();
+    if (Number(receiptCount?.total || 0) > 0) {
+      const sameReceivedLines = existingResult.results.length === parsed.lines.length && parsed.lines.every((line) => {
+        const existing = line.existing;
+        return Boolean(existing)
+          && Number(existing?.product_id || 0) === Number(line.productId || 0)
+          && Number(existing?.quantity) === line.quantity;
+      });
+      if (!sameReceivedLines) {
+        throw new OrderError("El Encargo ya tiene una recepción registrada. Podés editar cliente, precio, notas o fechas, pero no cambiar productos ni cantidades recibidas. El pedido, los pagos y el inventario conservaron su estado anterior.", 409, "SPECIAL_ORDER_RECEIPT_LOCKED", "Recepción protegida");
+      }
+    }
+  }
   const claim = await beginOperation(db, orderId, "UPDATE", operationId, payload);
   if (claim.replayed) return { order: await loadOrder(db, orderId), idempotent: true };
   const now = new Date().toISOString();
@@ -660,8 +749,12 @@ export async function updateOrder(db: D1Database, orderId: string, payload: Reco
 
   statements.push(db.prepare(`UPDATE orders SET order_type=?,customer_id=?,customer_name_snapshot=?,phone_raw=?,phone_normalized=?,
     delivery_address=?,delivery_instructions=?,province=?,canton=?,district=?,latitude=?,longitude=?,scheduled_delivery_date=?,
-    currency=?,subtotal=?,discount_total=?,delivery_fee=?,total=?,internal_notes=?,delivery_notes=?,source=?,version=version+1,updated_at=?
+    currency=?,subtotal=?,discount_total=?,delivery_fee=?,total=?,expected_payment_method=?,internal_notes=?,delivery_notes=?,source=?,version=version+1,updated_at=?
     WHERE id=? AND version=? AND status=?`).bind(...orderHeaderBindings(parsed), now, orderId, version, status));
+  if (parsed.orderType === "SPECIAL_ORDER") {
+    statements.push(db.prepare("UPDATE special_order_details SET estimated_arrival_date=?,updated_at=? WHERE order_id=?")
+      .bind(parsed.estimatedArrivalDate, now, orderId));
+  }
   statements.push(eventStatement(db, orderId, "order.updated", operationId, { status }, now));
   statements.push(completeOperationStatement(db, operationId, orderId, now));
   try {
@@ -689,7 +782,7 @@ async function transitionOrder(
     throw new OrderError("Indicá el motivo de esta operación. El pedido y el inventario conservaron su estado anterior.", 400, "ORDER_REASON_REQUIRED", "Motivo requerido");
   }
   if (await completedOperation(db, orderId, operationType, operationId, payload)) return { order: await loadOrder(db, orderId), idempotent: true };
-  const current = await db.prepare("SELECT status FROM orders WHERE id=? LIMIT 1").bind(orderId).first<{ status: string }>();
+  const current = await db.prepare("SELECT status,order_type FROM orders WHERE id=? LIMIT 1").bind(orderId).first<{ status: string; order_type: string }>();
   if (!current) throw new OrderError("No encontramos el pedido. Actualizá la lista; no se realizó ningún cambio.", 404, "ORDER_NOT_FOUND", "Pedido no encontrado");
   if (current.status !== fromStatus) throw new OrderError("El estado actual del pedido no permite esa acción. Actualizalo; no se realizó ningún cambio.", 409, "ORDER_INVALID_TRANSITION", "Transición no permitida");
   const claim = await beginOperation(db, orderId, operationType, operationId, payload);
@@ -721,6 +814,24 @@ export async function confirmOrder(db: D1Database, orderId: string, payload: Rec
   }
   const lines = await db.prepare("SELECT * FROM order_lines WHERE order_id=? AND removed_at IS NULL ORDER BY position,id").bind(orderId).all<Row>();
   if (!lines.results.length) throw new OrderError("El pedido no contiene productos. Agregá al menos uno; el inventario no fue modificado.", 409, "ORDER_LINES_REQUIRED", "Pedido sin productos");
+  if (String(current.order_type) === "SPECIAL_ORDER") {
+    const detail = await db.prepare("SELECT * FROM special_order_details WHERE order_id=? LIMIT 1").bind(orderId).first<Row>();
+    if (!detail || !detail.receipt_resolved_at) {
+      throw new OrderError("La recepción del Encargo todavía no está resuelta. Marcá si las unidades deben ingresar ahora o si ya fueron ingresadas mediante Facturas/Inventario. El pedido sigue en Borrador y no se modificó el inventario.", 409, "SPECIAL_ORDER_RECEIPT_UNRESOLVED", "Recepción pendiente");
+    }
+    const allowedSpecialStatuses = status === "REOPENED" ? ["DELIVERED"] : ["RECEIVED_READY", "ADDED_TO_ROUTE"];
+    if (!allowedSpecialStatuses.includes(String(detail.special_order_status))) {
+      throw new OrderError("El Encargo todavía no está listo para confirmar. Completá primero su flujo de proveedor y recepción; el pedido sigue en Borrador y no se modificó el inventario.", 409, "SPECIAL_ORDER_NOT_READY", "Encargo no listo");
+    }
+    const receiptTotals = await db.prepare(`SELECT l.id,l.product_id,l.quantity,
+      COALESCE((SELECT SUM(srl.quantity_received) FROM special_order_receipt_lines srl
+        JOIN special_order_receipts sr ON sr.id=srl.receipt_id WHERE sr.order_id=l.order_id AND srl.order_line_id=l.id),0) AS received_quantity
+      FROM order_lines l WHERE l.order_id=? AND l.removed_at IS NULL`).bind(orderId).all<Row>();
+    const unresolved = receiptTotals.results.filter((line) => line.product_id == null || Number(line.received_quantity || 0) < Number(line.quantity));
+    if (unresolved.length) {
+      throw new OrderError("Todas las líneas del Encargo deben estar vinculadas y recibidas antes de confirmar. Resolvé las cantidades pendientes; el pedido sigue en Borrador y no se modificó el inventario.", 409, "SPECIAL_ORDER_LINES_UNRESOLVED", "Productos pendientes", { lineIds: unresolved.map((line) => String(line.id)) });
+    }
+  }
   const products = await productsForLines(db, lines.results);
   const linked = lines.results.filter((line) => line.product_id != null).map((line) => ({
     productId: Number(line.product_id), productName: String(line.product_name_snapshot), required: Number(line.quantity),
@@ -754,7 +865,7 @@ export async function deliverOrder(db: D1Database, orderId: string, payload: Rec
   const operationId = requiredOperationId(payload);
   const version = requiredVersion(payload);
   if (await completedOperation(db, orderId, "DELIVER", operationId, payload)) return { order: await loadOrder(db, orderId), idempotent: true };
-  const current = await db.prepare("SELECT status FROM orders WHERE id=? LIMIT 1").bind(orderId).first<{ status: string }>();
+  const current = await db.prepare("SELECT status,order_type FROM orders WHERE id=? LIMIT 1").bind(orderId).first<{ status: string; order_type: string }>();
   if (!current) throw new OrderError("No encontramos el pedido. Actualizá la lista; no se realizó ningún cambio.", 404, "ORDER_NOT_FOUND", "Pedido no encontrado");
   if (current.status !== "PREPARED") throw new OrderError("Prepará el pedido antes de marcarlo como entregado. No se realizó ningún cambio ni se descontó inventario adicional.", 409, "ORDER_DELIVER_REQUIRES_PREPARED", "Pedido no preparado");
   const claim = await beginOperation(db, orderId, "DELIVER", operationId, payload);
@@ -772,6 +883,8 @@ export async function deliverOrder(db: D1Database, orderId: string, payload: Rec
     ...pendingLines.map(({ line, quantity }) => db.prepare("INSERT INTO order_fulfillment_lines (id,fulfillment_id,order_line_id,quantity) VALUES (?,?,?,?)")
       .bind(newOrderChildId("fuline"), fulfillmentId, String(line.id), quantity)),
     db.prepare("UPDATE orders SET status='DELIVERED',delivered_at=?,version=version+1,updated_at=? WHERE id=? AND version=? AND status='PREPARED'").bind(now, now, orderId, version),
+    ...(current.order_type === "SPECIAL_ORDER" ? [db.prepare(`UPDATE special_order_details SET special_order_status='DELIVERED',updated_at=?
+      WHERE order_id=? AND special_order_status='ADDED_TO_ROUTE'`).bind(now, orderId)] : []),
     statusEventStatement(db, orderId, "PREPARED", "DELIVERED", operationId, null, now),
     eventStatement(db, orderId, "order.delivered", operationId, { lineCount: pendingLines.length }, now),
     completeOperationStatement(db, operationId, orderId, now),
@@ -807,6 +920,10 @@ export async function cancelOrder(db: D1Database, orderId: string, payload: Reco
   statements.push(...plans.map((plan) => movementStatement(db, orderId, operationId, plan, now)));
   statements.push(db.prepare("UPDATE orders SET status='CANCELLED',cancelled_at=?,version=version+1,updated_at=? WHERE id=? AND version=? AND status=?")
     .bind(now, now, orderId, version, status));
+  if (String(order.order_type) === "SPECIAL_ORDER") {
+    statements.push(db.prepare(`UPDATE special_order_details SET special_order_status='CANCELLED',updated_at=?
+      WHERE order_id=? AND special_order_status NOT IN ('DELIVERED','CANCELLED')`).bind(now, orderId));
+  }
   statements.push(statusEventStatement(db, orderId, status, "CANCELLED", operationId, reason, now));
   statements.push(eventStatement(db, orderId, "order.cancelled", operationId, { reason }, now));
   statements.push(completeOperationStatement(db, operationId, orderId, now));
@@ -895,6 +1012,158 @@ export async function recordPayment(db: D1Database, orderId: string, payload: Re
     eventStatement(db, orderId, "payment.recorded", operationId, { paymentId, type: requestedType, amount, method }, now),
     completeOperationStatement(db, operationId, orderId, now),
   ];
+  try { await db.batch(statements); }
+  catch (error) { await abandonOperation(db, operationId); throw error; }
+  return { order: await loadOrder(db, orderId), idempotent: false };
+}
+
+export async function transitionSpecialOrder(db: D1Database, orderId: string, payload: Record<string, unknown>) {
+  const operationId = requiredOperationId(payload);
+  if (await completedOperation(db, orderId, "SPECIAL_STATUS", operationId, payload)) {
+    return { order: await loadOrder(db, orderId), idempotent: true };
+  }
+  const version = requiredVersion(payload);
+  const target = cleanText(payload.status ?? payload.specialOrderStatus, 50).toUpperCase();
+  if (!SPECIAL_ORDER_STATUSES.includes(target as SpecialOrderStatus)) {
+    throw new OrderError("El estado solicitado para el Encargo no es válido. Actualizá el pedido y elegí una acción disponible; no se realizó ningún cambio.", 400, "SPECIAL_ORDER_STATUS_INVALID", "Estado de Encargo inválido");
+  }
+  if (!["ORDERED_FROM_SUPPLIER", "IN_TRANSIT", "RECEIVED_PENDING_RESOLUTION"].includes(target)) {
+    throw new OrderError("Ese estado del Encargo se alcanza mediante recepción, ruta, entrega o cancelación. Usá la acción correspondiente; no se realizó ningún cambio.", 409, "SPECIAL_ORDER_STATUS_ACTION_REQUIRED", "Acción específica requerida");
+  }
+  const row = await db.prepare(`SELECT o.status AS order_status,o.order_type,sd.* FROM orders o
+    LEFT JOIN special_order_details sd ON sd.order_id=o.id WHERE o.id=? LIMIT 1`).bind(orderId).first<Row>();
+  if (!row) throw new OrderError("No encontramos el Encargo. Actualizá la lista; no se realizó ningún cambio.", 404, "ORDER_NOT_FOUND", "Encargo no encontrado");
+  if (String(row.order_type) !== "SPECIAL_ORDER" || !row.special_order_status) {
+    throw new OrderError("Este pedido no es un Encargo. Usá sus acciones logísticas normales; no se realizó ningún cambio.", 409, "SPECIAL_ORDER_REQUIRED", "No es un Encargo");
+  }
+  if (String(row.order_status) !== "DRAFT") {
+    throw new OrderError("El Encargo ya inició su flujo logístico normal y no puede retroceder al flujo de proveedor. No se realizó ningún cambio ni movimiento de inventario.", 409, "SPECIAL_ORDER_STATUS_LOCKED", "Encargo bloqueado");
+  }
+  const transitions: Record<string, string> = {
+    REQUESTED: "ORDERED_FROM_SUPPLIER",
+    ORDERED_FROM_SUPPLIER: "IN_TRANSIT",
+    IN_TRANSIT: "RECEIVED_PENDING_RESOLUTION",
+  };
+  const currentStatus = String(row.special_order_status);
+  if (transitions[currentStatus] !== target) {
+    throw new OrderError("Ese cambio de estado no sigue el orden del Encargo. Usá la siguiente acción disponible; el pedido y el inventario conservaron su estado anterior.", 409, "SPECIAL_ORDER_INVALID_TRANSITION", "Transición no permitida");
+  }
+  const estimatedArrivalDate = Object.hasOwn(payload, "estimatedArrivalDate")
+    ? costaRicaDate(payload.estimatedArrivalDate, "La fecha estimada de llegada")
+    : row.estimated_arrival_date ? String(row.estimated_arrival_date) : null;
+  const claim = await beginOperation(db, orderId, "SPECIAL_STATUS", operationId, payload);
+  if (claim.replayed) return { order: await loadOrder(db, orderId), idempotent: true };
+  const now = new Date().toISOString();
+  const statements: D1PreparedStatement[] = [
+    guardStatement(db, operationId, orderId, version, ["DRAFT"]),
+    db.prepare(`UPDATE special_order_details SET special_order_status=?,
+      ordered_at=CASE WHEN ?='ORDERED_FROM_SUPPLIER' THEN COALESCE(ordered_at,?) ELSE ordered_at END,
+      received_at=CASE WHEN ?='RECEIVED_PENDING_RESOLUTION' THEN COALESCE(received_at,?) ELSE received_at END,
+      estimated_arrival_date=?,updated_at=? WHERE order_id=? AND special_order_status=?`).bind(
+      target, target, now, target, now, estimatedArrivalDate, now, orderId, currentStatus,
+    ),
+    db.prepare("UPDATE orders SET version=version+1,updated_at=? WHERE id=? AND version=? AND status='DRAFT'").bind(now, orderId, version),
+    eventStatement(db, orderId, "special_order.status_changed", operationId, { from: currentStatus, to: target }, now),
+    completeOperationStatement(db, operationId, orderId, now),
+  ];
+  try { await db.batch(statements); }
+  catch (error) { await abandonOperation(db, operationId); throw error; }
+  return { order: await loadOrder(db, orderId), idempotent: false };
+}
+
+export async function resolveSpecialOrderReceipt(db: D1Database, orderId: string, payload: Record<string, unknown>) {
+  const operationId = requiredOperationId(payload);
+  if (await completedOperation(db, orderId, "SPECIAL_RECEIPT", operationId, payload)) {
+    return { order: await loadOrder(db, orderId), idempotent: true };
+  }
+  const version = requiredVersion(payload);
+  const mode = cleanText(payload.mode ?? payload.resolutionMode, 40).toUpperCase();
+  if (!SPECIAL_ORDER_RECEIPT_MODES.includes(mode as SpecialOrderReceiptMode)) {
+    throw new OrderError("Elegí si estas unidades ingresan ahora al inventario o si ya fueron ingresadas mediante Facturas/Inventario. No se realizó ningún cambio.", 400, "SPECIAL_ORDER_RECEIPT_MODE_INVALID", "Resolución requerida");
+  }
+  const order = await db.prepare(`SELECT o.*,sd.special_order_status,sd.receipt_resolved_at FROM orders o
+    LEFT JOIN special_order_details sd ON sd.order_id=o.id WHERE o.id=? LIMIT 1`).bind(orderId).first<Row>();
+  if (!order) throw new OrderError("No encontramos el Encargo. Actualizá la lista; no se realizó ningún cambio.", 404, "ORDER_NOT_FOUND", "Encargo no encontrado");
+  if (String(order.order_type) !== "SPECIAL_ORDER") throw new OrderError("Este pedido no es un Encargo. No se realizó ningún cambio.", 409, "SPECIAL_ORDER_REQUIRED", "No es un Encargo");
+  if (String(order.status) !== "DRAFT" || !["RECEIVED_PENDING_RESOLUTION", "PARTIALLY_RECEIVED"].includes(String(order.special_order_status))) {
+    throw new OrderError("La recepción no está pendiente de resolver. Actualizá el Encargo y usá la acción disponible; no se realizó ningún cambio ni movimiento de inventario.", 409, "SPECIAL_ORDER_RECEIPT_NOT_PENDING", "Recepción no disponible");
+  }
+  const requestedLines = Array.isArray(payload.lines) ? payload.lines.map(asRow).slice(0, 500) : [];
+  if (!requestedLines.length) throw new OrderError("Seleccioná al menos un producto y su cantidad recibida. No se realizó ningún cambio ni movimiento de inventario.", 400, "SPECIAL_ORDER_RECEIPT_LINES_REQUIRED", "Recepción sin productos");
+  const activeLines = await db.prepare(`SELECT l.*,
+    COALESCE((SELECT SUM(srl.quantity_received) FROM special_order_receipt_lines srl
+      JOIN special_order_receipts sr ON sr.id=srl.receipt_id WHERE sr.order_id=l.order_id AND srl.order_line_id=l.id),0) AS received_quantity
+    FROM order_lines l WHERE l.order_id=? AND l.removed_at IS NULL ORDER BY l.position,l.id`).bind(orderId).all<Row>();
+  const byId = new Map(activeLines.results.map((line) => [String(line.id), line]));
+  const parsed = requestedLines.map((source, index) => {
+    const lineId = cleanText(source.orderLineId ?? source.lineId, 100);
+    const line = byId.get(lineId);
+    if (!line) throw new OrderError(`La línea ${index + 1} no pertenece al Encargo. Actualizalo; no se realizó ningún cambio.`, 409, "SPECIAL_ORDER_RECEIPT_LINE_NOT_FOUND", "Producto no encontrado");
+    const productId = integerValue(source.productId, `El producto vinculado de “${String(line.product_name_snapshot)}”`, 1, 2_147_483_647);
+    const quantityReceived = integerValue(source.quantityReceived ?? source.quantity, `La cantidad recibida de “${String(line.product_name_snapshot)}”`, 1, 100_000);
+    const remaining = Math.max(0, Number(line.quantity) - Number(line.received_quantity || 0));
+    if (quantityReceived > remaining) {
+      throw new OrderError(`Solo faltan ${remaining} unidades por recibir de “${String(line.product_name_snapshot)}”. Corregí la cantidad; no se realizó ningún cambio ni movimiento de inventario.`, 409, "SPECIAL_ORDER_RECEIPT_EXCEEDS_PENDING", "Cantidad recibida inválida", { lineId, remaining });
+    }
+    if (line.product_id != null && Number(line.product_id) !== productId) {
+      throw new OrderError(`“${String(line.product_name_snapshot)}” ya está vinculado a otro producto. Revisá la selección; no se realizó ningún cambio ni movimiento de inventario.`, 409, "SPECIAL_ORDER_PRODUCT_LINK_CONFLICT", "Vinculación incompatible", { lineId });
+    }
+    return { line, lineId, productId, quantityReceived };
+  });
+  if (new Set(parsed.map((line) => line.lineId)).size !== parsed.length) {
+    throw new OrderError("La recepción contiene una línea repetida. Corregila; no se realizó ningún cambio ni movimiento de inventario.", 409, "ORDER_DUPLICATE_LINE", "Línea repetida");
+  }
+  const productIds = [...new Set(parsed.map((line) => line.productId))];
+  const productRows = await db.prepare("SELECT * FROM products WHERE id IN (SELECT value FROM json_each(?))")
+    .bind(JSON.stringify(productIds)).all<Row>();
+  const products = new Map(productRows.results.map((product) => [Number(product.id), product]));
+  if (products.size !== productIds.length) {
+    const missing = productIds.filter((productId) => !products.has(productId));
+    throw new OrderError("Uno de los productos seleccionados no existe en Inventario. Crealo o seleccionalo mediante el flujo seguro antes de resolver la recepción; no se realizó ningún cambio.", 409, "ORDER_PRODUCT_NOT_FOUND", "Producto no encontrado", { productIds: missing });
+  }
+  const receivedByLine = new Map(activeLines.results.map((line) => [String(line.id), Number(line.received_quantity || 0)]));
+  parsed.forEach((line) => receivedByLine.set(line.lineId, (receivedByLine.get(line.lineId) || 0) + line.quantityReceived));
+  const fullyResolved = activeLines.results.every((line) => (receivedByLine.get(String(line.id)) || 0) >= Number(line.quantity));
+  const nextStatus: SpecialOrderStatus = fullyResolved ? "RECEIVED_READY" : "PARTIALLY_RECEIVED";
+  const movementPlans = mode === "INVENTORY_NOW" ? assignMovementQuantities(parsed.map(({ line, lineId, productId, quantityReceived }) => ({
+    lineId,
+    productId,
+    productName: String(line.product_name_snapshot),
+    barcode: products.get(productId)?.code ? String(products.get(productId)?.code) : null,
+    movementType: "SPECIAL_ORDER_RECEIPT",
+    quantityChange: quantityReceived,
+    reason: "Recepción de Encargo ingresada al inventario",
+  })), products) : [];
+  const claim = await beginOperation(db, orderId, "SPECIAL_RECEIPT", operationId, payload);
+  if (claim.replayed) return { order: await loadOrder(db, orderId), idempotent: true };
+  const now = new Date().toISOString();
+  const receiptId = newOrderChildId("sreceipt");
+  const statements: D1PreparedStatement[] = [guardStatement(db, operationId, orderId, version, ["DRAFT"])];
+  parsed.forEach(({ lineId, productId }) => statements.push(db.prepare(`UPDATE order_lines SET product_id=?,
+    barcode_snapshot=COALESCE(barcode_snapshot,(SELECT code FROM products WHERE id=?)),
+    presentation_snapshot=COALESCE(presentation_snapshot,(SELECT presentation FROM products WHERE id=?)),updated_at=?
+    WHERE id=? AND order_id=? AND removed_at IS NULL AND (product_id IS NULL OR product_id=?)`).bind(
+    productId, productId, productId, now, lineId, orderId, productId,
+  )));
+  statements.push(db.prepare(`INSERT INTO special_order_receipts (
+    id,order_id,resolution_mode,operation_id,resolved_at,created_at
+  ) VALUES (?,?,?,?,?,?)`).bind(receiptId, orderId, mode, operationId, now, now));
+  parsed.forEach(({ lineId, productId, quantityReceived }) => statements.push(db.prepare(`INSERT INTO special_order_receipt_lines (
+    id,receipt_id,order_line_id,product_id,quantity_received,inventory_movement_created,created_at
+  ) VALUES (?,?,?,?,?,?,?)`).bind(
+    newOrderChildId("srline"), receiptId, lineId, productId, quantityReceived, mode === "INVENTORY_NOW" ? 1 : 0, now,
+  )));
+  statements.push(...movementPlans.map((plan) => movementStatement(db, orderId, operationId, plan, now)));
+  statements.push(db.prepare(`UPDATE special_order_details SET special_order_status=?,
+    receipt_resolved_at=CASE WHEN ?=1 THEN COALESCE(receipt_resolved_at,?) ELSE receipt_resolved_at END,updated_at=?
+    WHERE order_id=? AND special_order_status IN ('RECEIVED_PENDING_RESOLUTION','PARTIALLY_RECEIVED')`).bind(
+    nextStatus, fullyResolved ? 1 : 0, now, now, orderId,
+  ));
+  statements.push(db.prepare("UPDATE orders SET version=version+1,updated_at=? WHERE id=? AND version=? AND status='DRAFT'").bind(now, orderId, version));
+  statements.push(eventStatement(db, orderId, "special_order.receipt_resolved", operationId, {
+    receiptId, mode, fullyResolved, lineCount: parsed.length,
+  }, now));
+  statements.push(completeOperationStatement(db, operationId, orderId, now));
   try { await db.batch(statements); }
   catch (error) { await abandonOperation(db, operationId); throw error; }
   return { order: await loadOrder(db, orderId), idempotent: false };
@@ -1026,12 +1295,22 @@ export async function assignOrderToRoute(db: D1Database, routeId: string, payloa
   if (!route) throw new OrderError("No encontramos una ruta abierta. Actualizá las rutas; no se realizó ningún cambio.", 404, "ROUTE_NOT_FOUND", "Ruta no encontrada");
   if (!order) throw new OrderError("No encontramos el pedido. Actualizá la lista; no se realizó ningún cambio.", 404, "ORDER_NOT_FOUND", "Pedido no encontrado");
   if (["DELIVERED", "CANCELLED"].includes(String(order.status))) throw new OrderError("El pedido ya está cerrado y no puede asignarse a una ruta activa. No se realizó ningún cambio.", 409, "ROUTE_ORDER_CLOSED", "Pedido cerrado");
+  let specialDetail: Row | null = null;
+  if (String(order.order_type) === "SPECIAL_ORDER") {
+    specialDetail = await db.prepare("SELECT * FROM special_order_details WHERE order_id=? LIMIT 1").bind(orderId).first<Row>();
+    if (!specialDetail?.receipt_resolved_at || !["RECEIVED_READY", "ADDED_TO_ROUTE"].includes(String(specialDetail.special_order_status))) {
+      throw new OrderError("El Encargo todavía no tiene su recepción resuelta. Completá la vinculación de inventario antes de agregarlo a una ruta; no se realizó ningún cambio.", 409, "SPECIAL_ORDER_ROUTE_NOT_READY", "Encargo no listo");
+    }
+  }
   const now = new Date().toISOString();
   await db.batch([
     db.prepare("UPDATE route_orders SET removed_at=? WHERE order_id=? AND removed_at IS NULL").bind(now, orderId),
     db.prepare("INSERT INTO route_orders (id,route_id,order_id,position,assigned_at) VALUES (?,?,?,?,?)")
       .bind(newOrderChildId("routeorder"), routeId, orderId, position, now),
     db.prepare("UPDATE orders SET route_id=?,version=version+1,updated_at=? WHERE id=?").bind(routeId, now, orderId),
+    ...(specialDetail && String(specialDetail.special_order_status) === "RECEIVED_READY"
+      ? [db.prepare("UPDATE special_order_details SET special_order_status='ADDED_TO_ROUTE',updated_at=? WHERE order_id=? AND special_order_status='RECEIVED_READY'").bind(now, orderId)]
+      : []),
   ]);
   return { order: await loadOrder(db, orderId) };
 }

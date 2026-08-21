@@ -61,7 +61,7 @@ La migración `0014` elimina el índice `inventory_movements_invoice_line_unique
 | Tabla | Propósito |
 |---|---|
 | `order_number_allocations` | Secuencia transaccional para números `NP-######`. |
-| `orders` | Cabecera, snapshots de cliente/dirección, estado, fecha, importes y versión optimista. |
+| `orders` | Cabecera, snapshots de cliente/dirección, estado, fecha, importes, método esperado nullable y versión optimista. |
 | `order_lines` | Líneas activas/históricas, vínculo opcional a producto y snapshots comerciales/de costo. |
 | `order_operations` | Recibos idempotentes con hash de solicitud y respuesta repetible. |
 | `order_status_events` | Transiciones append-only con motivo, operación y actor nullable. |
@@ -71,10 +71,16 @@ La migración `0014` elimina el índice `inventory_movements_invoice_line_unique
 | `delivery_routes` / `route_orders` | Rutas por fecha y posición estable de cada pedido. |
 | `order_returns` / `order_return_lines` | Devoluciones y decisión explícita de reingreso a inventario. |
 | `order_fulfillments` / `order_fulfillment_lines` | Entregas separadas del pedido y preparadas para cantidades parciales. |
+| `special_order_details` | Relación 1:1 para estado de proveedor, solicitud, pedido, estimación, recepción y resolución del Encargo. |
+| `special_order_receipts` / `special_order_receipt_lines` | Recepciones append-only, camino elegido, producto vinculado, cantidad real y si creó movimiento de entrada. |
 
 `inventory_movements` recibe tres columnas opcionales: `order_id`, `order_line_id` y `movement_type`. Las filas históricas y de Facturas permanecen válidas con valores nulos. Solo los movimientos con línea de pedido activan la validación de producto, cantidades previa/resultante y saldo no negativo, y actualizan el producto dentro del mismo batch D1. Igual que los guards de `0014`, `ensureDatabase()` instala los triggers de Pedidos como sentencias D1 individuales porque el ejecutor de migraciones de Sites no acepta cuerpos con terminadores internos.
 
 Los importes de Pedidos se almacenan como enteros CRC. Las fechas operativas de entrega y ruta son texto `YYYY-MM-DD` interpretado en `America/Costa_Rica`; los timestamps técnicos conservan la convención UTC del proyecto.
+
+`expected_payment_method` solo comunica la expectativa operativa (`CASH`, `SINPE`, `CARD`, `OTHER` o `NULL`). Los pagos reales permanecen exclusivamente en `order_payments`, por lo que editar la expectativa no fabrica ni altera movimientos financieros.
+
+Los Encargos usan dos máquinas separadas: `orders.status` para logística y `special_order_status` para proveedor/recepción. Marcar recibido no suma stock. Una resolución `INVENTORY_NOW` crea `SPECIAL_ORDER_RECEIPT`; `ALREADY_INVENTORY` registra explícitamente que la entrada ocurrió por Facturas/Inventario y no crea un segundo movimiento. La suma normalizada de `quantity_received` deja preparado el modelo para recepciones parciales.
 
 ### Importaciones, respaldos y eliminaciones
 

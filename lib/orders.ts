@@ -1,10 +1,24 @@
 export const ORDER_STATUSES = ["DRAFT", "CONFIRMED", "PREPARED", "DELIVERED", "CANCELLED", "REOPENED"] as const;
 export const ORDER_SOURCES = ["MANUAL", "WHATSAPP", "INSTAGRAM_FACEBOOK", "WEB", "CRM", "OTHER"] as const;
 export const PAYMENT_METHODS = ["CASH", "SINPE", "CARD", "OTHER"] as const;
+export const SPECIAL_ORDER_STATUSES = [
+  "REQUESTED",
+  "ORDERED_FROM_SUPPLIER",
+  "IN_TRANSIT",
+  "RECEIVED_PENDING_RESOLUTION",
+  "PARTIALLY_RECEIVED",
+  "RECEIVED_READY",
+  "ADDED_TO_ROUTE",
+  "DELIVERED",
+  "CANCELLED",
+] as const;
+export const SPECIAL_ORDER_RECEIPT_MODES = ["INVENTORY_NOW", "ALREADY_INVENTORY"] as const;
 
 export type OrderStatus = typeof ORDER_STATUSES[number];
 export type OrderSource = typeof ORDER_SOURCES[number];
 export type PaymentMethod = typeof PAYMENT_METHODS[number];
+export type SpecialOrderStatus = typeof SPECIAL_ORDER_STATUSES[number];
+export type SpecialOrderReceiptMode = typeof SPECIAL_ORDER_RECEIPT_MODES[number];
 
 export class OrderError extends Error {
   constructor(
@@ -160,11 +174,32 @@ export function orderErrorResponse(error: unknown) {
     return Response.json({ error: error.message, title: error.title, code: error.code, ...(error.details ? { details: error.details } : {}) }, { status: error.status });
   }
   const message = error instanceof Error ? error.message : "";
+  if (/SPECIAL_ORDER_INVALID_TRANSITION/i.test(message)) {
+    return Response.json({
+      error: "Ese cambio no sigue el flujo permitido del Encargo. Actualizá el pedido y usá la siguiente acción disponible; no se realizó ningún cambio ni movimiento de inventario.",
+      title: "Transición de Encargo no permitida",
+      code: "SPECIAL_ORDER_INVALID_TRANSITION",
+    }, { status: 409 });
+  }
   if (/ORDER_INVALID_TRANSITION/i.test(message)) {
     return Response.json({
       error: "El estado actual del pedido no permite esa acción. Actualizá el pedido y utilizá la operación correspondiente; no se realizó ningún cambio.",
       title: "Transición no permitida",
       code: "ORDER_INVALID_TRANSITION",
+    }, { status: 409 });
+  }
+  if (/SPECIAL_ORDER_RECEIPT_APPEND_ONLY/i.test(message)) {
+    return Response.json({
+      error: "La recepción ya forma parte del historial y no puede reescribirse. Registrá una corrección trazable; el inventario conserva su estado actual.",
+      title: "Recepción protegida",
+      code: "SPECIAL_ORDER_RECEIPT_PROTECTED",
+    }, { status: 409 });
+  }
+  if (/SPECIAL_ORDER_TYPE_REQUIRED/i.test(message)) {
+    return Response.json({
+      error: "La recepción solo puede asociarse a un Encargo válido. Actualizá el pedido; no se realizó ningún cambio.",
+      title: "Encargo inválido",
+      code: "SPECIAL_ORDER_REQUIRED",
     }, { status: 409 });
   }
   if (/ORDER_INSUFFICIENT_STOCK/i.test(message)) {

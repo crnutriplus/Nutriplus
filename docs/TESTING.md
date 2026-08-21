@@ -23,6 +23,7 @@ npm run validate:artifact
 - `tests/inventory-migration-0014.integration.mjs`: migración desde el índice de v2.11, reingreso tras reversa, límites por saldo y compatibilidad con ingreso rápido;
 - `tests/orders-migration-0015.integration.mjs`: migración aditiva desde el esquema productivo actual, conservación de inventario y restricciones/triggers de Pedidos;
 - `tests/orders-phase-1.integration.mjs`: estados, inventario por delta, idempotencia, concurrencia, pagos, devoluciones, rutas, snapshots, numeración NP y fechas de Costa Rica;
+- `tests/orders-special-foundation.integration.mjs`: expectativa de pago, estados de Encargos, ambos caminos de recepción, cantidades parciales, idempotencia y concurrencia;
 - `tests/api-integration.mjs`: productos, ajustes, quotes e importaciones;
 - `tests/concurrency-integration.mjs`: idempotencia y concurrencia;
 - `tests/inventory-intake-integration.mjs`: documentos, confirmación, cierre no destructivo a nivel de interfaz, omisión/reactivación, saldo neto, reingreso, concurrencia, historial por factura y reversas;
@@ -30,16 +31,17 @@ npm run validate:artifact
 
 Las integraciones ejecutan el artefacto construido con dobles locales de D1/R2 cuando corresponde. No modifican producción.
 
-## Pedidos — Fase 1
+## Pedidos — base ampliada
 
 Para validar aisladamente el dominio nuevo:
 
 ```bash
 node tests/orders-migration-0015.integration.mjs
 node tests/orders-phase-1.integration.mjs
+node tests/orders-special-foundation.integration.mjs
 ```
 
-La prueba de dominio cubre los 25 invariantes solicitados: borrador sin stock, confirmación única, reintentos, rollback por faltantes, edición confirmada por delta, cancelación, preparación/entrega, reapertura, pagos mixtos, devoluciones con y sin reingreso, actualización obsoleta, carrera por la última unidad, reprogramación, snapshots, NP concurrente y fecha operativa. También comprueba reversión de pago sin borrar el original, eliminación idempotente de un borrador sin movimientos, productos manuales, historial, entregas normalizadas, rutas y filtros paginados.
+La prueba de Fase 1 cubre borrador sin stock, confirmación única, reintentos, rollback por faltantes, edición confirmada por delta, cancelación, preparación/entrega, reapertura, pagos mixtos, devoluciones, actualización obsoleta, carrera por la última unidad, reprogramación, snapshots, NP concurrente y fecha operativa. La ampliación comprueba además que el método esperado no toca el ledger, que las transiciones de proveedor no mueven inventario, que marcar recibido deja una resolución pendiente y que los caminos `INVENTORY_NOW` y `ALREADY_INVENTORY` conservan idempotencia, trazabilidad, stock real y recepción parcial.
 
 Estas pruebas usan una base SQLite temporal compatible con D1. No aplican `0015` a producción, no crean movimientos reales, no usan R2 y no hacen llamadas a OpenAI.
 

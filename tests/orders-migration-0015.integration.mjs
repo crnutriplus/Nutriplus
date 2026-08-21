@@ -70,12 +70,15 @@ for (const statement of ORDER_DATABASE_TRIGGER_SQL) sqlite.exec(statement);
 const expectedTables = [
   "orders", "order_lines", "order_payments", "order_status_events", "order_events", "order_operations",
   "order_external_references", "delivery_routes", "route_orders", "order_returns", "order_return_lines",
-  "order_fulfillments", "order_fulfillment_lines", "order_number_allocations",
+  "order_fulfillments", "order_fulfillment_lines", "order_number_allocations", "special_order_details",
+  "special_order_receipts", "special_order_receipt_lines",
 ];
 const tables = new Set(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
 expectedTables.forEach((table) => assert.ok(tables.has(table), `${table} must exist after 0015`));
 const movementColumns = new Set(sqlite.prepare("PRAGMA table_info(inventory_movements)").all().map((row) => row.name));
 for (const column of ["order_id", "order_line_id", "movement_type"]) assert.ok(movementColumns.has(column));
+const orderColumns = new Set(sqlite.prepare("PRAGMA table_info(orders)").all().map((row) => row.name));
+assert.ok(orderColumns.has("expected_payment_method"));
 assert.equal(sqlite.prepare("SELECT COUNT(*) AS total FROM inventory_movements WHERE id='legacy-movement'").get().total, 1);
 
 sqlite.exec(`
@@ -116,5 +119,16 @@ sqlite.prepare(`INSERT INTO order_status_events (id,order_id,from_status,to_stat
 assert.throws(() => sqlite.prepare("UPDATE order_status_events SET reason='cambio' WHERE id='status-event-migration'").run(), /ORDER_STATUS_EVENT_APPEND_ONLY/);
 assert.throws(() => sqlite.prepare("DELETE FROM order_lines WHERE id='oline-migration-test'").run(), /ORDER_LINE_HARD_DELETE_FORBIDDEN/);
 
+sqlite.exec(`
+  INSERT INTO orders (
+    id,order_number,order_type,customer_name_snapshot,status,currency,subtotal,discount_total,delivery_fee,total,expected_payment_method,source,version
+  ) VALUES ('special-migration-test','NP-000002','SPECIAL_ORDER','Cliente Encargo','DRAFT','CRC',5000,0,0,5000,'SINPE','MANUAL',1);
+  INSERT INTO special_order_details (order_id,special_order_status) VALUES ('special-migration-test','REQUESTED');
+`);
+assert.equal(sqlite.prepare("SELECT expected_payment_method FROM orders WHERE id='special-migration-test'").get().expected_payment_method, "SINPE");
+assert.throws(() => sqlite.prepare("UPDATE special_order_details SET special_order_status='IN_TRANSIT' WHERE order_id='special-migration-test'").run(), /SPECIAL_ORDER_INVALID_TRANSITION/);
+sqlite.prepare("UPDATE special_order_details SET special_order_status='ORDERED_FROM_SUPPLIER' WHERE order_id='special-migration-test'").run();
+assert.equal(sqlite.prepare("SELECT special_order_status FROM special_order_details WHERE order_id='special-migration-test'").get().special_order_status, "ORDERED_FROM_SUPPLIER");
+
 sqlite.close();
-console.log("Migration 0015 preserves existing inventory data and adds guarded order tables, indexes, constraints, state transitions, and stock movements");
+console.log("Migration 0015 preserves existing inventory data and adds guarded orders, expected payment, normalized special orders, receipts, and stock movements");

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c0aecd26-870b-46ae-bb45-682024e17418",
+  "id": "f764ae48-2f26-400e-8e1b-b076e43a388d",
   "prevId": "a36f8f93-711c-4f0a-aa2c-d53d8c17865a",
   "tables": {
     "delivery_routes": {
@@ -3206,6 +3206,13 @@
           "autoincrement": false,
           "default": 0
         },
+        "expected_payment_method": {
+          "name": "expected_payment_method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "internal_notes": {
           "name": "internal_notes",
           "type": "text",
@@ -3357,6 +3364,10 @@
         "orders_source_check": {
           "name": "orders_source_check",
           "value": "\"orders\".\"source\" IN ('MANUAL','WHATSAPP','INSTAGRAM_FACEBOOK','WEB','CRM','OTHER')"
+        },
+        "orders_expected_payment_method_check": {
+          "name": "orders_expected_payment_method_check",
+          "value": "\"orders\".\"expected_payment_method\" IS NULL OR \"orders\".\"expected_payment_method\" IN ('CASH','SINPE','CARD','OTHER')"
         },
         "orders_money_check": {
           "name": "orders_money_check",
@@ -3882,6 +3893,345 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
+    },
+    "special_order_details": {
+      "name": "special_order_details",
+      "columns": {
+        "order_id": {
+          "name": "order_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "special_order_status": {
+          "name": "special_order_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'REQUESTED'"
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "CURRENT_TIMESTAMP"
+        },
+        "ordered_at": {
+          "name": "ordered_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "estimated_arrival_date": {
+          "name": "estimated_arrival_date",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "receipt_resolved_at": {
+          "name": "receipt_resolved_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "CURRENT_TIMESTAMP"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "CURRENT_TIMESTAMP"
+        }
+      },
+      "indexes": {
+        "special_order_details_status_idx": {
+          "name": "special_order_details_status_idx",
+          "columns": [
+            "special_order_status",
+            "updated_at",
+            "order_id"
+          ],
+          "isUnique": false
+        },
+        "special_order_details_estimated_idx": {
+          "name": "special_order_details_estimated_idx",
+          "columns": [
+            "estimated_arrival_date",
+            "order_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "special_order_details_order_id_orders_id_fk": {
+          "name": "special_order_details_order_id_orders_id_fk",
+          "tableFrom": "special_order_details",
+          "tableTo": "orders",
+          "columnsFrom": [
+            "order_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "special_order_details_status_check": {
+          "name": "special_order_details_status_check",
+          "value": "\"special_order_details\".\"special_order_status\" IN (\n    'REQUESTED','ORDERED_FROM_SUPPLIER','IN_TRANSIT','RECEIVED_PENDING_RESOLUTION',\n    'PARTIALLY_RECEIVED','RECEIVED_READY','ADDED_TO_ROUTE','DELIVERED','CANCELLED'\n  )"
+        }
+      }
+    },
+    "special_order_receipt_lines": {
+      "name": "special_order_receipt_lines",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "receipt_id": {
+          "name": "receipt_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "order_line_id": {
+          "name": "order_line_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "product_id": {
+          "name": "product_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "quantity_received": {
+          "name": "quantity_received",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "inventory_movement_created": {
+          "name": "inventory_movement_created",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "CURRENT_TIMESTAMP"
+        }
+      },
+      "indexes": {
+        "special_order_receipt_lines_receipt_idx": {
+          "name": "special_order_receipt_lines_receipt_idx",
+          "columns": [
+            "receipt_id",
+            "id"
+          ],
+          "isUnique": false
+        },
+        "special_order_receipt_lines_order_line_idx": {
+          "name": "special_order_receipt_lines_order_line_idx",
+          "columns": [
+            "order_line_id",
+            "created_at",
+            "id"
+          ],
+          "isUnique": false
+        },
+        "special_order_receipt_lines_unique": {
+          "name": "special_order_receipt_lines_unique",
+          "columns": [
+            "receipt_id",
+            "order_line_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "special_order_receipt_lines_receipt_id_special_order_receipts_id_fk": {
+          "name": "special_order_receipt_lines_receipt_id_special_order_receipts_id_fk",
+          "tableFrom": "special_order_receipt_lines",
+          "tableTo": "special_order_receipts",
+          "columnsFrom": [
+            "receipt_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "special_order_receipt_lines_order_line_id_order_lines_id_fk": {
+          "name": "special_order_receipt_lines_order_line_id_order_lines_id_fk",
+          "tableFrom": "special_order_receipt_lines",
+          "tableTo": "order_lines",
+          "columnsFrom": [
+            "order_line_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "special_order_receipt_lines_product_id_products_id_fk": {
+          "name": "special_order_receipt_lines_product_id_products_id_fk",
+          "tableFrom": "special_order_receipt_lines",
+          "tableTo": "products",
+          "columnsFrom": [
+            "product_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "special_order_receipt_lines_quantity_check": {
+          "name": "special_order_receipt_lines_quantity_check",
+          "value": "\"special_order_receipt_lines\".\"quantity_received\" > 0"
+        },
+        "special_order_receipt_lines_movement_check": {
+          "name": "special_order_receipt_lines_movement_check",
+          "value": "\"special_order_receipt_lines\".\"inventory_movement_created\" IN (0,1)"
+        }
+      }
+    },
+    "special_order_receipts": {
+      "name": "special_order_receipts",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "order_id": {
+          "name": "order_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "resolution_mode": {
+          "name": "resolution_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "operation_id": {
+          "name": "operation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "CURRENT_TIMESTAMP"
+        }
+      },
+      "indexes": {
+        "special_order_receipts_order_idx": {
+          "name": "special_order_receipts_order_idx",
+          "columns": [
+            "order_id",
+            "resolved_at",
+            "id"
+          ],
+          "isUnique": false
+        },
+        "special_order_receipts_operation_unique": {
+          "name": "special_order_receipts_operation_unique",
+          "columns": [
+            "operation_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "special_order_receipts_order_id_orders_id_fk": {
+          "name": "special_order_receipts_order_id_orders_id_fk",
+          "tableFrom": "special_order_receipts",
+          "tableTo": "orders",
+          "columnsFrom": [
+            "order_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "special_order_receipts_mode_check": {
+          "name": "special_order_receipts_mode_check",
+          "value": "\"special_order_receipts\".\"resolution_mode\" IN ('INVENTORY_NOW','ALREADY_INVENTORY')"
+        }
+      }
     },
     "supplier_product_aliases": {
       "name": "supplier_product_aliases",

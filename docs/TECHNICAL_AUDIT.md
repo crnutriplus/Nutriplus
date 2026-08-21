@@ -171,6 +171,14 @@ La instalación limpia mediante el wrapper del proyecto, que ejecuta un único `
 
 La Fase 1 no incluye interfaz ni publicación. No hubo merge a `main`, push, checkpoint, deploy, cambio de versión, escritura D1/R2 productiva ni llamadas a OpenAI. `CHATGPT_IMPORT` conserva cero llamadas/costo. Las APIs de Pedidos requieren policies propias cuando se retome autorización interna; actualmente solo existe la protección externa privada de Sites. `docs/BACKUP_RESTORE.md` quedó intacto y el backup integral D1+R2 continúa formalmente **BLOQUEADO**.
 
+## Pedidos — ampliación de base para Encargos (2026-08-20)
+
+Antes de construir la interfaz se resolvieron tres incompatibilidades de alcance sin tocar producción. La migración inédita `0015` se amplió directamente, sin crear `0016`: `orders.expected_payment_method` conserva la expectativa operativa separada de `order_payments`, y tres tablas normalizadas conservan estado, fechas y recepciones de Encargos.
+
+Marcar un Encargo recibido no mueve stock. Cada resolución append-only registra el camino elegido y cantidades reales por línea. `INVENTORY_NOW` crea un movimiento `SPECIAL_ORDER_RECEIPT`; `ALREADY_INVENTORY` vincula al producto sin duplicar la entrada de Facturas/Inventario. La versión del pedido, `operationId`, guards D1, triggers de stock y comprobación al confirmar protegen reintentos y carreras. El modelo admite recepción parcial y solo habilita confirmación cuando todas las cantidades están resueltas.
+
+Las nuevas rutas de estado y recepción permanecen bajo el Site owner-only y deberán incorporarse a la autorización interna cuando se reactive Seguridad 3B. No se mezcló `security/phase-3b1`, no se llamó a OpenAI y no se aplicó `0015` a D1 productivo.
+
 ### Uso y peso
 
 - No se identificó una dependencia directa claramente eliminable sin análisis funcional adicional.
