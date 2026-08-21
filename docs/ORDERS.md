@@ -4,7 +4,7 @@
 
 La implementación local de Pedidos incluye modelo D1, migración, reglas de dominio, inventario transaccional, pagos, devoluciones, entregas parciales, rutas, impresión, API, interfaz operativa e historial. Antes de iniciar la interfaz se amplió de forma aditiva la misma migración `0015`, todavía inédita, para persistir el método esperado de pago y el flujo seguro de Encargos. Está en la rama `feature/orders-phase-1`, creada desde el `main` productivo de NutriPlus v2.15.
 
-La migración `0015_quiet_anthem.sql` no se ha aplicado a producción. No hubo merge a `main`, push, checkpoint, deploy, cambio de versión ni escritura en D1/R2 productivos.
+La migración `0015_quiet_anthem.sql` se desarrolló sin aplicarla anticipadamente a producción y se publica únicamente mediante el flujo normal de Sites para v2.16, después de la regresión completa. No existe una migración correctiva adicional: toda la ampliación inédita quedó en `0015` de forma aditiva.
 
 ## Entidades
 
@@ -132,4 +132,5 @@ No se envían eventos a CRM, WhatsApp, Poket ni otro servicio. No hay llamadas a
 - `tests/orders-special-foundation.integration.mjs` valida método esperado, máquina de Encargos, ambos caminos de recepción, recepción parcial, idempotencia y concurrencia.
 - `tests/orders-phase-2.integration.mjs` valida el contrato de interfaz, resumen diario, detección de duplicados, acciones operativas, pagos, rutas, filtros, idempotencia, concurrencia y navegación responsive.
 - `tests/orders-phase-3.integration.mjs` valida impresión exacta y multipágina, cierre de ruta, entregas parciales, correcciones, devoluciones, Encargos completos, saldos, historial y contrato móvil.
-- `npm test` incorpora las cinco pruebas de Pedidos junto con toda la regresión existente.
+- `tests/orders-phase-4.e2e.mjs` valida el escenario final de stock/pagos/corrección/devolución, concurrencia por la última unidad y Encargo de punta a punta.
+- `npm test` incorpora las seis pruebas de Pedidos junto con toda la regresión existente.

@@ -187,6 +187,16 @@ El flujo de Encargos mantiene estado de proveedor separado, recepción explícit
 
 La batería específica de Fase 3 cubre impresión exacta y multipágina, ruta con pendientes, fulfillments parciales, devoluciones con/sin reingreso, correcciones por delta, búsqueda paginada, saldo de Encargos y ambos caminos de recepción. Esta sección documenta trabajo local previo a la puerta de regresión completa; no implica merge, checkpoint, deploy ni aplicación de `0015` en producción.
 
+## Pedidos — puerta final v2.16 (2026-08-20)
+
+La revisión de migración ejecutó en memoria las migraciones reales `0000` a `0014`, identificó las 17 tablas heredadas de v2.15, guardó definiciones/conteos y aplicó `0015`. Todas las tablas y filas previas sobrevivieron; solo `inventory_movements` recibió las tres columnas opcionales autorizadas. Las entidades nuevas, restricciones, estados append-only y guards transaccionales quedaron presentes sin `DROP` sobre datos productivos.
+
+El E2E final reprodujo el caso exigido: stock 10→7 al confirmar 3, 7→5 al editar a 5, dos pagos hasta saldo cero, entrega sin segundo descuento, reapertura y corrección a 4 con stock 6, nuevo cierre y devolución apta con stock 7. Una carrera de dos pedidos por una sola unidad produjo exactamente un confirmado, un borrador y saldo cero, nunca negativo. El Encargo E2E conservó NP, abono/saldo, estados de proveedor, recepción `SPECIAL_ORDER_RECEIPT`, ruta única, impresión, descuento al confirmar, entrega e historial.
+
+Después de instalación limpia pasaron ESLint, TypeScript, 36/36 pruebas unitarias, Worker de SheetJS, migraciones 0014/0015, Fases 1–4 de Pedidos, concurrencia, APIs, Facturas, Inventario, CHATGPT_IMPORT, importación/exportación Excel, PDF, build y validador Sites. El secret scan no encontró credenciales. No se llamó a OpenAI y los escenarios de importación sin IA conservaron `api_calls=0` y `api_cost=0`.
+
+`npm audit --omit=dev` informó 2 nodos: 0 críticos, 0 altos, 2 moderados y 0 bajos, limitados a ExcelJS/uuid ya conocidos. El Site debe seguir owner/admin-only: las APIs de Pedidos están documentadas para incorporarse a autorización por rol cuando Seguridad 3B se retome, pero `security/phase-3b1` no se integra en v2.16. El backup integral D1+R2 permanece **BLOQUEADO** y no se presenta como resuelto.
+
 ### Uso y peso
 
 - No se identificó una dependencia directa claramente eliminable sin análisis funcional adicional.

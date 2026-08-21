@@ -1,6 +1,6 @@
 # NutriPlus
 
-NutriPlus es una aplicación privada para calcular precios, administrar productos e inventario y registrar ingresos a partir de facturas. La versión pública vigente se define en `lib/public-version.ts`; es independiente del checkpoint de Sites y del commit de Git.
+NutriPlus es una aplicación privada para calcular precios, administrar productos e inventario, registrar ingresos a partir de facturas y operar Pedidos/Encargos. La versión pública vigente se define en `lib/public-version.ts`; es independiente del checkpoint de Sites y del commit de Git.
 
 ## Estado funcional actual
 

@@ -49,7 +49,7 @@ Los 42 Route Handlers de `app/api/` gestionan:
 
 - `db/schema.ts`: definición Drizzle de las tablas.
 - `db/index.ts`: acceso a D1 y compatibilidad/inicialización en tiempo de ejecución.
-- `drizzle/`: 16 migraciones (`0000` a `0015`) y snapshots; `0015` es aditiva y permanece sin aplicar a producción durante Pedidos Fase 1.
+- `drizzle/`: 16 migraciones (`0000` a `0015`) y snapshots; `0015` es aditiva, se probó desde las 17 tablas de v2.15 y pertenece a la release v2.16.
 - `lib/invoice-storage.ts`: validación básica, hash y persistencia de facturas en R2.
 - `.openai/hosting.json`: bindings lógicos `DB` y `BUCKET` del proyecto de Sites.
 
