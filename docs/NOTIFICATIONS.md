@@ -2,7 +2,7 @@
 
 ## Estado y clasificación de factibilidad
 
-La base se preparó localmente sobre `feature/notifications`. No está publicada, no tiene claves VAPID configuradas y no se aplicó la migración `0016` a producción.
+La base se publicó como NutriPlus v2.17 (checkpoint 31) con la migración `0016` y VAPID configurado en secretos server-side de Sites. La prueba física Android con la aplicación cerrada sigue pendiente del propietario.
 
 La clasificación técnica es **A. Push completo posible**, con una distinción obligatoria: el contrato necesario está disponible, pero la recepción con NutriPlus cerrada **no está demostrada todavía** porque esta rama no puede desplegarse durante la validación de v2.16 y no se probó en un dispositivo real.
 

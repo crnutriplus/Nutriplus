@@ -2,18 +2,17 @@
 
 ## Production
 
-- Version: v2.16
-- Checkpoint: 30
-- Commit: `4805ca548e4bb6cfa735b23330e7d90168c18c9a`
-- Deployment: `appgdep_6a87d243d23c8191a23360414bcfd4cc`
+- Version: v2.17
+- Checkpoint: 31
+- Commit: `ea59f40ab80695666782b45d1cc0df0c223c1554`
+- Deployment: `appgdep_6a88b9ce7d408191afad2991bdebb50d`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
-- Last production migration: `0015_quiet_anthem.sql`
+- Last production migration: `0016_round_scarlet_witch.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- `feature/notifications` is local, based on `main` at `ebc35492a487b10c5cef1c57c00df137ff159652`, separate from production and not published.
-- Its migration `0016_round_scarlet_witch.sql` is not a production migration.
+- Notifications are published in v2.17; Android closed-app validation remains pending with the owner.
 
 ## Security
 
@@ -36,4 +35,4 @@
 ## Pending validation
 
 - Orders v2.16 remains under real user validation.
-- Notifications still needs an authorized publication and real Android/PWA closed-app push validation before any production claim.
+- Android/PWA closed-app push validation remains pending with the owner.
