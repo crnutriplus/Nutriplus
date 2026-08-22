@@ -2,17 +2,17 @@
 
 ## Production
 
-- Version: v2.18 (release correction pending deployment verification)
-- Checkpoint: pending
-- Commit: pending
-- Deployment: pending
+- Version: v2.18
+- Checkpoint: 38
+- Commit: `d7fef696a8b3d1ffc6e1b4583bc08dbf71255d6c`
+- Deployment: `appgdep_6a89fe86b7188191a9455d9c6a9a98c9`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0016_round_scarlet_witch.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- Notifications are published. La matriz productiva aisló `redirect: "error"` como causa del `TypeError`; v2.18 cambia el request completo a redirección manual segura. La aceptación final y el delivery se verificarán en producción.
+- Notifications are published. La matriz productiva aisló `redirect: "error"` como causa del `TypeError`; v2.18 usa redirección manual segura. FCM aceptó el request real con HTTP 201 y el delivery quedó `SENT`.
 
 ## Security
 
