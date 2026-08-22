@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
-import { diagnoseWebPushTransport, prepareWebPushRequest, sendWebPush, validatePushSubscription } from "../lib/web-push.ts";
+import { diagnoseWebPushTransport, prepareWebPushRequest, runWebPushRequestMatrix, sendWebPush, validatePushSubscription } from "../lib/web-push.ts";
 
 function base64Url(value) {
   return Buffer.from(value).toString("base64url");
@@ -137,6 +137,32 @@ test("Web Push diagnostic distinguishes external HTTPS, FCM origin, preparation 
     return new Response(null, { status: 404 });
   });
   assert.equal(unusual.classification, "E");
+});
+
+test("Web Push request matrix adds one component at a time and keeps the current redirect policy isolated", async () => {
+  const material = await keyMaterial();
+  const prepared = await prepareWebPushRequest(material.subscription, { title: "Diagnóstico" }, material.configuration);
+  const calls = [];
+  const results = await runWebPushRequestMatrix(prepared, async (input, init) => {
+    calls.push({ input: String(input), init });
+    if (init.redirect === "error") throw new TypeError("redirect blocked");
+    return new Response(null, { status: init.headers?.Authorization ? 401 : 400 });
+  });
+  assert.deepEqual(results.map(({ variant, ok, status, failure }) => ({ variant, ok, status, failure })), [
+    { variant: "A", ok: true, status: 400, failure: null },
+    { variant: "B", ok: true, status: 400, failure: null },
+    { variant: "C", ok: true, status: 400, failure: null },
+    { variant: "D", ok: true, status: 400, failure: null },
+    { variant: "E", ok: true, status: 400, failure: null },
+    { variant: "F", ok: true, status: 401, failure: null },
+    { variant: "G_MANUAL", ok: true, status: 401, failure: null },
+    { variant: "G", ok: false, status: null, failure: "TYPEERROR" },
+  ]);
+  assert.equal(calls.length, 8);
+  assert.ok(calls.every((call) => call.input === material.subscription.endpoint));
+  assert.equal(calls[0].init.body, undefined);
+  assert.ok(calls.slice(1).every((call) => call.init.body instanceof Uint8Array));
+  assert.equal(calls[5].init.headers.Authorization.includes(material.configuration.privateKey), false);
 });
 
 async function serviceWorkerHarness() {

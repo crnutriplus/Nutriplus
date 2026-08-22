@@ -194,6 +194,7 @@ export async function sendWebPush(
 }
 
 type TransportProbe = { ok: boolean; status: number | null; failure: string | null };
+export type PushMatrixResult = { variant: "A" | "B" | "C" | "D" | "E" | "F" | "G_MANUAL" | "G"; ok: boolean; status: number | null; failure: string | null };
 
 function safeFailureCategory(error: unknown) {
   const record = error && typeof error === "object" ? error as Record<string, unknown> : {};
@@ -218,6 +219,50 @@ async function probeHttps(fetchImplementation: typeof fetch, url: string): Promi
   } catch (error) {
     return { ok: false, status: null, failure: safeFailureCategory(error) };
   }
+}
+
+async function probePushRequest(
+  fetchImplementation: typeof fetch,
+  endpoint: string,
+  variant: PushMatrixResult["variant"],
+  init: RequestInit,
+): Promise<PushMatrixResult> {
+  try {
+    const response = await fetchImplementation(endpoint, { ...init, signal: AbortSignal.timeout(5_000) });
+    return { variant, ok: true, status: response.status, failure: null };
+  } catch (error) {
+    return { variant, ok: false, status: null, failure: safeFailureCategory(error) };
+  }
+}
+
+export async function runWebPushRequestMatrix(
+  prepared: Awaited<ReturnType<typeof prepareWebPushRequest>>,
+  fetchImplementation: typeof fetch = fetch,
+) {
+  const currentHeaders = prepared.init.headers as Record<string, string>;
+  const harmlessBody = Uint8Array.of(0);
+  const headers = {
+    contentType: { "Content-Type": "application/octet-stream" },
+    ttl: { "Content-Type": "application/octet-stream", TTL: currentHeaders.TTL },
+    encoding: { "Content-Type": "application/octet-stream", TTL: currentHeaders.TTL, "Content-Encoding": currentHeaders["Content-Encoding"] },
+    urgency: { "Content-Type": "application/octet-stream", TTL: currentHeaders.TTL, "Content-Encoding": currentHeaders["Content-Encoding"], Urgency: currentHeaders.Urgency },
+    authorization: { "Content-Type": "application/octet-stream", TTL: currentHeaders.TTL, "Content-Encoding": currentHeaders["Content-Encoding"], Urgency: currentHeaders.Urgency, Authorization: currentHeaders.Authorization },
+  };
+  const variants: Array<[PushMatrixResult["variant"], RequestInit]> = [
+    ["A", { method: "POST", redirect: "manual" }],
+    ["B", { method: "POST", redirect: "manual", headers: headers.contentType, body: harmlessBody }],
+    ["C", { method: "POST", redirect: "manual", headers: headers.ttl, body: harmlessBody }],
+    ["D", { method: "POST", redirect: "manual", headers: headers.encoding, body: harmlessBody }],
+    ["E", { method: "POST", redirect: "manual", headers: headers.urgency, body: harmlessBody }],
+    ["F", { method: "POST", redirect: "manual", headers: headers.authorization, body: harmlessBody }],
+    ["G_MANUAL", { ...prepared.init, redirect: "manual", body: prepared.init.body }],
+    ["G", { ...prepared.init, body: prepared.init.body }],
+  ];
+  const results: PushMatrixResult[] = [];
+  for (const [variant, init] of variants) {
+    results.push(await probePushRequest(fetchImplementation, prepared.endpoint, variant, init));
+  }
+  return results;
 }
 
 export async function diagnoseWebPushTransport(
