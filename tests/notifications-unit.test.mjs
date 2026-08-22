@@ -92,6 +92,18 @@ test("Web Push validates subscriptions and sends an encrypted VAPID-authenticate
   assert.throws(() => validatePushSubscription({ ...material.subscription, auth: "bad" }), /PUSH_AUTH_INVALID/);
 });
 
+test("Web Push rejects a VAPID private key that does not match its public key before transport", async () => {
+  const material = await keyMaterial();
+  const other = await keyMaterial();
+  await assert.rejects(
+    () => sendWebPush(material.subscription, { title: "Alerta" }, {
+      ...material.configuration,
+      privateKey: other.configuration.privateKey,
+    }, async () => new Response(null, { status: 201 })),
+    /VAPID_KEYPAIR_MISMATCH/,
+  );
+});
+
 async function serviceWorkerHarness() {
   const source = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
   const listeners = new Map();

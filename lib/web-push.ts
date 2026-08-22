@@ -119,8 +119,18 @@ async function vapidAuthorization(endpoint: string, configuration: VapidConfigur
     sub: subject,
   })));
   const unsignedToken = `${header}.${claims}`;
-  const key = await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  let key: CryptoKey;
+  try {
+    key = await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  } catch {
+    throw new Error("VAPID_KEYPAIR_MISMATCH");
+  }
   const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, encoder.encode(unsignedToken));
+  const verificationKey = await crypto.subtle.importKey("raw", publicKey, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+  const matches = await crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" }, verificationKey, signature, encoder.encode(unsignedToken),
+  );
+  if (!matches) throw new Error("VAPID_KEYPAIR_MISMATCH");
   return `vapid t=${unsignedToken}.${bytesToBase64Url(signature)}, k=${bytesToBase64Url(publicKey)}`;
 }
 

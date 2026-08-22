@@ -531,6 +531,9 @@ async function materializePendingEvents(db: D1Database, preferences: Notificatio
 function deliveryErrorCode(error: unknown) {
   const message = error instanceof Error ? error.message : "PUSH_DELIVERY_FAILED";
   if (/^[A-Z0-9_]{3,80}$/.test(message)) return message;
+  const name = error instanceof Error ? error.name : "";
+  if (name === "TypeError") return "PUSH_TRANSPORT_FAILED";
+  if (["DataError", "OperationError", "InvalidAccessError", "NotSupportedError"].includes(name)) return "PUSH_CRYPTO_FAILED";
   return "PUSH_DELIVERY_FAILED";
 }
 
