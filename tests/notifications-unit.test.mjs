@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
-import { sendWebPush, validatePushSubscription } from "../lib/web-push.ts";
+import { diagnoseWebPushTransport, prepareWebPushRequest, sendWebPush, validatePushSubscription } from "../lib/web-push.ts";
 
 function base64Url(value) {
   return Buffer.from(value).toString("base64url");
@@ -102,6 +102,41 @@ test("Web Push rejects a VAPID private key that does not match its public key be
     }, async () => new Response(null, { status: 201 })),
     /VAPID_KEYPAIR_MISMATCH/,
   );
+});
+
+test("Web Push diagnostic distinguishes external HTTPS, FCM origin, preparation and full transport without leaking subscription data", async () => {
+  const material = await keyMaterial();
+  const prepared = await prepareWebPushRequest(material.subscription, { title: "Diagnóstico" }, material.configuration);
+  assert.equal(prepared.endpoint, material.subscription.endpoint);
+  assert.ok(prepared.init.body instanceof Uint8Array);
+
+  const calls = [];
+  const diagnostic = await diagnoseWebPushTransport(material.subscription.endpoint, new TypeError("redacted runtime failure"), async (input, init) => {
+    calls.push({ input: String(input), init });
+    if (String(input) === "https://example.com/") return new Response(null, { status: 204 });
+    throw new TypeError("provider unavailable");
+  });
+  assert.equal(diagnostic.classification, "A");
+  assert.equal(diagnostic.external.status, 204);
+  assert.equal(diagnostic.fcm.status, null);
+  assert.equal(diagnostic.errorCode, "PUSH_DIAG_A_TYPEERROR");
+  assert.deepEqual(calls.map((call) => call.input), ["https://example.com/", "https://push.example.test"]);
+  assert.ok(calls.every((call) => call.init.method === "HEAD"));
+  assert.equal(JSON.stringify(diagnostic).includes(material.subscription.auth), false);
+  assert.equal(JSON.stringify(diagnostic).includes(material.subscription.p256dh), false);
+  assert.equal(JSON.stringify(diagnostic).includes(material.subscription.endpoint), false);
+
+  const bothPass = await diagnoseWebPushTransport(material.subscription.endpoint, new TypeError("redacted"), async () => new Response(null, { status: 204 }));
+  assert.equal(bothPass.classification, "B");
+  const bothFail = await diagnoseWebPushTransport(material.subscription.endpoint, new TypeError("redacted"), async () => { throw new TypeError("blocked"); });
+  assert.equal(bothFail.classification, "C");
+  let probe = 0;
+  const unusual = await diagnoseWebPushTransport(material.subscription.endpoint, new TypeError("redacted"), async () => {
+    probe += 1;
+    if (probe === 1) throw new TypeError("external failed");
+    return new Response(null, { status: 404 });
+  });
+  assert.equal(unusual.classification, "E");
 });
 
 async function serviceWorkerHarness() {

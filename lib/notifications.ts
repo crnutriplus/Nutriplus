@@ -1,4 +1,10 @@
-import { hasValidVapidConfiguration, sendWebPush, validatePushSubscription, type VapidConfiguration } from "./web-push";
+import {
+  diagnoseWebPushTransport,
+  hasValidVapidConfiguration,
+  prepareWebPushRequest,
+  validatePushSubscription,
+  type VapidConfiguration,
+} from "./web-push";
 
 type Row = Record<string, unknown>;
 
@@ -564,8 +570,9 @@ async function deliverNotification(
       .bind(notification.id, subscription.id).first<Row>();
     if (!delivery || ["SENT", "DISABLED"].includes(String(delivery.state))) continue;
     if (Number(delivery.attempt_count ?? 0) >= 3) continue;
+    let prepared: Awaited<ReturnType<typeof prepareWebPushRequest>>;
     try {
-      const response = await sendWebPush({
+      prepared = await prepareWebPushRequest({
         endpoint: String(subscription.endpoint),
         p256dh: String(subscription.p256dh),
         auth: String(subscription.auth),
@@ -578,7 +585,16 @@ async function deliverNotification(
         url: notification.target_url || "/?notifications=1",
         tag: notification.dedupe_key,
         createdAt: notification.created_at,
-      }, configuration, fetchImplementation);
+      }, configuration);
+    } catch (error) {
+      await db.prepare(`UPDATE notification_deliveries SET
+        state='FAILED',attempt_count=attempt_count+1,response_status=NULL,error_code=?,
+        last_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+        .bind(`PUSH_DIAG_D_${deliveryErrorCode(error)}`, delivery.id).run().catch(() => undefined);
+      continue;
+    }
+    try {
+      const response = await fetchImplementation(prepared.endpoint, prepared.init);
       if (response.ok) {
         await db.prepare(`UPDATE notification_deliveries SET
           state='SENT',attempt_count=attempt_count+1,response_status=?,error_code=NULL,
@@ -600,10 +616,17 @@ async function deliverNotification(
           .bind(response.status, `PUSH_HTTP_${response.status}`, delivery.id).run();
       }
     } catch (error) {
+      const priorDiagnostic = await db.prepare(
+        "SELECT 1 AS found FROM notification_deliveries WHERE error_code LIKE 'PUSH_DIAG_%' LIMIT 1",
+      ).first<{ found: number }>().catch(() => null);
+      const diagnostic = priorDiagnostic
+        ? { errorCode: deliveryErrorCode(error) }
+        : await diagnoseWebPushTransport(prepared.endpoint, error, fetchImplementation)
+          .catch(() => ({ errorCode: "PUSH_DIAG_E_PROBE_FAILED" }));
       await db.prepare(`UPDATE notification_deliveries SET
         state='FAILED',attempt_count=attempt_count+1,response_status=NULL,error_code=?,
         last_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
-        .bind(deliveryErrorCode(error), delivery.id).run().catch(() => undefined);
+        .bind(diagnostic.errorCode, delivery.id).run().catch(() => undefined);
     }
   }
   const activeSubscriptions = await countActivePushSubscriptions(db);
