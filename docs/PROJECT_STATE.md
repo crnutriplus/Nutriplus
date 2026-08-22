@@ -2,17 +2,17 @@
 
 ## Production
 
-- Version: v2.17
-- Checkpoint: 36
-- Commit: `350b24e6bc2eb95c65c4e59eba2ccb2773f94334`
-- Deployment: `appgdep_6a89b27faff081919c0795366b85a17d`
+- Version: v2.18 (release correction pending deployment verification)
+- Checkpoint: pending
+- Commit: pending
+- Deployment: pending
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0016_round_scarlet_witch.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- Notifications are published in v2.17. Alertas internas funcionan. La sonda productiva confirmó HTTPS general y acceso simple al origen FCM; el `POST` Web Push completo todavía falla con `TypeError` antes de una respuesta HTTP.
+- Notifications are published. La matriz productiva aisló `redirect: "error"` como causa del `TypeError`; v2.18 cambia el request completo a redirección manual segura. La aceptación final y el delivery se verificarán en producción.
 
 ## Security
 
@@ -35,4 +35,4 @@
 ## Pending validation
 
 - Orders v2.16 remains under real user validation.
-- Android/PWA closed-app push remains pending mientras se aísla qué componente del request Web Push completo provoca el `TypeError` productivo.
+- Android/PWA closed-app receipt and `notificationclick` remain pending user validation.

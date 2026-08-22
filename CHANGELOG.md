@@ -5,7 +5,13 @@ NutriPlus mantiene dos identificadores independientes:
 - **Versión pública:** se muestra a las personas usuarias y avanza como `2.3`, `2.4`, `2.5`, etc.
 - **Checkpoint / commit / deployment:** identifica técnicamente un estado del código. Nunca es el número público de NutriPlus.
 
-`package.json` usa SemVer, por lo que representa la versión pública `2.17` como `2.17.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+`package.json` usa SemVer, por lo que representa la versión pública `2.18` como `2.18.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+
+## 2.18 — 2026-08-22
+
+- Se corrigió el transporte Web Push en el runtime de Sites: el request completo hacia FCM conserva el cuerpo `Uint8Array`, VAPID y `aes128gcm`, pero usa redirección manual. Así evita el `TypeError` que producía `redirect: "error"` sin seguir ni reenviar credenciales a redirecciones.
+- La matriz productiva controlada aisló el defecto sin crear alertas, pedidos, movimientos de inventario ni suscripciones: A/B respondieron HTTP 400, C/D/E HTTP 401, F y el request completo con redirección manual HTTP 201; el request idéntico con redirección de error fue el único que falló antes de respuesta HTTP.
+- La aceptación por el servicio push y el delivery se verifican técnicamente; la recepción física en Android y `notificationclick` requieren confirmación del usuario.
 
 ## 2.17 — 2026-08-21
 

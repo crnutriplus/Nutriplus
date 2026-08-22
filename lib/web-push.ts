@@ -171,7 +171,10 @@ export async function prepareWebPushRequest(
   const authorization = await vapidAuthorization(endpoint, configuration);
   return { endpoint, init: {
     method: "POST",
-    redirect: "error",
+    // Workers throws a TypeError for this FCM subrequest with redirect:"error".
+    // "manual" preserves the security boundary: redirects are returned as non-2xx
+    // responses and are never followed with VAPID authorization.
+    redirect: "manual",
     headers: {
       Authorization: authorization,
       "Content-Encoding": "aes128gcm",
@@ -191,99 +194,6 @@ export async function sendWebPush(
 ) {
   const request = await prepareWebPushRequest(rawSubscription, payload, configuration);
   return fetchImplementation(request.endpoint, request.init);
-}
-
-type TransportProbe = { ok: boolean; status: number | null; failure: string | null };
-export type PushMatrixResult = { variant: "A" | "B" | "C" | "D" | "E" | "F" | "G_MANUAL" | "G"; ok: boolean; status: number | null; failure: string | null };
-
-function safeFailureCategory(error: unknown) {
-  const record = error && typeof error === "object" ? error as Record<string, unknown> : {};
-  const cause = record.cause && typeof record.cause === "object" ? record.cause as Record<string, unknown> : {};
-  const code = typeof cause.code === "string" && /^[A-Z0-9_]{2,40}$/.test(cause.code) ? cause.code : null;
-  const name = typeof record.name === "string" ? record.name : "Error";
-  if (name === "AbortError" || name === "TimeoutError" || code === "ETIMEDOUT") return "TIMEOUT";
-  if (code && ["ENOTFOUND", "EAI_AGAIN"].includes(code)) return "DNS";
-  if (code && ["CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT", "ERR_TLS_CERT_ALTNAME_INVALID"].includes(code)) return "TLS";
-  if (code && ["ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH"].includes(code)) return code;
-  return name === "TypeError" ? "TYPEERROR" : "ERROR";
-}
-
-async function probeHttps(fetchImplementation: typeof fetch, url: string): Promise<TransportProbe> {
-  try {
-    const response = await fetchImplementation(url, {
-      method: "HEAD",
-      redirect: "manual",
-      signal: AbortSignal.timeout(5_000),
-    });
-    return { ok: true, status: response.status, failure: null };
-  } catch (error) {
-    return { ok: false, status: null, failure: safeFailureCategory(error) };
-  }
-}
-
-async function probePushRequest(
-  fetchImplementation: typeof fetch,
-  endpoint: string,
-  variant: PushMatrixResult["variant"],
-  init: RequestInit,
-): Promise<PushMatrixResult> {
-  try {
-    const response = await fetchImplementation(endpoint, { ...init, signal: AbortSignal.timeout(5_000) });
-    return { variant, ok: true, status: response.status, failure: null };
-  } catch (error) {
-    return { variant, ok: false, status: null, failure: safeFailureCategory(error) };
-  }
-}
-
-export async function runWebPushRequestMatrix(
-  prepared: Awaited<ReturnType<typeof prepareWebPushRequest>>,
-  fetchImplementation: typeof fetch = fetch,
-) {
-  const currentHeaders = prepared.init.headers as Record<string, string>;
-  const harmlessBody = Uint8Array.of(0);
-  const headers = {
-    contentType: { "Content-Type": "application/octet-stream" },
-    ttl: { "Content-Type": "application/octet-stream", TTL: currentHeaders.TTL },
-    encoding: { "Content-Type": "application/octet-stream", TTL: currentHeaders.TTL, "Content-Encoding": currentHeaders["Content-Encoding"] },
-    urgency: { "Content-Type": "application/octet-stream", TTL: currentHeaders.TTL, "Content-Encoding": currentHeaders["Content-Encoding"], Urgency: currentHeaders.Urgency },
-    authorization: { "Content-Type": "application/octet-stream", TTL: currentHeaders.TTL, "Content-Encoding": currentHeaders["Content-Encoding"], Urgency: currentHeaders.Urgency, Authorization: currentHeaders.Authorization },
-  };
-  const variants: Array<[PushMatrixResult["variant"], RequestInit]> = [
-    ["A", { method: "POST", redirect: "manual" }],
-    ["B", { method: "POST", redirect: "manual", headers: headers.contentType, body: harmlessBody }],
-    ["C", { method: "POST", redirect: "manual", headers: headers.ttl, body: harmlessBody }],
-    ["D", { method: "POST", redirect: "manual", headers: headers.encoding, body: harmlessBody }],
-    ["E", { method: "POST", redirect: "manual", headers: headers.urgency, body: harmlessBody }],
-    ["F", { method: "POST", redirect: "manual", headers: headers.authorization, body: harmlessBody }],
-    ["G_MANUAL", { ...prepared.init, redirect: "manual", body: prepared.init.body }],
-    ["G", { ...prepared.init, body: prepared.init.body }],
-  ];
-  const results: PushMatrixResult[] = [];
-  for (const [variant, init] of variants) {
-    results.push(await probePushRequest(fetchImplementation, prepared.endpoint, variant, init));
-  }
-  return results;
-}
-
-export async function diagnoseWebPushTransport(
-  endpoint: string,
-  originalError: unknown,
-  fetchImplementation: typeof fetch = fetch,
-) {
-  const origin = new URL(endpoint).origin;
-  const external = await probeHttps(fetchImplementation, "https://example.com/");
-  const fcm = await probeHttps(fetchImplementation, origin);
-  const classification = external.ok && !fcm.ok ? "A"
-    : external.ok && fcm.ok ? "B"
-      : !external.ok && !fcm.ok ? "C"
-        : "E";
-  const originalFailure = safeFailureCategory(originalError);
-  return {
-    classification,
-    external,
-    fcm,
-    errorCode: `PUSH_DIAG_${classification}_${originalFailure}`,
-  } as const;
 }
 
 export function hasValidVapidConfiguration(configuration: Partial<VapidConfiguration>) {
