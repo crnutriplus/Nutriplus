@@ -4,7 +4,7 @@
 
 La base se publicó como NutriPlus v2.17 (checkpoint 31) con la migración `0016` y VAPID configurado en secretos server-side de Sites. La prueba física Android con la aplicación cerrada sigue pendiente del propietario.
 
-La clasificación de entrega real es **C. Push bloqueado por plataforma**: la alerta, la subscription y VAPID llegan correctamente hasta el dispatcher, pero el runtime de Sites rechaza el transporte HTTPS hacia el endpoint FCM antes de obtener una respuesta HTTP. No se presenta una notificación local como si fuera push.
+La clasificación diagnóstica productiva es **B**: HTTPS externo simple funciona y el origen FCM responde a una solicitud simple, mientras el `POST` Web Push completo falla con `TypeError` antes de obtener una respuesta HTTP. Esto descarta un bloqueo general de egress y reduce el defecto a la forma completa de la solicitud (método/headers/body cifrado o validación específica del runtime/proveedor). No se presenta una notificación local como si fuera push.
 
 | Capacidad | Resultado comprobado | Consecuencia |
 |---|---|---|
@@ -14,7 +14,7 @@ La clasificación de entrega real es **C. Push bloqueado por plataforma**: la al
 | D. Notification API | Se solicita permiso únicamente después de tocar **Activar notificaciones**. | No aparece el prompt durante la carga. |
 | E. Persistencia de `PushSubscription` | D1 guarda endpoint y claves públicas de cada dispositivo, con endpoint único y desactivación. | Admite varios dispositivos y reintentos sin duplicar registros. |
 | F. VAPID seguro | Sites aloja el par VAPID y el Worker lee tres variables; solo expone la pública. | La clave privada no está en Git, frontend, manifest ni respuestas. La validación productiva está activa. |
-| G. Entrega backend | El Worker intenta el `fetch` HTTPS al endpoint FCM después de persistir el evento y la alerta interna, pero el runtime lo rechaza antes de una respuesta HTTP. | No hay entrega Web Push real mientras esta capacidad no exista o no se autorice un gateway externo seguro. |
+| G. Entrega backend | La sonda confirma HTTPS general y acceso al origen FCM; solo el request Web Push completo termina en `TypeError` sin respuesta HTTP. | Hace falta aislar la parte exacta de la solicitud completa; todavía no corresponde atribuirlo a un bloqueo general de Sites. |
 | H. `push` / `notificationclick` | Ambos handlers existen y tienen pruebas locales. | La notificación muestra texto seguro y abre/focaliza una ruta interna validada. |
 | I. Instalación Android | Manifest, HTTPS, `start_url`, `scope`, iconos exactos 192/512 y modo standalone están preparados. | Compatible de forma prevista con Chrome moderno; no se afirma prueba real todavía. |
 | J. Manifest | `name` y `short_name` son NutriPlus, `id/start_url/scope` son `/`. | La página normal continúa funcionando sin instalar la PWA. |

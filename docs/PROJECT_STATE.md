@@ -3,16 +3,16 @@
 ## Production
 
 - Version: v2.17
-- Checkpoint: 34
-- Commit: `8daedfe9be5e6de390e6507ad3de0974ea2defd2`
-- Deployment: `appgdep_6a89ab75a3988191bce25ed48f491613`
+- Checkpoint: 36
+- Commit: `350b24e6bc2eb95c65c4e59eba2ccb2773f94334`
+- Deployment: `appgdep_6a89b27faff081919c0795366b85a17d`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0016_round_scarlet_witch.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- Notifications are published in v2.17. Alertas internas funcionan; la entrega Web Push está bloqueada por el transporte saliente actual de Sites hacia FCM.
+- Notifications are published in v2.17. Alertas internas funcionan. La sonda productiva confirmó HTTPS general y acceso simple al origen FCM; el `POST` Web Push completo todavía falla con `TypeError` antes de una respuesta HTTP.
 
 ## Security
 
@@ -35,4 +35,4 @@
 ## Pending validation
 
 - Orders v2.16 remains under real user validation.
-- Android/PWA closed-app push remains pending hasta que Sites permita entrega HTTPS saliente al push service o se autorice una infraestructura externa segura.
+- Android/PWA closed-app push remains pending mientras se aísla qué componente del request Web Push completo provoca el `TypeError` productivo.
