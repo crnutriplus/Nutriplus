@@ -5,7 +5,13 @@ NutriPlus mantiene dos identificadores independientes:
 - **Versión pública:** se muestra a las personas usuarias y avanza como `2.3`, `2.4`, `2.5`, etc.
 - **Checkpoint / commit / deployment:** identifica técnicamente un estado del código. Nunca es el número público de NutriPlus.
 
-`package.json` usa SemVer, por lo que representa la versión pública `2.18` como `2.18.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+`package.json` usa SemVer, por lo que representa la versión pública `2.19` como `2.19.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+
+## 2.19 — 2026-08-22
+
+- Al usar Atrás en el límite real de salida, NutriPlus pregunta “¿Quieres salir de NutriPlus?” con las acciones Cancelar y Salir.
+- Cancelar conserva la pantalla y todo su estado. Salir delega al comportamiento normal de Atrás del navegador o PWA.
+- La protección utiliza una sola entrada de límite, no se muestra en navegaciones internas y no crea un ciclo creciente de historial.
 
 ## 2.18 — 2026-08-22
 

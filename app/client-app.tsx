@@ -57,6 +57,7 @@ import type { ImportChangedProduct, ImportJobRecord } from "@/lib/import-jobs";
 import type { ProductDeletionJobRecord } from "@/lib/deletion-jobs";
 import { NUTRIPLUS_PUBLIC_VERSION } from "@/lib/public-version";
 import { runSpreadsheetWorker } from "@/lib/spreadsheet-import-client";
+import { installBrowserExitGuard, type ExitGuardController } from "@/lib/browser-exit-guard";
 import type { SpreadsheetCellWarning, SpreadsheetParseResult } from "@/lib/spreadsheet-import-parser";
 import { spreadsheetImportErrorMessage, validateSpreadsheetFile } from "@/lib/spreadsheet-import-security";
 import {
@@ -897,6 +898,7 @@ export function NutriPlusApp() {
   const [isOnline, setIsOnline] = useState(true);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
   const [syncing, setSyncing] = useState(false);
+  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const deferredQuery = useDeferredValue(query);
   const deferredNoInventoryQuery = useDeferredValue(noInventoryQuery);
   const searchBurst = useRef<BurstState>({ ...EMPTY_BURST });
@@ -905,9 +907,19 @@ export function NutriPlusApp() {
   const nextTemporaryProductId = useRef(-1);
   const nextTemporaryQuoteId = useRef(-1);
   const notificationProductHandled = useRef(false);
+  const exitGuard = useRef<ExitGuardController | null>(null);
 
   const notify = useCallback((next: NonNullable<Toast>) => {
     setToast(next);
+  }, []);
+
+  useEffect(() => {
+    const controller = installBrowserExitGuard(window.history, window, () => setExitConfirmOpen(true));
+    exitGuard.current = controller;
+    return () => {
+      controller.dispose();
+      if (exitGuard.current === controller) exitGuard.current = null;
+    };
   }, []);
 
   useEffect(() => {
@@ -1898,6 +1910,7 @@ export function NutriPlusApp() {
     {exportConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Elegir descarga del inventario"><div className="confirm-card export-card"><div className="download-symbol"><Download /></div><h2>Descargar inventario</h2><p>Incluye {products.length} productos del inventario y {quotes.length} de No inventario. El PDF también tendrá la sección No inventario.</p><div className="export-options"><button className={exportFormat === "pdf" ? "chosen" : ""} onClick={() => setExportFormat("pdf")}><b>PDF</b><small>Documento minimalista</small></button><button className={exportFormat === "excel" ? "chosen" : ""} onClick={() => setExportFormat("excel")}><b>Excel</b><small>Hojas editables</small></button><button className={exportFormat === "both" ? "chosen" : ""} onClick={() => setExportFormat("both")}><b>Ambos</b><small>Dos archivos separados</small></button></div><div className="confirm-actions"><button className="btn secondary" onClick={() => setExportConfirm(false)} disabled={exporting}>Cancelar</button><button className="btn primary" onClick={() => void downloadInventory(exportFormat)} disabled={exporting}>{exporting ? <Loader2 className="spin" /> : <Download />}Descargar</button></div></div></div>}
     {deleteTarget && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar producto?</h2><p>Vas a eliminar <b>{deleteTarget.name}</b>. Esta acción no se puede deshacer.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setDeleteTarget(null)} disabled={deleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeProduct()} disabled={deleting}>{deleting ? <Loader2 className="spin" /> : <Trash2 />}Sí, eliminar</button></div></div></div>}
     {bulkDeleteConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación de productos seleccionados"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar {selectedProductIds.size} productos?</h2><p>Se eliminarán únicamente los productos seleccionados. Esta acción también puede completarse en segundo plano o sincronizarse al volver Internet.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setBulkDeleteConfirm(false)} disabled={bulkDeleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeSelectedProducts()} disabled={bulkDeleting}><Trash2 />Sí, eliminar seleccionados</button></div></div></div>}
+    {exitConfirmOpen && <div className="modal" role="alertdialog" aria-modal="true" aria-labelledby="exit-confirm-title"><div className="confirm-card"><h2 id="exit-confirm-title">¿Quieres salir de NutriPlus?</h2><div className="confirm-actions"><button className="btn secondary" onClick={() => { exitGuard.current?.cancelExit(); setExitConfirmOpen(false); }}>Cancelar</button><button className="btn primary" onClick={() => { setExitConfirmOpen(false); exitGuard.current?.confirmExit(); }}>Salir</button></div></div></div>}
     {toast && <div className={`toast ${toast.type} ${toast.sticky ? "sticky" : ""}`} role={toast.type === "error" ? "alert" : "status"} aria-live={toast.type === "error" ? "assertive" : "polite"}>{toast.type === "success" ? <Check /> : <AlertCircle />}<span>{toast.title && <b>{toast.title}</b>}<small>{toast.text}</small></span><button onClick={() => setToast(null)} aria-label="Cerrar notificación"><X /></button></div>}
   </main>;
 }
