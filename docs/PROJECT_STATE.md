@@ -2,17 +2,17 @@
 
 ## Production
 
-- Version: v2.18
-- Checkpoint: 38
-- Commit: `d7fef696a8b3d1ffc6e1b4583bc08dbf71255d6c`
-- Deployment: `appgdep_6a89fe86b7188191a9455d9c6a9a98c9`
+- Version: v2.19
+- Checkpoint: 39
+- Commit: `78178c986c0d04eaa87f5e06aadd1611d7e23899`
+- Deployment: `appgdep_6a8a07768c108191b63467a01bb2f4bc`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0016_round_scarlet_witch.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- Notifications are published. La matriz productiva aisló `redirect: "error"` como causa del `TypeError`; v2.18 usa redirección manual segura. FCM aceptó el request real con HTTP 201 y el delivery quedó `SENT`.
+- NutriPlus v2.19 is published. Atrás confirma únicamente en el límite real de salida mediante una sola entrada de protección; Cancelar conserva el estado y Salir delega al navegador/PWA.
 
 ## Security
 
