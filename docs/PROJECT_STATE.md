@@ -3,16 +3,16 @@
 ## Production
 
 - Version: v2.17
-- Checkpoint: 32
-- Commit: `ea59f40ab80695666782b45d1cc0df0c223c1554`
-- Deployment: `appgdep_6a88bcfe30448191a9fce3de3dfba92a`
+- Checkpoint: 34
+- Commit: `8daedfe9be5e6de390e6507ad3de0974ea2defd2`
+- Deployment: `appgdep_6a89ab75a3988191bce25ed48f491613`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0016_round_scarlet_witch.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- Notifications are published in v2.17; Android closed-app validation remains pending with the owner.
+- Notifications are published in v2.17. Alertas internas funcionan; la entrega Web Push está bloqueada por el transporte saliente actual de Sites hacia FCM.
 
 ## Security
 
@@ -35,4 +35,4 @@
 ## Pending validation
 
 - Orders v2.16 remains under real user validation.
-- Android/PWA closed-app push validation remains pending with the owner.
+- Android/PWA closed-app push remains pending hasta que Sites permita entrega HTTPS saliente al push service o se autorice una infraestructura externa segura.
