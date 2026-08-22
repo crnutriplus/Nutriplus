@@ -677,17 +677,85 @@ async function deliverPendingNotifications(db: D1Database, preferences: Notifica
   return totals;
 }
 
+async function runOneExhaustedDeliveryDiagnostic(
+  db: D1Database,
+  preferences: NotificationPreferences,
+  fetchImplementation: typeof fetch,
+) {
+  if (!preferences.pushEnabled) return null;
+  const existing = await db.prepare(
+    "SELECT 1 AS found FROM notification_deliveries WHERE error_code LIKE 'PUSH_DIAG_%' LIMIT 1",
+  ).first<{ found: number }>();
+  if (existing) return null;
+  const configuration = serverVapidConfiguration();
+  if (!configuration) return null;
+  const candidate = await db.prepare(`SELECT
+      d.id AS delivery_id,s.endpoint,s.p256dh,s.auth,
+      n.id AS notification_id,n.event_type,n.title,n.message,n.severity,n.target_url,n.dedupe_key,n.created_at
+    FROM notification_deliveries d
+    JOIN push_subscriptions s ON s.id=d.subscription_id AND s.disabled_at IS NULL
+    JOIN notifications n ON n.id=d.notification_id
+    WHERE d.state='FAILED' AND d.error_code='PUSH_TRANSPORT_FAILED'
+    ORDER BY d.last_attempt_at DESC,d.id LIMIT 1`).first<Row>();
+  if (!candidate) return null;
+
+  let prepared: Awaited<ReturnType<typeof prepareWebPushRequest>>;
+  try {
+    prepared = await prepareWebPushRequest({
+      endpoint: String(candidate.endpoint),
+      p256dh: String(candidate.p256dh),
+      auth: String(candidate.auth),
+    }, {
+      notificationId: candidate.notification_id,
+      eventType: candidate.event_type,
+      title: candidate.title,
+      body: candidate.message,
+      severity: candidate.severity,
+      url: candidate.target_url || "/?notifications=1",
+      tag: candidate.dedupe_key,
+      createdAt: candidate.created_at,
+    }, configuration);
+  } catch (error) {
+    const errorCode = `PUSH_DIAG_D_${deliveryErrorCode(error)}`;
+    await db.prepare(`UPDATE notification_deliveries SET error_code=?,attempt_count=attempt_count+1,
+      response_status=NULL,last_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+      .bind(errorCode, candidate.delivery_id).run();
+    return { classification: "D", webPush: "NOT_ATTEMPTED", errorCode } as const;
+  }
+
+  const transport = await diagnoseWebPushTransport(prepared.endpoint, new TypeError("REDACTED"), fetchImplementation)
+    .catch(() => ({ classification: "E", errorCode: "PUSH_DIAG_E_PROBE_FAILED" } as const));
+  try {
+    const response = await fetchImplementation(prepared.endpoint, prepared.init);
+    const errorCode = `PUSH_DIAG_${transport.classification}_HTTP_${response.status}`;
+    await db.prepare(`UPDATE notification_deliveries SET state=?,error_code=?,attempt_count=attempt_count+1,
+      response_status=?,last_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+      delivered_at=CASE WHEN ? THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE delivered_at END WHERE id=?`)
+      .bind(response.ok ? "SENT" : "FAILED", errorCode, response.status, response.ok ? 1 : 0, candidate.delivery_id).run();
+    return { classification: transport.classification, webPush: response.ok ? "PASS" : "HTTP_FAILED", errorCode } as const;
+  } catch {
+    await db.prepare(`UPDATE notification_deliveries SET error_code=?,attempt_count=attempt_count+1,
+      response_status=NULL,last_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+      .bind(transport.errorCode, candidate.delivery_id).run();
+    return { classification: transport.classification, webPush: "TRANSPORT_FAILED", errorCode: transport.errorCode } as const;
+  }
+}
+
 export async function reconcileNotifications(db: D1Database, options: ReconcileOptions = {}) {
   await seedInventoryStates(db);
   if (options.evaluateScheduled !== false) await recordScheduledEvents(db, options.now || new Date());
   const preferences = await getNotificationPreferences(db);
   const materialization = await materializePendingEvents(db, preferences);
+  const pushDiagnostic = options.deliverPush === false
+    ? null
+    : await runOneExhaustedDeliveryDiagnostic(db, preferences, options.fetchImplementation || globalThis.__NUTRIPLUS_PUSH_TEST_FETCH__ || fetch);
   const delivery = options.deliverPush === false
     ? { sent: 0, failed: 0, disabled: 0 }
     : await deliverPendingNotifications(db, preferences, options.fetchImplementation || globalThis.__NUTRIPLUS_PUSH_TEST_FETCH__ || fetch);
   const pending = await db.prepare("SELECT COUNT(*) AS total FROM notification_events WHERE processing_state IN ('PENDING','FAILED')").first<{ total: number }>();
   return {
     ...materialization,
+    pushDiagnostic,
     delivery,
     pendingEvents: Number(pending?.total ?? 0),
     evaluatedAt: (options.now || new Date()).toISOString(),
