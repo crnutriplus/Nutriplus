@@ -1,7 +1,7 @@
 {
   "name": "nutriplus-precios",
   "displayName": "Calculadora de Precios NutriPlus",
-  "version": "2.19.0",
+  "version": "2.20.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -11,12 +11,12 @@
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
     "build": "bash scripts/build-verified.sh",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "check:fast": "npx tsc --noEmit && npm run lint && node --test tests/invoice-reader-unit.test.mjs tests/invoice-ai-unit.test.mjs tests/chatgpt-invoice-import-unit.test.mjs tests/spreadsheet-import-unit.test.mjs tests/notifications-unit.test.mjs tests/browser-exit-guard-unit.test.mjs",
+    "check:fast": "npx tsc --noEmit && npm run lint && node --test tests/invoice-reader-unit.test.mjs tests/invoice-ai-unit.test.mjs tests/chatgpt-invoice-import-unit.test.mjs tests/spreadsheet-import-unit.test.mjs tests/notifications-unit.test.mjs tests/app-navigation-unit.test.mjs",
     "check:orders": "npm run build && node tests/orders-migration-0015.integration.mjs && node tests/orders-phase-1.integration.mjs && node tests/orders-special-foundation.integration.mjs && node tests/orders-phase-2.integration.mjs && node tests/orders-phase-3.integration.mjs && node tests/orders-phase-4.e2e.mjs",
     "check:inventory": "npm run build && node tests/inventory-migration-0014.integration.mjs && node tests/api-integration.mjs && node tests/concurrency-integration.mjs && node tests/inventory-intake-integration.mjs && node tests/orders-phase-1.integration.mjs && node tests/orders-special-foundation.integration.mjs",
     "check:invoices": "npm run build && node --test tests/invoice-reader-unit.test.mjs tests/invoice-ai-unit.test.mjs tests/chatgpt-invoice-import-unit.test.mjs && node tests/inventory-migration-0014.integration.mjs && node tests/inventory-intake-integration.mjs",
     "check:release": "npx tsc --noEmit && npm run lint && npm test && npm run validate:artifact && bash scripts/secret-scan.sh && npm audit --omit=dev --audit-level=high",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/invoice-reader-unit.test.mjs tests/invoice-ai-unit.test.mjs tests/chatgpt-invoice-import-unit.test.mjs tests/spreadsheet-import-unit.test.mjs tests/notifications-unit.test.mjs tests/browser-exit-guard-unit.test.mjs && node tests/spreadsheet-worker.integration.mjs && node tests/inventory-migration-0014.integration.mjs && node tests/orders-migration-0015.integration.mjs && node tests/notifications-migration-0016.integration.mjs && node tests/orders-phase-1.integration.mjs && node tests/orders-special-foundation.integration.mjs && node tests/orders-phase-2.integration.mjs && node tests/orders-phase-3.integration.mjs && node tests/orders-phase-4.e2e.mjs && node tests/notifications.integration.mjs && node tests/api-integration.mjs && node tests/concurrency-integration.mjs && node tests/inventory-intake-integration.mjs && node tests/export-integration.mjs",
+    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/invoice-reader-unit.test.mjs tests/invoice-ai-unit.test.mjs tests/chatgpt-invoice-import-unit.test.mjs tests/spreadsheet-import-unit.test.mjs tests/notifications-unit.test.mjs tests/app-navigation-unit.test.mjs && node tests/spreadsheet-worker.integration.mjs && node tests/inventory-migration-0014.integration.mjs && node tests/orders-migration-0015.integration.mjs && node tests/notifications-migration-0016.integration.mjs && node tests/orders-phase-1.integration.mjs && node tests/orders-special-foundation.integration.mjs && node tests/orders-phase-2.integration.mjs && node tests/orders-phase-3.integration.mjs && node tests/orders-phase-4.e2e.mjs && node tests/notifications.integration.mjs && node tests/api-integration.mjs && node tests/concurrency-integration.mjs && node tests/inventory-intake-integration.mjs && node tests/export-integration.mjs",
     "test:chatgpt-import": "npm run build && node tests/chatgpt-invoice-import.integration.mjs",
     "test:real-invoices": "npm run build && node tests/invoice-ai-real-pdfs.integration.mjs",
     "test:real-invoices:local": "npm run build && node tests/real-invoice-storage.integration.mjs",

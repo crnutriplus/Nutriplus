@@ -57,7 +57,7 @@ import type { ImportChangedProduct, ImportJobRecord } from "@/lib/import-jobs";
 import type { ProductDeletionJobRecord } from "@/lib/deletion-jobs";
 import { NUTRIPLUS_PUBLIC_VERSION } from "@/lib/public-version";
 import { runSpreadsheetWorker } from "@/lib/spreadsheet-import-client";
-import { installBrowserExitGuard, type ExitGuardController } from "@/lib/browser-exit-guard";
+import { installAppNavigation, type AppSection, type NavigationController } from "@/lib/app-navigation";
 import type { SpreadsheetCellWarning, SpreadsheetParseResult } from "@/lib/spreadsheet-import-parser";
 import { spreadsheetImportErrorMessage, validateSpreadsheetFile } from "@/lib/spreadsheet-import-security";
 import {
@@ -716,6 +716,16 @@ function ImportView({ settings, job, deletionJob, productCount, history, summary
     return () => document.removeEventListener("pointerdown", dismiss, true);
   }, [notice]);
 
+  useEffect(() => {
+    const onBack = (event: Event) => {
+      if ((event as CustomEvent<{ section?: string }>).detail?.section !== "import") return;
+      if (deleteConfirm) { event.preventDefault(); setDeleteConfirm(false); }
+      else if (restoreTarget) { event.preventDefault(); setRestoreTarget(null); }
+    };
+    window.addEventListener("nutriplus:navigation-back", onBack);
+    return () => window.removeEventListener("nutriplus:navigation-back", onBack);
+  }, [deleteConfirm, restoreTarget]);
+
   function applyParsedFile(file: File, parsed: SpreadsheetParseResult) {
     const normalized = parsed.headers.map(normalizeName);
     const find = (...tests: RegExp[]) => {
@@ -856,10 +866,17 @@ function SettingsView({ current, onSave }: { current: PricingSettings; onSave: (
 
 function Empty({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) { return <div className="empty">{icon}<h2>{title}</h2>{text && <p>{text}</p>}</div>; }
 
+function initialTab(): Tab {
+  if (typeof window === "undefined") return "calculator";
+  const requested = new URLSearchParams(window.location.search).get("tab");
+  return ["calculator", "orders", "products", "import", "settings"].includes(requested || "") ? requested as Tab : "calculator";
+}
+
 export function NutriPlusApp() {
-  const [tab, setTab] = useState<Tab>("calculator");
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
-  const [form, setForm] = useState<Form>(EMPTY);
+  const [calculatorForm, setCalculatorForm] = useState<Form>(EMPTY);
+  const [productForm, setProductForm] = useState<Form>({ ...EMPTY, addToInventory: true });
   const [products, setProducts] = useState<ProductRecord[]>([]);
   const [quotes, setQuotes] = useState<NonInventoryRecord[]>([]);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
@@ -907,20 +924,42 @@ export function NutriPlusApp() {
   const nextTemporaryProductId = useRef(-1);
   const nextTemporaryQuoteId = useRef(-1);
   const notificationProductHandled = useRef(false);
-  const exitGuard = useRef<ExitGuardController | null>(null);
+  const navigation = useRef<NavigationController | null>(null);
+  const tabRef = useRef<Tab>(tab);
+  const scrollByTab = useRef<Record<Tab, number>>({ calculator: 0, orders: 0, products: 0, import: 0, settings: 0 });
+  const closeTopLayer = useRef<() => boolean>(() => false);
 
   const notify = useCallback((next: NonNullable<Toast>) => {
     setToast(next);
   }, []);
 
+  const activateTab = useCallback((next: AppSection) => {
+    const previous = tabRef.current;
+    if (previous === next) return;
+    scrollByTab.current[previous] = window.scrollY;
+    tabRef.current = next;
+    setActiveNumeric(null);
+    setTab(next);
+    window.requestAnimationFrame(() => window.scrollTo({ top: scrollByTab.current[next], behavior: "auto" }));
+  }, []);
+
+  const navigateTab = useCallback((next: Tab) => {
+    if (navigation.current) navigation.current.navigate(next);
+    else activateTab(next);
+  }, [activateTab]);
+
   useEffect(() => {
-    const controller = installBrowserExitGuard(window.history, window, () => setExitConfirmOpen(true));
-    exitGuard.current = controller;
+    const controller = installAppNavigation(window.history, window, tabRef.current, {
+      onSection: activateTab,
+      onBeforeBack: () => closeTopLayer.current(),
+      onRequestExit: () => setExitConfirmOpen(true),
+    });
+    navigation.current = controller;
     return () => {
       controller.dispose();
-      if (exitGuard.current === controller) exitGuard.current = null;
+      if (navigation.current === controller) navigation.current = null;
     };
-  }, []);
+  }, [activateTab]);
 
   useEffect(() => {
     if (!toast) return;
@@ -938,12 +977,38 @@ export function NutriPlusApp() {
     return () => document.removeEventListener("pointerdown", close, true);
   }, [activeNumeric]);
 
-  const clearForm = useCallback(() => {
-    setForm(EMPTY);
-    setProductEditorOpen(false);
+  const clearCalculatorForm = useCallback(() => {
+    setCalculatorForm(EMPTY);
     setActiveNumeric(null);
     setSuggestionsOpen(false);
   }, []);
+
+  const clearProductForm = useCallback(() => {
+    setProductForm({ ...EMPTY, addToInventory: true });
+    setProductEditorOpen(false);
+    setActiveNumeric(null);
+  }, []);
+
+  useEffect(() => {
+    closeTopLayer.current = () => {
+      if (scannerIntent) { setScannerIntent(null); return true; }
+      if (bulkDeleteConfirm) { setBulkDeleteConfirm(false); return true; }
+      if (deleteTarget) { setDeleteTarget(null); return true; }
+      if (exportConfirm) { setExportConfirm(false); return true; }
+      if (inventoryIntakeOpen) { setInventoryIntakeOpen(false); return true; }
+      if (recentOpen) { setRecentOpen(false); return true; }
+      if (noInventoryOpen) { setNoInventoryOpen(false); return true; }
+      if (restockOpen) { setRestockOpen(false); return true; }
+      const nestedBack = new CustomEvent("nutriplus:navigation-back", { cancelable: true, detail: { section: tabRef.current } });
+      window.dispatchEvent(nestedBack);
+      if (nestedBack.defaultPrevented) return true;
+      if (tabRef.current === "products" && productEditorOpen) { setProductEditorOpen(false); return true; }
+      if (tabRef.current === "products" && selectionMode) { setSelectionMode(false); setSelectedProductIds(new Set()); return true; }
+      if (activeNumeric) { setActiveNumeric(null); return true; }
+      return false;
+    };
+    return () => { closeTopLayer.current = () => false; };
+  }, [activeNumeric, bulkDeleteConfirm, deleteTarget, exportConfirm, inventoryIntakeOpen, noInventoryOpen, productEditorOpen, recentOpen, restockOpen, scannerIntent, selectionMode]);
 
   const refreshProducts = useCallback(async () => {
     const result = await json<{ products: ProductRecord[] }>(await fetch("/api/products?limit=5000"));
@@ -1200,7 +1265,7 @@ export function NutriPlusApp() {
     return () => { window.removeEventListener("online", online); window.removeEventListener("offline", offline); };
   }, [flushOfflineMutations]);
 
-  const suggestions = useMemo(() => searchProducts(products, form.name).filter((product) => product.id !== form.id).slice(0, 8), [form.id, form.name, products]);
+  const suggestions = useMemo(() => searchProducts(products, calculatorForm.name).filter((product) => product.id !== calculatorForm.id).slice(0, 8), [calculatorForm.id, calculatorForm.name, products]);
   const lowStockProducts = useMemo(() => products.filter((product) =>
     (product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock) || Boolean(product.zeroStockSince),
   ), [products]);
@@ -1213,9 +1278,6 @@ export function NutriPlusApp() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const params = new URLSearchParams(window.location.search);
-      if (params.get("tab") === "products") setTab("products");
-      if (params.get("tab") === "orders") setTab("orders");
-      if (params.get("tab") === "settings") setTab("settings");
       if (params.get("stock") === "low") setRestockOpen(true);
       if (params.get("notifications") === "1") window.dispatchEvent(new Event("nutriplus:open-notifications"));
     }, 0);
@@ -1223,24 +1285,23 @@ export function NutriPlusApp() {
   }, []);
 
   const fillCalculator = useCallback((product: ProductRecord) => {
-    setForm(productToForm(product));
-    setProductEditorOpen(false);
+    setCalculatorForm(productToForm(product));
     setActiveNumeric(null);
     setSuggestionsOpen(false);
-    setTab("calculator");
-  }, []);
+    navigateTab("calculator");
+  }, [navigateTab]);
 
   const editInProducts = useCallback((product: ProductRecord) => {
-    setForm(productToForm(product));
+    setProductForm(productToForm(product));
     setProductEditorOpen(true);
     setRestockOpen(false);
     setRecentOpen(false);
     setNoInventoryOpen(false);
     setActiveNumeric(null);
     setSuggestionsOpen(false);
-    setTab("products");
+    navigateTab("products");
     window.scrollTo({ top: 0, behavior: "smooth" });
-  }, []);
+  }, [navigateTab]);
 
   useEffect(() => {
     if (loading || notificationProductHandled.current) return;
@@ -1258,25 +1319,24 @@ export function NutriPlusApp() {
   }, [editInProducts, loading, products]);
 
   const editNoInventory = useCallback((quote: NonInventoryRecord) => {
-    setForm(quoteToForm(quote));
+    setCalculatorForm(quoteToForm(quote));
     setNoInventoryOpen(false);
     setRecentOpen(false);
-    setProductEditorOpen(false);
     setActiveNumeric(null);
     setSuggestionsOpen(false);
-    setTab("calculator");
+    navigateTab("calculator");
     window.scrollTo({ top: 0, behavior: "smooth" });
-  }, []);
+  }, [navigateTab]);
 
   const addInProducts = useCallback(() => {
-    setForm({ ...EMPTY, addToInventory: true });
+    setProductForm({ ...EMPTY, addToInventory: true });
     setProductEditorOpen(true);
     setRestockOpen(false);
     setActiveNumeric(null);
     setSuggestionsOpen(false);
-    setTab("products");
+    navigateTab("products");
     window.scrollTo({ top: 0, behavior: "smooth" });
-  }, []);
+  }, [navigateTab]);
 
   const markRestock = useCallback(async (product: ProductRecord, purchased: boolean) => {
     const now = purchased ? new Date().toISOString() : null;
@@ -1313,7 +1373,7 @@ export function NutriPlusApp() {
     const cleanCode = code.trim();
     if (!cleanCode) return;
     setScannerIntent(null);
-    setForm((current) => ({ ...current, code: cleanCode }));
+    setProductForm((current) => ({ ...current, code: cleanCode }));
     setSuggestionsOpen(false);
     notify({ type: "success", text: "Código agregado. Podés guardar los cambios sin salir de esta pantalla." });
   }, [notify]);
@@ -1337,22 +1397,21 @@ export function NutriPlusApp() {
         }
         notify({ type: "success", text: `Encontramos ${product.name}.` });
       } else if (destination === "products" || destination === "floating") {
-        setForm((current) => ({ ...current, id: null, source: null, code: cleanCode, addToInventory: true }));
+        setProductForm((current) => ({ ...current, id: null, source: null, code: cleanCode, addToInventory: true }));
         setProductEditorOpen(true);
         setActiveNumeric(null);
-        setTab("products");
+        navigateTab("products");
         notify({ type: "success", text: "Código nuevo agregado. Quedará disponible tanto en Productos como en Calcular." });
       } else {
-        setForm((current) => ({ ...current, code: cleanCode }));
-        setProductEditorOpen(false);
+        setCalculatorForm((current) => ({ ...current, code: cleanCode }));
         setActiveNumeric(null);
-        setTab("calculator");
+        navigateTab("calculator");
         notify({ type: "success", text: "Código nuevo agregado sin borrar los datos ingresados." });
       }
     } catch (error) {
       notify({ type: "error", text: error instanceof Error ? error.message : "No se pudo buscar el código." });
     }
-  }, [editInProducts, fillCalculator, notify, products]);
+  }, [editInProducts, fillCalculator, navigateTab, notify, products]);
 
   const openScanner = useCallback((intent: ScannerIntent) => {
     setScannerIntent(intent);
@@ -1423,14 +1482,17 @@ export function NutriPlusApp() {
     return () => window.removeEventListener("keydown", receive, true);
   }, [assignCode, lookupCode, productEditorOpen, tab]);
 
-  const price = form.purchasePriceUsd.trim() ? Number(form.purchasePriceUsd) : null;
-  const weight = form.weightLb.trim() ? Number(form.weightLb) : null;
+  const visibleForm = tab === "products" ? productForm : calculatorForm;
+  const price = visibleForm.purchasePriceUsd.trim() ? Number(visibleForm.purchasePriceUsd) : null;
+  const weight = visibleForm.weightLb.trim() ? Number(visibleForm.weightLb) : null;
   const validPrice = price === null || (Number.isFinite(price) && price >= 0);
   const validWeight = weight === null || (Number.isFinite(weight) && weight >= 0);
   const showPriceBar = tab === "calculator" || (tab === "products" && productEditorOpen);
 
-  function save(event: FormEvent<HTMLFormElement>) {
+  function save(event: FormEvent<HTMLFormElement>, source: "calculator" | "products") {
     event.preventDefault();
+    const form = source === "products" ? productForm : calculatorForm;
+    const clearForm = source === "products" ? clearProductForm : clearCalculatorForm;
     if (!form.name.trim()) return notify({ type: "error", text: "El nombre del producto es obligatorio." });
     const quantityAvailable = form.quantityAvailable.trim() ? Number(form.quantityAvailable) : 0;
     const minimumStock = form.minimumStockEnabled && form.minimumStock.trim() ? Number(form.minimumStock) : 0;
@@ -1511,11 +1573,10 @@ export function NutriPlusApp() {
             : existingQuote;
           setProducts((current) => current.filter((item) => item.id !== optimisticId));
           setQuotes((current) => [currentQuote, ...current.filter((item) => item.id !== currentQuote.id)]);
-          setForm({ ...quoteToForm(currentQuote), addToInventory: true });
-          setProductEditorOpen(false);
+          setCalculatorForm({ ...quoteToForm(currentQuote), addToInventory: true });
           setNoInventoryOpen(false);
           setRecentOpen(false);
-          setTab("calculator");
+          navigateTab("calculator");
           notify({ type: "error", text: error instanceof Error ? error.message : `No se pudo pasar ${submittedForm.name} al inventario.`, sticky: true });
         }
       })();
@@ -1560,8 +1621,8 @@ export function NutriPlusApp() {
           else if (error instanceof ApiError && error.status === 409 && error.payload.current) {
             const currentQuote = error.payload.current as NonInventoryRecord;
             setQuotes((current) => [currentQuote, ...current.filter((item) => item.id !== optimisticId && item.id !== currentQuote.id)]);
-            setForm(quoteToForm(currentQuote));
-            setTab("calculator");
+            setCalculatorForm(quoteToForm(currentQuote));
+            navigateTab("calculator");
             notify({ type: "warning", text: `${error.message} Se abrió la versión más reciente para que la revisés.` });
           }
           else {
@@ -1640,9 +1701,9 @@ export function NutriPlusApp() {
         if (error instanceof ApiError && error.status === 409 && error.payload.current) {
           const current = error.payload.current as ProductRecord;
           setProducts((items) => [current, ...items.filter((item) => item.id !== optimisticId && item.id !== current.id)]);
-          setForm({ ...submittedForm, id: current.id, addToInventory: true });
+          setProductForm({ ...submittedForm, id: current.id, addToInventory: true });
           setProductEditorOpen(true);
-          setTab("products");
+          navigateTab("products");
           notify({ type: "warning", text: `${error.message} Tus datos quedaron abiertos para revisarlos y volver a guardar.`, dismissOnPageTouch: false, durationMs: 6000 });
           return;
         }
@@ -1784,7 +1845,7 @@ export function NutriPlusApp() {
     const target = deleteTarget;
     setDeleting(true);
     setProducts((current) => current.filter((product) => product.id !== target.id));
-    if (form.id === target.id) clearForm();
+    if (productForm.id === target.id) clearProductForm();
     setDeleteTarget(null);
     const id = mutationId();
     const mutation: QueuedMutation = { id, method: "DELETE", url: `/api/products/${target.id}`, headers: { "If-Match": String(target.version) }, createdAt: new Date().toISOString() };
@@ -1867,23 +1928,23 @@ export function NutriPlusApp() {
     <NotificationCenter />
     {(!isOnline || pendingSyncCount > 0) && <div className={`sync-status ${isOnline ? "syncing" : "offline"}`}>{isOnline ? <Cloud /> : <WifiOff />}<span>{isOnline ? syncing ? "Sincronizando cambios…" : `${pendingSyncCount} cambio${pendingSyncCount === 1 ? "" : "s"} por sincronizar` : `Sin conexión · ${pendingSyncCount ? `${pendingSyncCount} cambio${pendingSyncCount === 1 ? " guardado" : "s guardados"}` : "podés seguir trabajando"}`}</span></div>}
     {showPriceBar && <StickyPrices price={validPrice ? price : null} weight={validWeight ? weight : null} settings={settings} />}
-    <div className="body"><aside className={`side ${showPriceBar ? "under-price" : ""}`}><span>Menú</span>{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}<div className="weight-note"><Weight /><span><b>+{settings.extraWeightLb.toFixed(2)} lb</b><small>en cada cálculo</small></span></div></aside><div className="content">
-      {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{form.source === "no_inventory" ? "Actualizar cotización" : form.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearForm}><RotateCcw />Limpiar</button></header><ProductForm form={form} setForm={setForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onExternalCode={(code) => void lookupCode(code, "calculator")} onOpenScanner={() => openScanner("lookup-calculator")} onImageCode={(file) => readCodeFromImage(file, "calculator")} onPasteCode={() => void pasteCode("calculator")} onSubmit={save} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
+    <div className="body"><aside className={`side ${showPriceBar ? "under-price" : ""}`}><span>Menú</span>{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => navigateTab(id)} key={id}><Icon />{label}</button>)}<div className="weight-note"><Weight /><span><b>+{settings.extraWeightLb.toFixed(2)} lb</b><small>en cada cálculo</small></span></div></aside><div className="content">
+      {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{calculatorForm.source === "no_inventory" ? "Actualizar cotización" : calculatorForm.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearCalculatorForm}><RotateCcw />Limpiar</button></header><ProductForm form={calculatorForm} setForm={setCalculatorForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onExternalCode={(code) => void lookupCode(code, "calculator")} onOpenScanner={() => openScanner("lookup-calculator")} onImageCode={(file) => readCodeFromImage(file, "calculator")} onPasteCode={() => void pasteCode("calculator")} onSubmit={(event) => save(event, "calculator")} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
 
-      {tab === "orders" && <OrdersView products={products} quotes={quotes} settings={settings} scannedBarcode={orderScannedBarcode} onConsumeScan={() => setOrderScannedBarcode(null)} onRequestScan={() => openScanner("orders")} onInventoryChanged={refreshProducts} onCatalogChanged={async () => { await Promise.all([refreshProducts(), refreshQuotes()]); }} />}
+      <div className="module-slot" hidden={tab !== "orders"}><OrdersView products={products} quotes={quotes} settings={settings} scannedBarcode={orderScannedBarcode} onConsumeScan={() => setOrderScannedBarcode(null)} onRequestScan={() => openScanner("orders")} onInventoryChanged={refreshProducts} onCatalogChanged={async () => { await Promise.all([refreshProducts(), refreshQuotes()]); }} /></div>
 
       {tab === "products" && <div className="view"><header className="view-head products-head"><div><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá, agregá o editá cualquier producto guardado.</p></div><button className={`restock-head-btn ${lowStockProducts.length ? "has-items" : ""}`} onClick={() => setRestockOpen(true)} aria-label={`Ver productos por abastecer: ${lowStockProducts.length}`}><BellRing /><span>Por abastecer</span><b>{lowStockProducts.length}</b></button></header>
         <div className="products-toolbar"><button className="btn primary" onClick={addInProducts}><Plus />Agregar producto</button><button className="btn secondary" onClick={() => setNoInventoryOpen(true)}><Package />No inventario ({quotes.length})</button><button className="btn secondary" onClick={() => void openRecent()}><Clock3 />Guardados recientemente</button><button className="btn secondary" onClick={() => setInventoryIntakeOpen(true)}><Upload />Agregar inventario</button><button className={`btn ${selectionMode ? "ghost" : "secondary"}`} onClick={() => { setSelectionMode((current) => !current); setSelectedProductIds(new Set()); }} disabled={!products.length}><Check />{selectionMode ? "Cancelar selección" : "Seleccionar varios"}</button>{selectionMode && selectedProductIds.size > 0 && <button className="btn danger-solid" onClick={() => setBulkDeleteConfirm(true)} disabled={bulkDeleting}><Trash2 />Eliminar ({selectedProductIds.size})</button>}<button className="btn secondary" onClick={() => setExportConfirm(true)} disabled={!products.length && !quotes.length}><Download />Descargar inventario</button></div>
         <section className={`surface stock-notification-strip ${lowStockProducts.length ? "has-alerts" : ""}`}><div className="stock-alert-heading"><span className="stock-alert-icon">{lowStockProducts.length ? <BellRing /> : <Bell />}</span><div><h2>{lowStockProducts.length ? `${pendingRestockProducts.length} pendiente${pendingRestockProducts.length === 1 ? "" : "s"} de compra · ${lowStockProducts.length - pendingRestockProducts.length} comprado${lowStockProducts.length - pendingRestockProducts.length === 1 ? "" : "s"}` : "Stock mínimo al día"}</h2><p>Las alertas se generan al cruzar el mínimo o llegar a cero, sin repetirse por cada cambio.</p></div></div><button className="btn secondary small" onClick={() => window.dispatchEvent(new Event("nutriplus:open-notifications"))}><Bell />Ver Centro de alertas</button></section>
-        {productEditorOpen && <section className="editor-wrap"><div className="editor-heading"><div><span className="eyebrow">{form.id ? "Edición en Productos" : "Nuevo producto"}</span><h2>{form.id ? form.name : "Agregar producto al catálogo"}</h2></div><button className="icon-btn" onClick={clearForm} aria-label="Cerrar editor"><X /></button></div><ProductForm form={form} setForm={setForm} settings={settings} suggestions={[]} suggestionsOpen={false} setSuggestionsOpen={() => undefined} onPick={() => undefined} onExternalCode={form.id ? assignCode : (code) => void lookupCode(code, "products")} onOpenScanner={() => openScanner(form.id ? "assign" : "lookup-products")} onImageCode={(file) => readCodeFromImage(file, form.id ? "assign" : "products")} onPasteCode={() => void pasteCode(form.id ? "assign" : "products")} onSubmit={save} onCancel={clearForm} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} showSuggestions={false} /></section>}
+        {productEditorOpen && <section className="editor-wrap"><div className="editor-heading"><div><span className="eyebrow">{productForm.id ? "Edición en Productos" : "Nuevo producto"}</span><h2>{productForm.id ? productForm.name : "Agregar producto al catálogo"}</h2></div><button className="icon-btn" onClick={clearProductForm} aria-label="Cerrar editor"><X /></button></div><ProductForm form={productForm} setForm={setProductForm} settings={settings} suggestions={[]} suggestionsOpen={false} setSuggestionsOpen={() => undefined} onPick={() => undefined} onExternalCode={productForm.id ? assignCode : (code) => void lookupCode(code, "products")} onOpenScanner={() => openScanner(productForm.id ? "assign" : "lookup-products")} onImageCode={(file) => readCodeFromImage(file, productForm.id ? "assign" : "products")} onPasteCode={() => void pasteCode(productForm.id ? "assign" : "products")} onSubmit={(event) => save(event, "products")} onCancel={clearProductForm} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} showSuggestions={false} /></section>}
         <section className="surface search-card"><div className="input-icon grow"><Search /><input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(36); }} onKeyDown={(event) => detectScannerBurst(event, searchBurst, (code, before) => { setQuery(before); setVisibleCount(36); void lookupCode(code, "products"); })} placeholder="Ej. omega encargo o omega nordic" /></div><button className="scan-btn" onPointerDown={() => void preloadScanner()} onClick={() => openScanner("lookup-products")}><Camera /><span>Escanear</span></button></section>
         {!filteredProducts.length ? <Empty icon={<PackageSearch />} title={query ? "No hay coincidencias" : "Todavía no hay productos"} text={query ? "Probá con otras palabras o escaneá el código." : "Agregá el primer producto desde el botón superior."} /> : <><div className="results-count">{selectionMode ? `${selectedProductIds.size} seleccionado${selectedProductIds.size === 1 ? "" : "s"} · tocá las casillas de los productos` : query ? `${filteredProducts.length} coincidencias` : `${products.length} productos guardados`}</div><div className="product-grid">{filteredProducts.slice(0, visibleCount).map((product) => { const complete = hasCompletePricing(product); const prices = complete ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; const lowStock = (product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock) || product.quantityAvailable === 0; const selected = selectedProductIds.has(product.id); const pendingOnlineSave = product.id < 0 && isOnline; return <article className={`product-card ${complete ? "" : "pending-product"} ${lowStock ? "low-stock" : ""} ${selected ? "selected-product" : ""}`} key={product.id}><div className="product-title">{selectionMode && <label className="product-selector"><input type="checkbox" checked={selected} disabled={pendingOnlineSave} onChange={() => setSelectedProductIds((current) => { const next = new Set(current); if (next.has(product.id)) next.delete(product.id); else next.add(product.id); return next; })} aria-label={`Seleccionar ${product.name}`} /><span><Check /></span></label>}<span className="avatar">{product.name[0].toUpperCase()}</span><div><h2>{product.name}</h2>{product.code && <small><ScanLine />{product.code}</small>}{!complete && <small className="pending-label"><AlertCircle />Incompleto</small>}{lowStock && <small className="stock-label"><AlertCircle />{product.quantityAvailable === 0 ? "Stock 0" : "Stock bajo"}</small>}</div><div className="card-actions"><button className="icon-btn" onClick={() => editInProducts(product)} aria-label={`Editar ${product.name}`} disabled={pendingOnlineSave}><Pencil /></button><button className="icon-btn danger" onClick={() => setDeleteTarget(product)} aria-label={`Eliminar ${product.name}`} disabled={pendingOnlineSave}><Trash2 /></button></div></div><div className="facts"><div><span>Compra</span><b>{product.purchasePriceUsd === null ? "—" : usd(product.purchasePriceUsd)}</b></div><div><span>Peso</span><b>{product.weightLb === null ? "—" : `${product.weightLb.toFixed(2)} lb`}</b></div><div className="green"><span>Venta GAM</span><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></div><div className="brown"><span>Venta Puerto</span><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></div><div className="stock"><span>Cantidad disponible</span><b>{product.quantityAvailable}</b></div><div className="stock"><span>Stock mínimo</span><b>{product.minimumStockEnabled ? product.minimumStock : "No configurado"}</b></div></div></article>; })}</div>{visibleCount < filteredProducts.length && <button className="btn secondary load-more" onClick={() => setVisibleCount((current) => current + 36)}>Mostrar más productos</button>}</>}
       </div>}
 
-      {tab === "import" && <ImportView key={importJob?.id ?? "sin-importacion"} settings={settings} job={importJob} deletionJob={deletionJob} productCount={products.filter((product) => product.id > 0).length} history={importHistory} summary={importSummary} restoringId={restoringImportId} onStart={startImport} onRestore={restoreImport} onDeleteAll={startDeletion} />}
-      {tab === "settings" && <SettingsView key={JSON.stringify(settings)} current={settings} onSave={saveSettings} />}
+      <div className="module-slot" hidden={tab !== "import"}><ImportView key={importJob?.id ?? "sin-importacion"} settings={settings} job={importJob} deletionJob={deletionJob} productCount={products.filter((product) => product.id > 0).length} history={importHistory} summary={importSummary} restoringId={restoringImportId} onStart={startImport} onRestore={restoreImport} onDeleteAll={startDeletion} /></div>
+      <div className="module-slot" hidden={tab !== "settings"}><SettingsView key={JSON.stringify(settings)} current={settings} onSave={saveSettings} /></div>
     </div></div>
-    <nav className="bottom">{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}><Icon />{label}</button>)}</nav><span className="app-version" aria-label={`Versión pública ${NUTRIPLUS_PUBLIC_VERSION}`}>NutriPlus v{NUTRIPLUS_PUBLIC_VERSION}</span><button className="float-scan" onPointerDown={() => void preloadScanner()} onClick={() => openScanner("floating")} aria-label="Escanear"><ScanLine /></button>
+    <nav className="bottom" aria-label="Navegación principal">{nav.map(([id, label, Icon]) => <button className={tab === id ? "active" : ""} aria-current={tab === id ? "page" : undefined} onClick={() => navigateTab(id)} key={id}><Icon />{label}</button>)}</nav><span className="app-version" aria-label={`Versión pública ${NUTRIPLUS_PUBLIC_VERSION}`}>NutriPlus v{NUTRIPLUS_PUBLIC_VERSION}</span><button className="float-scan" onPointerDown={() => void preloadScanner()} onClick={() => openScanner("floating")} aria-label="Escanear"><ScanLine /></button>
     {scannerIntent && <Scanner onClose={() => setScannerIntent(null)} onCode={handleScannerCode} />}
     {restockOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos por abastecer" onPointerDown={() => setRestockOpen(false)}><div className="restock-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Lista de compra</span><h2>Productos por abastecer</h2><p>Incluye los productos en el mínimo y cualquiera que haya llegado a stock 0.</p></div><button className="icon-btn" onClick={() => setRestockOpen(false)} aria-label="Cerrar lista"><X /></button></div>{lowStockProducts.length ? <div className="restock-list">{lowStockProducts.map((product) => <article className={`${product.restockPurchasedAt ? "purchased" : "pending-purchase"} ${product.quantityAvailable === 0 ? "zero-stock" : ""}`} key={product.id}><div><b>{product.name}</b>{product.code && <small>{product.code}</small>}<small className="purchase-status">{product.restockPurchasedAt ? "Comprado" : "Pendiente de compra"}{product.quantityAvailable === 0 ? " · Stock 0" : ""}</small></div><span><small>Disponible</small><b>{product.quantityAvailable}</b></span><span><small>Mínimo</small><b>{product.minimumStockEnabled ? product.minimumStock : "-"}</b></span><div className="restock-actions"><button className={`btn small ${product.restockPurchasedAt ? "secondary" : "primary"}`} onClick={() => void markRestock(product, !product.restockPurchasedAt)}>{product.restockPurchasedAt ? <RotateCcw /> : <Check />}{product.restockPurchasedAt ? "Marcar pendiente" : "Comprado"}</button><button className="btn ghost small" onClick={() => editInProducts(product)}><Pencil />Actualizar</button></div></article>)}</div> : <div className="restock-empty"><Check /><h3>Todo abastecido</h3><p>No hay productos por debajo del mínimo ni con stock 0.</p></div>}</div></div>}
     {noInventoryOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos de No inventario" onPointerDown={() => setNoInventoryOpen(false)}><div className="restock-card recent-card no-inventory-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Cotizaciones separadas</span><h2>No inventario</h2><p>{quotes.length} producto{quotes.length === 1 ? "" : "s"} que no {quotes.length === 1 ? "aparece" : "aparecen"} en el catálogo principal.</p></div><button className="icon-btn" onClick={() => setNoInventoryOpen(false)} aria-label="Cerrar No inventario"><X /></button></div><div className="surface search-card no-inventory-search"><div className="input-icon grow"><Search /><input value={noInventoryQuery} onChange={(event) => setNoInventoryQuery(event.target.value)} placeholder="Buscar por nombre o código" /></div></div>{filteredNoInventory.length ? <div className="recent-list no-inventory-list">{filteredNoInventory.map((item) => { const prices = hasCompletePricing(item) ? calculatePrices(item.purchasePriceUsd, item.weightLb, settings) : null; return <article key={item.id}><div><b>{item.name}</b><small>{item.code || "Sin código"} · {importDate(item.updatedAt)}</small></div><span className="source-pill no_inventory">No inventario</span><span><small>GAM</small><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></span><button className="btn ghost small" onClick={() => editNoInventory(item)}><Pencil />Editar</button></article>; })}</div> : <p className="empty-summary">{noInventoryQuery ? "No hay coincidencias." : "Todavía no hay productos en No inventario."}</p>}</div></div>}
@@ -1910,7 +1971,7 @@ export function NutriPlusApp() {
     {exportConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Elegir descarga del inventario"><div className="confirm-card export-card"><div className="download-symbol"><Download /></div><h2>Descargar inventario</h2><p>Incluye {products.length} productos del inventario y {quotes.length} de No inventario. El PDF también tendrá la sección No inventario.</p><div className="export-options"><button className={exportFormat === "pdf" ? "chosen" : ""} onClick={() => setExportFormat("pdf")}><b>PDF</b><small>Documento minimalista</small></button><button className={exportFormat === "excel" ? "chosen" : ""} onClick={() => setExportFormat("excel")}><b>Excel</b><small>Hojas editables</small></button><button className={exportFormat === "both" ? "chosen" : ""} onClick={() => setExportFormat("both")}><b>Ambos</b><small>Dos archivos separados</small></button></div><div className="confirm-actions"><button className="btn secondary" onClick={() => setExportConfirm(false)} disabled={exporting}>Cancelar</button><button className="btn primary" onClick={() => void downloadInventory(exportFormat)} disabled={exporting}>{exporting ? <Loader2 className="spin" /> : <Download />}Descargar</button></div></div></div>}
     {deleteTarget && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar producto?</h2><p>Vas a eliminar <b>{deleteTarget.name}</b>. Esta acción no se puede deshacer.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setDeleteTarget(null)} disabled={deleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeProduct()} disabled={deleting}>{deleting ? <Loader2 className="spin" /> : <Trash2 />}Sí, eliminar</button></div></div></div>}
     {bulkDeleteConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación de productos seleccionados"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar {selectedProductIds.size} productos?</h2><p>Se eliminarán únicamente los productos seleccionados. Esta acción también puede completarse en segundo plano o sincronizarse al volver Internet.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setBulkDeleteConfirm(false)} disabled={bulkDeleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeSelectedProducts()} disabled={bulkDeleting}><Trash2 />Sí, eliminar seleccionados</button></div></div></div>}
-    {exitConfirmOpen && <div className="modal" role="alertdialog" aria-modal="true" aria-labelledby="exit-confirm-title"><div className="confirm-card"><h2 id="exit-confirm-title">¿Quieres salir de NutriPlus?</h2><div className="confirm-actions"><button className="btn secondary" onClick={() => { exitGuard.current?.cancelExit(); setExitConfirmOpen(false); }}>Cancelar</button><button className="btn primary" onClick={() => { setExitConfirmOpen(false); exitGuard.current?.confirmExit(); }}>Salir</button></div></div></div>}
+    {exitConfirmOpen && <div className="modal" role="alertdialog" aria-modal="true" aria-labelledby="exit-confirm-title"><div className="confirm-card"><h2 id="exit-confirm-title">¿Quieres salir de NutriPlus?</h2><div className="confirm-actions"><button className="btn secondary" onClick={() => { navigation.current?.cancelExit(); setExitConfirmOpen(false); }}>Cancelar</button><button className="btn primary" onClick={() => { setExitConfirmOpen(false); navigation.current?.confirmExit(); }}>Salir</button></div></div></div>}
     {toast && <div className={`toast ${toast.type} ${toast.sticky ? "sticky" : ""}`} role={toast.type === "error" ? "alert" : "status"} aria-live={toast.type === "error" ? "assertive" : "polite"}>{toast.type === "success" ? <Check /> : <AlertCircle />}<span>{toast.title && <b>{toast.title}</b>}<small>{toast.text}</small></span><button onClick={() => setToast(null)} aria-label="Cerrar notificación"><X /></button></div>}
   </main>;
 }

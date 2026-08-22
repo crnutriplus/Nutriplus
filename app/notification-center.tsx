@@ -200,6 +200,15 @@ export function NotificationCenter() {
     };
   }, [browserPushSupported, loadItems, refresh]);
 
+  useEffect(() => {
+    const onBack = (event: Event) => {
+      if (installHelp) { event.preventDefault(); setInstallHelp(false); }
+      else if (open) { event.preventDefault(); setOpen(false); }
+    };
+    window.addEventListener("nutriplus:navigation-back", onBack);
+    return () => window.removeEventListener("nutriplus:navigation-back", onBack);
+  }, [installHelp, open]);
+
   const savePreferences = useCallback(async (change: Partial<Preferences>) => {
     setBusy("preferences");
     setProblem(null);
@@ -305,9 +314,6 @@ export function NotificationCenter() {
   }, [loadItems]);
 
   return <>
-    <button className="notification-bell-button" onClick={() => setOpen(true)} aria-label={`Centro de alertas: ${unreadCount} sin leer`}>
-      <Bell />{unreadCount > 0 && <b>{unreadCount > 99 ? "99+" : unreadCount}</b>}
-    </button>
     {open && <div className="modal notification-center-modal" role="dialog" aria-modal="true" aria-label="Centro de notificaciones" onPointerDown={() => setOpen(false)}>
       <div className="notification-center" onPointerDown={(event) => event.stopPropagation()}>
         <header className="notification-center-head"><div><span className="eyebrow">Centro de notificaciones</span><h2>Alertas de NutriPlus</h2><p>{unreadCount ? `${unreadCount} alerta${unreadCount === 1 ? "" : "s"} sin leer` : "No tenés alertas nuevas"}</p></div><button className="icon-btn" onClick={() => setOpen(false)} aria-label="Cerrar Centro de alertas"><X /></button></header>

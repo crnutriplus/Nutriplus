@@ -5,7 +5,14 @@ NutriPlus mantiene dos identificadores independientes:
 - **Versión pública:** se muestra a las personas usuarias y avanza como `2.3`, `2.4`, `2.5`, etc.
 - **Checkpoint / commit / deployment:** identifica técnicamente un estado del código. Nunca es el número público de NutriPlus.
 
-`package.json` usa SemVer, por lo que representa la versión pública `2.19` como `2.19.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+`package.json` usa SemVer, por lo que representa la versión pública `2.20` como `2.20.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+
+## 2.20 — 2026-08-22
+
+- La barra móvil inferior permanece en el App Shell con Calcular, Pedidos, Productos, Importar y Ajustes, respeta el área segura de Android/PWA y deja espacio al final del contenido.
+- Los cinco módulos conservan su estado en memoria al cambiar de sección: Pedidos, Importar y Ajustes permanecen montados; Calcular y Productos mantienen formularios independientes, búsquedas, ediciones y scroll.
+- Atrás usa historial SPA real entre módulos y cierra primero escáneres, diálogos, paneles y subpantallas. Solo en el límite de salida conserva la confirmación de NutriPlus, sin crear un ciclo de historial.
+- Se retiró únicamente el launcher flotante de Notificaciones que se superponía al escáner. El Centro, sus preferencias, Service Worker, subscriptions y entrega Web Push permanecen intactos.
 
 ## 2.19 — 2026-08-22
 

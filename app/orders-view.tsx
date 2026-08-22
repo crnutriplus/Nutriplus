@@ -443,6 +443,34 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
   const initialDeepLinkHandled = useRef(false);
 
   useEffect(() => {
+    const onBack = (event: Event) => {
+      if ((event as CustomEvent<{ section?: string }>).detail?.section !== "orders") return;
+      const close = (active: boolean, action: () => void) => {
+        if (!active) return false;
+        event.preventDefault();
+        action();
+        return true;
+      };
+      if (close(routeCloseConfirm, () => setRouteCloseConfirm(false))) return;
+      if (close(confirmOpen, () => setConfirmOpen(false))) return;
+      if (close(deliverOpen, () => setDeliverOpen(false))) return;
+      if (close(cancelOpen, () => setCancelOpen(false))) return;
+      if (close(reprogramOpen, () => setReprogramOpen(false))) return;
+      if (close(paymentOpen, () => setPaymentOpen(false))) return;
+      if (close(reopenOpen, () => setReopenOpen(false))) return;
+      if (close(returnOpen, () => setReturnOpen(false))) return;
+      if (close(receiptOpen, () => setReceiptOpen(false))) return;
+      if (close(specialRouteOpen, () => setSpecialRouteOpen(false))) return;
+      if (close(duplicateOrders.length > 0, () => setDuplicateOrders([]))) return;
+      if (close(Boolean(editor), () => setEditor(null))) return;
+      if (close(Boolean(selected), () => setSelected(null))) return;
+      close(routePanelOpen, () => setRoutePanelOpen(false));
+    };
+    window.addEventListener("nutriplus:navigation-back", onBack);
+    return () => window.removeEventListener("nutriplus:navigation-back", onBack);
+  }, [cancelOpen, confirmOpen, deliverOpen, duplicateOrders.length, editor, paymentOpen, receiptOpen, reprogramOpen, reopenOpen, returnOpen, routeCloseConfirm, routePanelOpen, selected, specialRouteOpen]);
+
+  useEffect(() => {
     const deepLinkTimer = window.setTimeout(() => {
       const params = new URLSearchParams(window.location.search);
       const requestedSection = params.get("section");
