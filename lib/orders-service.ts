@@ -1283,6 +1283,25 @@ export async function resolveSpecialOrderReceipt(db: D1Database, orderId: string
   parsed.forEach((line) => receivedByLine.set(line.lineId, (receivedByLine.get(line.lineId) || 0) + line.quantityReceived));
   const fullyResolved = activeLines.results.every((line) => (receivedByLine.get(String(line.id)) || 0) >= Number(line.quantity));
   const nextStatus: SpecialOrderStatus = fullyResolved ? "RECEIVED_READY" : "PARTIALLY_RECEIVED";
+  if (mode === "ALREADY_INVENTORY") {
+    const requiredByProduct = new Map<number, { productId: number; productName: string; required: number }>();
+    const parsedProducts = new Map(parsed.map((entry) => [entry.lineId, entry.productId]));
+    const linesToValidate = fullyResolved ? activeLines.results.map((line) => ({
+      productId: parsedProducts.get(String(line.id)) || Number(line.product_id || 0),
+      productName: String(line.product_name_snapshot),
+      quantity: Number(line.quantity),
+    })) : parsed.map((entry) => ({ productId: entry.productId, productName: String(entry.line.product_name_snapshot), quantity: entry.quantityReceived }));
+    linesToValidate.forEach((line) => {
+      const currentRequired = requiredByProduct.get(line.productId) || { productId: line.productId, productName: line.productName, required: 0 };
+      currentRequired.required += line.quantity;
+      requiredByProduct.set(line.productId, currentRequired);
+    });
+    const shortages = insufficientStock([...requiredByProduct.values()], products);
+    if (shortages.length) {
+      const first = shortages[0];
+      throw new OrderError(`“${first.productName}” se indicó como ya ingresado, pero Inventario solo tiene ${first.available} y el Encargo necesita ${first.required}. Elegí “Ingresar estas unidades al inventario ahora” si esta recepción todavía no fue registrada, o registrá primero la entrada real en Facturas/Inventario. El Encargo, los pagos y el inventario conservaron su estado anterior.`, 409, "SPECIAL_ORDER_ALREADY_INVENTORY_SHORTAGE", "Recepción sin stock registrado", { shortages });
+    }
+  }
   const movementPlans = mode === "INVENTORY_NOW" ? assignMovementQuantities(parsed.map(({ line, lineId, productId, quantityReceived }) => ({
     lineId,
     productId,

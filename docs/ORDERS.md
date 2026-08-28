@@ -31,7 +31,7 @@ La migración `0015_quiet_anthem.sql` se publicó mediante el flujo normal de Si
 
 La cancelación usa `CANCELLED` y solo se permite desde estados todavía abiertos. Las transiciones se validan en el servicio y mediante trigger D1. Marcar recibido solo establece `RECEIVED_PENDING_RESOLUTION`: no incrementa existencias.
 
-Cada resolución crea una cabecera y líneas append-only. `INVENTORY_NOW` vincula la línea a un producto existente y crea movimientos `SPECIAL_ORDER_RECEIPT`; `ALREADY_INVENTORY` vincula sin crear entrada porque la unidad ya fue registrada por Facturas/Inventario. Ambas opciones requieren producto válido e `operationId`. La suma por línea permite recepciones parciales sin afirmar que llegó la cantidad completa.
+Cada resolución crea una cabecera y líneas append-only. `INVENTORY_NOW` vincula la línea a un producto existente y crea movimientos `SPECIAL_ORDER_RECEIPT`; `ALREADY_INVENTORY` vincula sin crear entrada porque la unidad ya fue registrada por Facturas/Inventario y, por ello, exige que el stock necesario exista realmente. Ambas opciones requieren producto válido e `operationId`. La suma por línea permite recepciones parciales sin afirmar que llegó la cantidad completa.
 
 La fecha capturada al crear un Encargo es `estimated_arrival_date`: llegada estimada o límite de espera. `scheduled_delivery_date` permanece vacío hasta que la recepción física se resuelve; solo entonces puede programarse la entrega al cliente y asignarse la ruta.
 

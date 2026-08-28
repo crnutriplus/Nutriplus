@@ -222,6 +222,19 @@ assert.equal(cancelledUnconfirmed.response.status, 200, JSON.stringify(cancelled
 assert.equal(await quantity(untouchedProduct.id), beforeUnconfirmedCancel);
 
 // Camino B solo vincula; exige producto existente y confirmar vuelve a validar stock real.
+const missingAlreadyProduct = await product("Producto no ingresado todavía", "SPECIAL-B-ZERO", 0);
+let missingAlready = await createOrder({
+  orderType: "SPECIAL_ORDER",
+  lines: [{ productName: "Producto físico sin entrada registrada", quantity: 1, unitPriceSold: 8000 }],
+});
+missingAlready = await readyForReceipt(missingAlready);
+const missingAlreadyResolution = await resolveReceipt(missingAlready, "ALREADY_INVENTORY", [{
+  orderLineId: missingAlready.lines[0].id, productId: missingAlreadyProduct.id, quantityReceived: 1,
+}]);
+assert.equal(missingAlreadyResolution.response.status, 409, JSON.stringify(missingAlreadyResolution.body));
+assert.equal(missingAlreadyResolution.body.code, "SPECIAL_ORDER_ALREADY_INVENTORY_SHORTAGE");
+assert.equal(await quantity(missingAlreadyProduct.id), 0);
+
 const alreadyProduct = await product("Producto ya ingresado", "SPECIAL-B", 1);
 let already = await createOrder({
   orderType: "SPECIAL_ORDER",

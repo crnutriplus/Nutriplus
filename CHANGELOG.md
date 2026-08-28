@@ -14,6 +14,7 @@ NutriPlus mantiene dos identificadores independientes:
 - Los importes de abono inician vacíos y el abono inicial atómico se admite también al crear un pedido normal, con un único NP y movimiento append-only incluso ante retry.
 - Entregas y Rutas incluyen Encargos recibidos/programados, reprograman una única asignación activa y muestran el NP. La Ruta del día permite cambiar fecha en modo consulta sin crear ni modificar asignaciones.
 - La fecha inicial del Encargo queda exclusivamente como llegada estimada/límite de espera; la entrega al cliente solo se programa tras resolver la recepción. El Historial vuelve a usar una consulta compatible con D1.
+- El camino “Ya fue ingresado” valida que las existencias realmente estén disponibles; si están en cero bloquea con una explicación accionable y conserva Encargo, pagos e inventario sin cambios.
 - Los recordatorios 08:00/14:00/20:00 con la app cerrada permanecen bloqueados porque Sites no ofrece un scheduler/background trigger para este proyecto; no se implementó una simulación dependiente de abrir la app.
 
 ## 2.21 — 2026-08-28
