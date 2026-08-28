@@ -2,17 +2,17 @@
 
 ## Production
 
-- Version: v2.20
-- Checkpoint: 40
-- Commit: `3b769a70e4a94af9e38341bae06d534641f2d0fb`
-- Deployment: `appgdep_6a8a0efb0d548191aa6d81940d73cf8f`
+- Version: v2.21
+- Checkpoint: 41
+- Commit: `e2e810463d0a2008ac1c8aeca1741e1ce448bd3e`
+- Deployment: `appgdep_6a911dca4c38819199f371da74cc252a`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0016_round_scarlet_witch.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- NutriPlus v2.20 is published. The persistent App Shell preserves each main section, uses real SPA history for Atrás, and keeps the bottom navigation visible without the floating Notifications launcher.
+- NutriPlus v2.21 is published. Pedidos y Rutas sincronizan asignaciones canónicas, cierran con decisión Entregado/No entregado, muestran totales financieros completos y permiten un abono inicial atómico al crear Encargos. Cancelar la salida rearma el mismo guard sin hacer crecer el historial.
 
 ## Security
 
