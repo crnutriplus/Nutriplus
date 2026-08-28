@@ -2,17 +2,17 @@
 
 ## Production
 
-- Version: v2.21
-- Checkpoint: 41
-- Commit: `e2e810463d0a2008ac1c8aeca1741e1ce448bd3e`
-- Deployment: `appgdep_6a911dca4c38819199f371da74cc252a`
+- Version: v2.22
+- Checkpoint: 42
+- Commit: `57fa81be68a1962d70f41fb5173d4a688815d7cb`
+- Deployment: `appgdep_6a91a344d5bc8191bb079cdc5f40f9e4`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0016_round_scarlet_witch.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- NutriPlus v2.21 is published. Pedidos y Rutas sincronizan asignaciones canónicas, cierran con decisión Entregado/No entregado, muestran totales financieros completos y permiten un abono inicial atómico al crear Encargos. Cancelar la salida rearma el mismo guard sin hacer crecer el historial.
+- NutriPlus v2.22 is published. La navegación fría sincroniza la sección persistida; Historial usa SQL compatible con D1; pedidos normales admiten abono inicial; Encargos separan llegada estimada de entrega, conservan líneas recibidas al editar y aparecen/reprograman en Entregas y Rutas mediante una única asignación activa. Consultar otra fecha de Ruta no muta asignaciones. Los recordatorios horarios con la app cerrada continúan bloqueados por falta de scheduler en Sites.
 
 ## Security
 
