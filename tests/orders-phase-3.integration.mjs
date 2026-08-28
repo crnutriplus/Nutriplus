@@ -410,6 +410,12 @@ for (const label of [
   "Ingresar estas unidades al inventario ahora", "Ya fue ingresado mediante Facturas/Inventario", "Agregar a lista de entrega",
   "Productos para cargar", "Confirmar cierre", "Abono inicial opcional",
 ]) assert.match(source, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+assert.match(viewSource, /Número: \{order\.orderNumber\}/);
+assert.match(viewSource, /className="route-date-picker"/);
+assert.match(viewSource, /setPaymentAmount\(""\)/);
+assert.doesNotMatch(viewSource, /setPaymentAmount\(String\(selected\.balance\)\)/);
+assert.match(viewSource, /!editor\.id && <>/);
+assert.doesNotMatch(viewSource, /params\.set\("orderType", "STANDARD"\)/);
 assert.match(css, /@media \(max-width: 620px\)/);
 assert.match(css, /\.receipt-mode-picker/);
 assert.match(css, /\.route-summary-grid/);

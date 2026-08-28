@@ -48,7 +48,7 @@ async function createOrder({ lines, orderType = "STANDARD", expectedPaymentMetho
       orderType,
       customerName: "Cliente Encargo",
       phone: "7096-2629",
-      scheduledDeliveryDate: "2026-08-25",
+      scheduledDeliveryDate: orderType === "SPECIAL_ORDER" ? null : "2026-08-25",
       expectedPaymentMethod,
       deliveryFee: 1000,
       source: "MANUAL",

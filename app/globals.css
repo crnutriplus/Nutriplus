@@ -53,9 +53,9 @@ input, select { min-width: 0; }
 .side { position: sticky; top: 24px; width: 210px; margin: 24px 0 24px 18px; padding: 14px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 21px; background: #fff; box-shadow: var(--shadow); }
 .side.under-price { top: 100px; }
 .side > span { padding: 2px 11px 9px; display: block; color: #89938a; font-size: 9px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
-.side > button { width: 100%; height: 46px; margin: 2px 0; padding: 0 12px; display: flex; align-items: center; gap: 11px; border: 0; border-radius: 13px; background: transparent; color: #647066; font-size: 13px; font-weight: 800; text-align: left; }
-.side > button svg { width: 20px; }
-.side > button:hover, .side > button.active { background: var(--g100); color: var(--g800); }
+.side > a { width: 100%; height: 46px; margin: 2px 0; padding: 0 12px; display: flex; align-items: center; gap: 11px; border: 0; border-radius: 13px; background: transparent; color: #647066; font-size: 13px; font-weight: 800; text-align: left; text-decoration: none; touch-action: manipulation; }
+.side > a svg { width: 20px; }
+.side > a:hover, .side > a.active { background: var(--g100); color: var(--g800); }
 .weight-note { margin-top: 16px; padding: 12px; display: flex; align-items: center; gap: 9px; border-radius: 13px; background: var(--lime-soft); color: var(--g800); }
 .weight-note > span { display: flex; flex-direction: column; }
 .weight-note b { font-size: 12px; }
@@ -413,9 +413,9 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
   .content { width: 100%; padding: 20px 16px 40px; }
   .app-version { right: auto; left: 13px; bottom: calc(72px + env(safe-area-inset-bottom)); padding: 4px 8px; font-size: 8px; }
   .bottom { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; height: calc(68px + env(safe-area-inset-bottom)); padding: 6px 7px env(safe-area-inset-bottom); display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid var(--line); background: rgba(255, 255, 255, .96); backdrop-filter: blur(14px); }
-  .bottom button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border: 0; border-radius: 10px; background: none; color: #7b867d; font-size: 8px; font-weight: 850; }
-  .bottom button svg { width: 20px; }
-  .bottom button.active { background: var(--g100); color: var(--g800); }
+  .bottom a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border: 0; border-radius: 10px; background: none; color: #7b867d; font-size: 8px; font-weight: 850; text-decoration: none; touch-action: manipulation; }
+  .bottom a svg { width: 20px; }
+  .bottom a.active { background: var(--g100); color: var(--g800); }
   .float-scan { position: fixed; right: 17px; bottom: 80px; z-index: 45; width: 50px; height: 50px; padding: 0; display: grid; place-items: center; border: 3px solid #fff; border-radius: 16px; background: var(--g800); color: #fff; box-shadow: 0 10px 24px rgba(28, 71, 46, .27); }
   .toast { right: 16px; bottom: 84px; }
 }
@@ -1091,6 +1091,9 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .receipt-lines label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 7px; }
 .receipt-lines .btn { min-width: 160px; }
 .route-dashboard { display: flex; flex-direction: column; }
+.route-date-picker { width: min(240px,100%); margin: 9px 0 5px; padding: 7px 10px; display: flex; align-items: center; gap: 10px; border: 1px solid #d6dfd4; border-radius: 11px; background: #f8faf7; }
+.route-date-picker span { color: var(--muted); font-size: 8px; font-weight: 850; }
+.route-date-picker input { min-width: 0; padding: 0; flex: 1; border: 0; background: transparent; color: var(--g950); font-size: 10px; font-weight: 800; }
 .route-status-line { padding: 13px 18px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid var(--line); }
 .route-status-line > small { color: var(--muted); font-size: 8px; }
 .route-status-line > div { margin-left: auto; display: flex; gap: 7px; }

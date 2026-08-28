@@ -212,7 +212,10 @@ async function parseOrderPayload(db: D1Database, payload: Record<string, unknown
     district: optionalText(payload.district ?? existingOrder?.district, 120),
     latitude: optionalCoordinate(payload.latitude ?? existingOrder?.latitude, "La latitud", -90, 90),
     longitude: optionalCoordinate(payload.longitude ?? existingOrder?.longitude, "La longitud", -180, 180),
-    scheduledDeliveryDate: costaRicaDate(payload.scheduledDeliveryDate ?? existingOrder?.scheduled_delivery_date, "La fecha de entrega"),
+    scheduledDeliveryDate: costaRicaDate(
+      Object.hasOwn(payload, "scheduledDeliveryDate") ? payload.scheduledDeliveryDate : existingOrder?.scheduled_delivery_date,
+      "La fecha de entrega",
+    ),
     orderType: orderType as "STANDARD" | "SPECIAL_ORDER",
     currency: "CRC" as const,
     expectedPaymentMethod: expectedPaymentMethodValue(payload.expectedPaymentMethod, existingOrder?.expected_payment_method),
@@ -603,10 +606,8 @@ export async function listOrders(db: D1Database, request: Request) {
         FROM order_payments p WHERE p.order_id=o.id AND p.status='POSTED'),0) AS paid_total,
       COALESCE((SELECT COUNT(*) FROM order_lines l WHERE l.order_id=o.id AND l.removed_at IS NULL),0) AS line_count,
       COALESCE((SELECT SUM(l.quantity) FROM order_lines l WHERE l.order_id=o.id AND l.removed_at IS NULL),0) AS unit_total,
-      (SELECT GROUP_CONCAT(summary,' · ') FROM (
-        SELECT l.product_name_snapshot||' × '||l.quantity AS summary
-        FROM order_lines l WHERE l.order_id=o.id AND l.removed_at IS NULL ORDER BY l.position,l.id
-      )) AS product_summary,
+      (SELECT GROUP_CONCAT(l.product_name_snapshot||' × '||l.quantity,' · ')
+        FROM order_lines l WHERE l.order_id=o.id AND l.removed_at IS NULL) AS product_summary,
       (SELECT ro.position FROM route_orders ro WHERE ro.order_id=o.id AND ro.removed_at IS NULL LIMIT 1) AS route_position
       FROM orders o LEFT JOIN special_order_details sd ON sd.order_id=o.id ${where}
       ORDER BY COALESCE(o.scheduled_delivery_date,'9999-12-31'),
@@ -620,13 +621,15 @@ export async function listOrders(db: D1Database, request: Request) {
 export async function createOrder(db: D1Database, payload: Record<string, unknown>) {
   const operationId = requiredOperationId(payload);
   const parsed = await parseOrderPayload(db, payload, null, []);
+  if (parsed.orderType === "SPECIAL_ORDER" && parsed.scheduledDeliveryDate) {
+    throw new OrderError("La fecha inicial del Encargo es la llegada estimada, no una entrega al cliente. Dejá la entrega sin fecha y programala después de resolver la recepción; todavía no se creó el Encargo ni se registró ningún pago.", 400, "SPECIAL_ORDER_DELIVERY_BEFORE_RECEIPT", "Fecha de entrega anticipada");
+  }
   const initialPaymentSource = payload.initialPayment == null ? null : asRow(payload.initialPayment);
   let initialPayment: { amount: number; method: PaymentMethod } | null = null;
   if (initialPaymentSource) {
-    if (parsed.orderType !== "SPECIAL_ORDER") throw new OrderError("El abono inicial solo está disponible al crear un Encargo. Corregí el tipo de pedido; todavía no se creó ni registró ningún pago.", 400, "INITIAL_PAYMENT_SPECIAL_ONLY", "Abono inicial no disponible");
     const amount = integerValue(initialPaymentSource.amount, "El monto del abono inicial", 1, parsed.total);
     const method = cleanText(initialPaymentSource.method, 20).toUpperCase() as PaymentMethod;
-    if (!PAYMENT_METHODS.includes(method)) throw new OrderError("Seleccioná un método válido para el abono inicial. El Encargo todavía no se creó y no se registró ningún pago.", 400, "ORDER_PAYMENT_METHOD_INVALID", "Método inválido");
+    if (!PAYMENT_METHODS.includes(method)) throw new OrderError("Seleccioná un método válido para el abono inicial. El pedido todavía no se creó y no se registró ningún pago.", 400, "ORDER_PAYMENT_METHOD_INVALID", "Método inválido");
     initialPayment = { amount, method };
   }
   const candidateId = newOrderId();
@@ -650,7 +653,7 @@ export async function createOrder(db: D1Database, payload: Record<string, unknow
     ) VALUES (?,'REQUESTED',?,?,?,?)`).bind(claim.orderId, now, parsed.estimatedArrivalDate, now, now)] : []),
     ...(initialPayment ? [db.prepare(`INSERT INTO order_payments (
       id,order_id,amount,currency,method,payment_type,status,reference,reverses_payment_id,reason,operation_id,created_at
-    ) VALUES (?,?,?,'CRC',?,'PAYMENT','POSTED','Abono inicial del Encargo',NULL,NULL,?,?)`).bind(
+    ) VALUES (?,?,?,'CRC',?,'PAYMENT','POSTED','Abono inicial del pedido',NULL,NULL,?,?)`).bind(
       newOrderChildId("payment"), claim.orderId, initialPayment.amount, initialPayment.method, `${operationId}:initial-payment`, now,
     ), eventStatement(db, claim.orderId, "payment.recorded", operationId, { type: "PAYMENT", amount: initialPayment.amount, method: initialPayment.method, initial: true }, now)] : []),
     statusEventStatement(db, claim.orderId, null, "DRAFT", operationId, null, now),
@@ -664,6 +667,17 @@ export async function createOrder(db: D1Database, payload: Record<string, unknow
     throw error;
   }
   return { order: await loadOrder(db, claim.orderId), idempotent: false };
+}
+
+async function openRouteTarget(db: D1Database, date: string) {
+  const existing = await db.prepare("SELECT id FROM delivery_routes WHERE route_date=? AND status='OPEN' ORDER BY created_at,id LIMIT 1")
+    .bind(date).first<{ id: string }>();
+  const id = existing?.id || newOrderChildId("route");
+  const maximum = existing
+    ? await db.prepare("SELECT COALESCE(MAX(position),0) AS maximum FROM route_orders WHERE route_id=? AND removed_at IS NULL")
+      .bind(id).first<{ maximum: number }>()
+    : null;
+  return { id, create: !existing, position: Number(maximum?.maximum || 0) + 1 };
 }
 
 export async function updateOrder(db: D1Database, orderId: string, payload: Record<string, unknown>) {
@@ -689,9 +703,11 @@ export async function updateOrder(db: D1Database, orderId: string, payload: Reco
   if (parsed.orderType !== String(current.order_type)) {
     throw new OrderError("El tipo Entrega/Encargo no puede cambiarse después de crear el pedido. Creá un pedido del tipo correcto; no se realizó ningún cambio.", 409, "ORDER_TYPE_IMMUTABLE", "Tipo de pedido protegido");
   }
+  let hasSpecialReceipts = false;
   if (parsed.orderType === "SPECIAL_ORDER") {
     const receiptCount = await db.prepare("SELECT COUNT(*) AS total FROM special_order_receipts WHERE order_id=?").bind(orderId).first<{ total: number }>();
-    if (Number(receiptCount?.total || 0) > 0) {
+    hasSpecialReceipts = Number(receiptCount?.total || 0) > 0;
+    if (hasSpecialReceipts) {
       const sameReceivedLines = existingResult.results.length === parsed.lines.length && parsed.lines.every((line) => {
         const existing = line.existing;
         return Boolean(existing)
@@ -708,9 +724,17 @@ export async function updateOrder(db: D1Database, orderId: string, payload: Reco
   const now = new Date().toISOString();
   const statements: D1PreparedStatement[] = [guardStatement(db, operationId, orderId, version, [status])];
 
-  if (status === "DRAFT") {
+  if (status === "DRAFT" && !hasSpecialReceipts) {
     statements.push(db.prepare("DELETE FROM order_lines WHERE order_id=?").bind(orderId));
     statements.push(...parsed.lines.map((line) => lineInsertStatement(db, orderId, line, now)));
+  } else if (status === "DRAFT") {
+    parsed.lines.forEach((line) => statements.push(db.prepare(`UPDATE order_lines SET position=?,product_id=?,quantity=?,product_name_snapshot=?,presentation_snapshot=?,
+      barcode_snapshot=?,unit_price_original=?,unit_price_sold=?,discount_amount=?,line_subtotal=?,line_total=?,historical_cost_snapshot=?,updated_at=?
+      WHERE id=? AND order_id=? AND removed_at IS NULL`).bind(
+      line.position, line.productId, line.quantity, line.productNameSnapshot, line.presentationSnapshot, line.barcodeSnapshot,
+      line.unitPriceOriginal, line.unitPriceSold, line.discountAmount, line.lineSubtotal, line.lineTotal,
+      line.historicalCostSnapshot, now, line.id, orderId,
+    )));
   } else {
     const nextById = new Map(parsed.lines.filter((line) => line.existing).map((line) => [line.id, line]));
     const removed = existingResult.results.filter((line) => !nextById.has(String(line.id)));
@@ -879,13 +903,25 @@ export async function confirmOrder(db: D1Database, orderId: string, payload: Rec
     barcode: line.barcode_snapshot ? String(line.barcode_snapshot) : null, movementType: "ORDER_CONFIRM",
     quantityChange: -Number(line.quantity), reason: null,
   }]), products) : [];
+  const routeTarget = status === "DRAFT" && current.scheduled_delivery_date && !current.route_id
+    ? await openRouteTarget(db, String(current.scheduled_delivery_date))
+    : null;
   const claim = await beginOperation(db, orderId, "CONFIRM", operationId, payload);
   if (claim.replayed) return { order: await loadOrder(db, orderId), idempotent: true };
   const now = new Date().toISOString();
   const statements: D1PreparedStatement[] = [guardStatement(db, operationId, orderId, version, [status])];
   statements.push(...plans.map((plan) => movementStatement(db, orderId, operationId, plan, now)));
+  if (routeTarget?.create) statements.push(db.prepare("INSERT INTO delivery_routes (id,route_date,label,status,created_at) VALUES (?,?,?,'OPEN',?)")
+    .bind(routeTarget.id, String(current.scheduled_delivery_date), `Entregas ${String(current.scheduled_delivery_date)}`, now));
   statements.push(db.prepare(`UPDATE orders SET status='CONFIRMED',confirmed_at=COALESCE(confirmed_at,?),version=version+1,updated_at=?
     WHERE id=? AND version=? AND status=?`).bind(now, now, orderId, version, status));
+  if (routeTarget) {
+    statements.push(db.prepare("UPDATE route_orders SET removed_at=? WHERE order_id=? AND removed_at IS NULL").bind(now, orderId));
+    statements.push(db.prepare("INSERT INTO route_orders (id,route_id,order_id,position,assigned_at) VALUES (?,?,?,?,?)")
+      .bind(newOrderChildId("routeorder"), routeTarget.id, orderId, routeTarget.position, now));
+    statements.push(db.prepare("UPDATE orders SET route_id=? WHERE id=?").bind(routeTarget.id, orderId));
+    if (String(current.order_type) === "SPECIAL_ORDER") statements.push(db.prepare("UPDATE special_order_details SET special_order_status='ADDED_TO_ROUTE',updated_at=? WHERE order_id=? AND special_order_status='RECEIVED_READY'").bind(now, orderId));
+  }
   statements.push(statusEventStatement(db, orderId, status, "CONFIRMED", operationId, null, now));
   statements.push(eventStatement(db, orderId, "order.confirmed", operationId, {}, now));
   statements.push(completeOperationStatement(db, operationId, orderId, now));
@@ -1059,14 +1095,19 @@ export async function reprogramOrder(db: D1Database, orderId: string, payload: R
     ? await db.prepare("SELECT route_date FROM delivery_routes WHERE id=? LIMIT 1").bind(String(current.route_id)).first<{ route_date: string }>()
     : null;
   const removeFromRoute = Boolean(current.route_id && route?.route_date !== newDate);
+  const routeTarget = removeFromRoute ? await openRouteTarget(db, newDate) : null;
   const claim = await beginOperation(db, orderId, "REPROGRAM", operationId, payload);
   if (claim.replayed) return { order: await loadOrder(db, orderId), idempotent: true };
   const now = new Date().toISOString();
   const statements = [
     guardStatement(db, operationId, orderId, version, [status]),
     ...(removeFromRoute ? [db.prepare("UPDATE route_orders SET removed_at=? WHERE order_id=? AND removed_at IS NULL").bind(now, orderId)] : []),
+    ...(routeTarget?.create ? [db.prepare("INSERT INTO delivery_routes (id,route_date,label,status,created_at) VALUES (?,?,?,'OPEN',?)")
+      .bind(routeTarget.id, newDate, `Entregas ${newDate}`, now)] : []),
+    ...(routeTarget ? [db.prepare("INSERT INTO route_orders (id,route_id,order_id,position,assigned_at) VALUES (?,?,?,?,?)")
+      .bind(newOrderChildId("routeorder"), routeTarget.id, orderId, routeTarget.position, now)] : []),
     db.prepare("UPDATE orders SET scheduled_delivery_date=?,route_id=?,version=version+1,updated_at=? WHERE id=? AND version=? AND status=?")
-      .bind(newDate, removeFromRoute ? null : current.route_id || null, now, orderId, version, status),
+      .bind(newDate, routeTarget?.id || current.route_id || null, now, orderId, version, status),
     eventStatement(db, orderId, "order.reprogrammed", operationId, { from: current.scheduled_delivery_date || null, to: newDate, reason, removedFromRoute: removeFromRoute }, now),
     completeOperationStatement(db, operationId, orderId, now),
   ];

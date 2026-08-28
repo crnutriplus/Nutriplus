@@ -40,6 +40,7 @@ export function installAppNavigation(
   if (isScreenState(history.state)) {
     current = history.state;
     sequence = current.sequence;
+    callbacks.onSection(current.section);
   } else {
     const preserved = history.state && typeof history.state === "object" ? history.state : {};
     history.replaceState({ ...preserved, [NAVIGATION_KEY]: "boundary" } satisfies BoundaryState, "");

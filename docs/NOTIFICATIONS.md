@@ -26,6 +26,8 @@ El Site privado devuelve la puerta de acceso antes de entregar recursos a una se
 
 ChatGPT Sites no expone para este proyecto `cron`, Scheduled Worker, alarmas, colas ni un background job del Site. ChatGPT Scheduled Tasks es una función del producto ChatGPT y no un scheduler del Worker de NutriPlus.
 
+La solicitud operativa de recordatorios consolidados para Encargos pendientes de comprar a las 08:00, 14:00 y 20:00 de `America/Costa_Rica` permanece bloqueada por ese límite. No se implementó una evaluación al abrir la app porque no cumpliría el requisito de funcionar con NutriPlus cerrado. El mecanismo externo mínimo futuro es un scheduler autenticado que invoque una operación idempotente por `fecha + franja`; esa operación podrá reutilizar `notification_events`, `notifications`, las subscriptions y el transporte Web Push existentes sin crear otro sistema de notificaciones.
+
 Por tanto:
 
 - Inventario bajo, agotado y recuperación son **event-driven** y se conocen al modificar stock.

@@ -119,6 +119,27 @@ async function assignRoute(routeId, order, position) {
 
 await call("/api/settings");
 
+// Un pedido normal puede nacer con un único abono real; el retry conserva el mismo NP y ledger.
+const initialPaymentOperation = operationId("standard-initial-payment");
+const initialPaymentPayload = {
+  operationId: initialPaymentOperation,
+  customerName: "Cliente abono inicial normal",
+  phone: "8800-3999",
+  scheduledDeliveryDate: "2026-10-02",
+  deliveryFee: 1000,
+  source: "MANUAL",
+  initialPayment: { amount: 3000, method: "SINPE" },
+  lines: [{ productName: "Producto manual con abono", quantity: 1, unitPriceSold: 9000 }],
+};
+const initialPaid = await call("/api/orders", { method: "POST", body: JSON.stringify(initialPaymentPayload) });
+const initialPaidRetry = await call("/api/orders", { method: "POST", body: JSON.stringify(initialPaymentPayload) });
+assert.equal(initialPaid.response.status, 201, JSON.stringify(initialPaid.body));
+assert.equal(initialPaidRetry.response.status, 200, JSON.stringify(initialPaidRetry.body));
+assert.equal(initialPaid.body.order.id, initialPaidRetry.body.order.id);
+assert.equal(initialPaid.body.order.paidTotal, 3000);
+assert.equal(initialPaid.body.order.balance, 7000);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM order_payments WHERE order_id=?").bind(initialPaid.body.order.id).first()).total), 1);
+
 // Escenario principal: 10 → 7 → 5, pagos, entrega, corrección 5 → 4 y devolución apta.
 const mainProduct = await createProduct("Producto E2E diez unidades", "P4-MAIN-10", 10);
 let mainOrder = await createOrder([{ productId: mainProduct.id, quantity: 3, unitPriceSold: 1000 }], {
@@ -183,11 +204,26 @@ assert.deepEqual(raceOrders.map((result) => result.body.order.status).sort(), ["
 
 // Encargo E2E: abono, proveedor, recepción trazable, ruta, impresión y entrega bajo el mismo NP.
 const specialProduct = await createProduct("Producto E2E Encargo", "P4-SPECIAL", 0);
+const prematureSpecial = await call("/api/orders", {
+  method: "POST",
+  body: JSON.stringify({
+    operationId: operationId("premature-special-date"),
+    orderType: "SPECIAL_ORDER",
+    customerName: "Encargo con fecha anticipada",
+    scheduledDeliveryDate: "2026-10-03",
+    estimatedArrivalDate: "2026-09-30",
+    deliveryFee: 0,
+    source: "MANUAL",
+    lines: [{ productName: "Producto todavía no recibido", quantity: 1, unitPriceSold: 5000 }],
+  }),
+});
+assert.equal(prematureSpecial.response.status, 400, JSON.stringify(prematureSpecial.body));
+assert.equal(prematureSpecial.body.code, "SPECIAL_ORDER_DELIVERY_BEFORE_RECEIPT");
 let specialOrder = await createOrder([{ productName: "Producto E2E Encargo", quantity: 2, unitPriceSold: 5000 }], {
   orderType: "SPECIAL_ORDER",
   customerName: "Cliente Encargo E2E",
   phone: "8800-4201",
-  scheduledDeliveryDate: "2026-10-03",
+  scheduledDeliveryDate: null,
   estimatedArrivalDate: "2026-09-30",
   expectedPaymentMethod: "SINPE",
   deliveryFee: 1000,
@@ -205,19 +241,40 @@ specialOrder = await mutate(specialOrder, "special-order/receipts", {
 });
 assert.equal(specialOrder.specialOrder.status, "RECEIVED_READY");
 assert.equal(await stock(specialProduct.id), 2);
+const specialEditPayload = updatePayload(specialOrder, 2);
+specialEditPayload.deliveryFee = 1500;
+specialEditPayload.lines[0].unitPriceSold = 5500;
+const specialEdited = await call(`/api/orders/${specialOrder.id}`, { method: "PATCH", body: JSON.stringify(specialEditPayload) });
+assert.equal(specialEdited.response.status, 200, JSON.stringify(specialEdited.body));
+specialOrder = specialEdited.body.order;
+assert.equal(specialOrder.deliveryFee, 1500);
+assert.equal(specialOrder.lines[0].unitPriceSold, 5500);
+assert.equal(await stock(specialProduct.id), 2);
+specialOrder = await mutate(specialOrder, "reprogram", { scheduledDeliveryDate: "2026-10-03", reason: "Programar entrega tras recepción" });
+const receivedDeliveryList = await call("/api/orders?date=2026-10-03&limit=100&page=1");
+assert.ok(receivedDeliveryList.body.orders.some((order) => order.id === specialOrder.id));
 const specialRoute = await createRoute("2026-10-03", "Encargo E2E");
 specialOrder = await assignRoute(specialRoute.id, specialOrder, 1);
 specialOrder = await assignRoute(specialRoute.id, specialOrder, 1);
 assert.equal(specialOrder.specialOrder.status, "ADDED_TO_ROUTE");
 const activeMemberships = await DB.prepare("SELECT COUNT(*) AS total FROM route_orders WHERE order_id=? AND removed_at IS NULL").bind(specialOrder.id).first();
 assert.equal(Number(activeMemberships.total), 1);
+const persistedSpecialRoute = await call(`/api/delivery-routes/${specialRoute.id}`);
+assert.ok(persistedSpecialRoute.body.orders.some((order) => order.id === specialOrder.id && order.routeMembership.active));
+specialOrder = await mutate(specialOrder, "reprogram", { scheduledDeliveryDate: "2026-10-04", reason: "Cliente solicitó nueva fecha" });
+const oldSpecialRoute = await call(`/api/delivery-routes/${specialRoute.id}`);
+assert.ok(oldSpecialRoute.body.orders.some((order) => order.id === specialOrder.id && !order.routeMembership.active));
+const newSpecialRoutes = await call("/api/delivery-routes?date=2026-10-04&status=OPEN");
+assert.equal(newSpecialRoutes.body.routes.length, 1);
+const newSpecialRoute = await call(`/api/delivery-routes/${newSpecialRoutes.body.routes[0].id}`);
+assert.ok(newSpecialRoute.body.orders.some((order) => order.id === specialOrder.id && order.routeMembership.active));
 specialOrder = await mutate(specialOrder, "confirm");
 assert.equal(await stock(specialProduct.id), 0);
-const specialPrint = await call("/api/orders/print?date=2026-10-03&format=json");
+const specialPrint = await call("/api/orders/print?date=2026-10-04&format=json");
 assert.equal(specialPrint.response.status, 200, JSON.stringify(specialPrint.body));
 const specialPrintRow = specialPrint.body.rows.find((row) => row.phone === "8800-4201");
 assert.ok(specialPrintRow);
-assert.equal(specialPrintRow.amountToCollect, 9000);
+assert.equal(specialPrintRow.amountToCollect, 10500);
 assert.equal(specialPrintRow.sinpe, true);
 specialOrder = await mutate(specialOrder, "prepare");
 specialOrder = await mutate(specialOrder, "deliver");
@@ -226,7 +283,7 @@ assert.equal(specialOrder.specialOrder.status, "DELIVERED");
 assert.equal(specialOrder.orderNumber, specialNumber);
 assert.equal(specialOrder.payments.length, 1);
 assert.equal(specialOrder.paidTotal, 2000);
-assert.equal(specialOrder.balance, 9000);
+assert.equal(specialOrder.balance, 10500);
 assert.equal(await stock(specialProduct.id), 0);
 const specialHistory = await call(`/api/orders/${specialOrder.id}/history`);
 assert.equal(specialHistory.response.status, 200, JSON.stringify(specialHistory.body));
@@ -238,5 +295,9 @@ assert.ok(specialHistory.body.inventoryMovements.some((movement) => movement.mov
 const specialActive = await call("/api/orders?orderType=SPECIAL_ORDER&active=1&limit=100");
 assert.equal(specialActive.response.status, 200, JSON.stringify(specialActive.body));
 assert.ok(!specialActive.body.orders.some((order) => order.id === specialOrder.id));
+
+const completeHistory = await call("/api/orders?limit=25&page=1");
+assert.equal(completeHistory.response.status, 200, JSON.stringify(completeHistory.body));
+assert.ok(completeHistory.body.total >= 1);
 
 console.log("Orders Phase 4 E2E: stock deltas, full payment, correction, return, last-unit concurrency, and complete special-order flow passed");

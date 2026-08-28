@@ -68,6 +68,15 @@ test("Cancel rearms the same guard without growing history and remount does not 
   const remount = harness(app.calls.push[0]);
   assert.equal(remount.calls.replace.length, 0);
   assert.equal(remount.calls.push.length, 0);
+  assert.deepEqual(remount.calls.sections, ["orders"]);
+});
+
+test("cold reload synchronizes the persisted browser section before the first touch", () => {
+  const app = harness({ __nutriplus_navigation__: "screen", section: "products", sequence: 7 });
+  assert.deepEqual(app.calls.sections, ["products"]);
+  app.controller.navigate("orders");
+  assert.equal(app.calls.sections.at(-1), "orders");
+  assert.equal(app.calls.push.length, 1);
 });
 
 test("the App Shell keeps module roots mounted and removes only the floating notification launcher", async () => {
@@ -82,6 +91,7 @@ test("the App Shell keeps module roots mounted and removes only the floating not
   assert.match(client, /calculatorForm/);
   assert.match(client, /productForm/);
   assert.match(client, /aria-label="Navegación principal"/);
+  assert.match(client, /href=\{`\/\?tab=\$\{id\}`\}/);
   assert.match(css, /env\(safe-area-inset-bottom\)/);
   assert.doesNotMatch(notifications, /notification-bell-button/);
   assert.match(notifications, /Centro de notificaciones/);

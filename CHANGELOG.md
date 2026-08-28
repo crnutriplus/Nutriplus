@@ -5,7 +5,16 @@ NutriPlus mantiene dos identificadores independientes:
 - **Versión pública:** se muestra a las personas usuarias y avanza como `2.3`, `2.4`, `2.5`, etc.
 - **Checkpoint / commit / deployment:** identifica técnicamente un estado del código. Nunca es el número público de NutriPlus.
 
-`package.json` usa SemVer, por lo que representa la versión pública `2.21` como `2.21.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+`package.json` usa SemVer, por lo que representa la versión pública `2.22` como `2.22.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+
+## 2.22 — 2026-08-28
+
+- La carga fría sincroniza React con la sección persistida en `history.state`, por lo que las cinco secciones responden al primer toque sin alterar Atrás ni la salida Android/PWA.
+- Encargos con recepción registrada conservan sus líneas referenciadas al editar; precio, envío, cliente y notas se actualizan sin duplicar inventario, pagos o recepciones.
+- Los importes de abono inician vacíos y el abono inicial atómico se admite también al crear un pedido normal, con un único NP y movimiento append-only incluso ante retry.
+- Entregas y Rutas incluyen Encargos recibidos/programados, reprograman una única asignación activa y muestran el NP. La Ruta del día permite cambiar fecha en modo consulta sin crear ni modificar asignaciones.
+- La fecha inicial del Encargo queda exclusivamente como llegada estimada/límite de espera; la entrega al cliente solo se programa tras resolver la recepción. El Historial vuelve a usar una consulta compatible con D1.
+- Los recordatorios 08:00/14:00/20:00 con la app cerrada permanecen bloqueados porque Sites no ofrece un scheduler/background trigger para este proyecto; no se implementó una simulación dependiente de abrir la app.
 
 ## 2.21 — 2026-08-28
 

@@ -33,6 +33,8 @@ La cancelación usa `CANCELLED` y solo se permite desde estados todavía abierto
 
 Cada resolución crea una cabecera y líneas append-only. `INVENTORY_NOW` vincula la línea a un producto existente y crea movimientos `SPECIAL_ORDER_RECEIPT`; `ALREADY_INVENTORY` vincula sin crear entrada porque la unidad ya fue registrada por Facturas/Inventario. Ambas opciones requieren producto válido e `operationId`. La suma por línea permite recepciones parciales sin afirmar que llegó la cantidad completa.
 
+La fecha capturada al crear un Encargo es `estimated_arrival_date`: llegada estimada o límite de espera. `scheduled_delivery_date` permanece vacío hasta que la recepción física se resuelve; solo entonces puede programarse la entrega al cliente y asignarse la ruta.
+
 Un Encargo solo puede confirmarse cuando la recepción completa está resuelta, todas las líneas están vinculadas y el stock real vuelve a pasar la comprobación concurrente. Confirmar usa el movimiento normal `ORDER_CONFIRM`; cancelar antes de confirmar no restaura stock y cancelar después de confirmar restaura exactamente lo reservado.
 
 ## Estados
@@ -67,7 +69,7 @@ El número NP se asigna insertando una fila en `order_number_allocations` y form
 
 ## Pagos y devoluciones
 
-Los pagos son movimientos append-only con monto, moneda, método, referencia, tipo y `operationId`. Se admiten `CASH`, `SINPE`, `CARD` y `OTHER`, incluso combinados. `PENDING`, `PARTIAL` y `PAID` se calculan desde el total del pedido y la suma neta de movimientos válidos; el campo guardado es solo una proyección operativa.
+Los pagos son movimientos append-only con monto, moneda, método, referencia, tipo y `operationId`. Se admiten `CASH`, `SINPE`, `CARD` y `OTHER`, incluso combinados. `PENDING`, `PARTIAL` y `PAID` se calculan desde el total del pedido y la suma neta de movimientos válidos; el campo guardado es solo una proyección operativa. Tanto un pedido normal como un Encargo pueden incluir un abono inicial opcional dentro de la creación idempotente; no reconoce una venta ni mueve inventario.
 
 Una reversa conserva el pago original, referencia el movimiento corregido y exige motivo. Una devolución conserva cabecera y líneas propias. Solo `reenter_inventory=true` crea el movimiento positivo correspondiente; un artículo dañado o abierto puede registrarse sin aumentar stock.
 
@@ -113,7 +115,7 @@ El editor permite buscar por nombre/código, usar el escáner existente, selecci
 
 La ficha del pedido ofrece revisión de stock antes de confirmar, edición por delta, checklist de preparación, entrega total o parcial, cancelación con motivo/consecuencia, reprogramación, ledger de abonos mixtos y orden de ruta persistente. La corrección reabre con motivo, expone consecuencias antes de editar y conserva el delta en inventario y el historial. Las devoluciones registran por línea si la unidad vuelve o no a existencias.
 
-Rutas permite ordenar, imprimir y revisar totales derivados de `route_orders`. Al abrir la ruta diaria, la interfaz sincroniza allí los pedidos Confirmados/Preparados de esa fecha que todavía no tienen asignación activa. El cierre exige una decisión Entregado/No entregado por cada pendiente: solo Entregado usa la transición y fulfillment existentes; No entregado conserva estado, pagos, inventario y capacidad de reprogramación. Historial busca y pagina en servidor y filtra por fecha, tipo, estado y método. Encargos expone la máquina de proveedor, ambos caminos de recepción, cantidades reales, creación/vinculación segura desde No inventario con stock cero, abono inicial atómico en el ledger existente, incorporación posterior a una ruta y entrega normal bajo el mismo NP.
+Rutas permite ordenar, imprimir y revisar totales derivados de `route_orders`. Confirmar, reprogramar o agregar explícitamente un pedido mantiene su única asignación activa; abrir o cambiar la fecha dentro de Ruta del día es una consulta de solo lectura. El cierre exige una decisión Entregado/No entregado por cada pendiente: solo Entregado usa la transición y fulfillment existentes; No entregado conserva estado, pagos, inventario y capacidad de reprogramación. Historial busca y pagina en servidor y filtra por fecha, tipo, estado y método. Encargos expone la máquina de proveedor, ambos caminos de recepción, cantidades reales, creación/vinculación segura desde No inventario con stock cero, abono inicial atómico en el ledger existente, incorporación posterior a una ruta y entrega normal bajo el mismo NP.
 
 ## Dinero y tiempo
 
