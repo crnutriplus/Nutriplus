@@ -1112,6 +1112,10 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .pending-route-orders article { padding: 9px 10px; display: flex; justify-content: space-between; gap: 8px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
 .pending-route-orders b { font-size: 8px; }
 .pending-route-orders small { color: var(--muted); font-size: 7px; }
+.route-decision { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; min-width: 210px; }
+.route-decision button { min-height: 34px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--g950); font-size: 7px; font-weight: 800; text-transform: uppercase; }
+.route-decision button.active.delivered { border-color: var(--g700); background: var(--g100); color: var(--g950); }
+.route-decision button.active.pending { border-color: #9b6b35; background: #fff3df; color: #6c451d; }
 
 @media (max-width: 900px) {
   .orders-history-filters { grid-template-columns: 1fr 1fr 1fr; }

@@ -124,7 +124,7 @@ const alpha = await product("Omega impresión", "P3-OMEGA", 30);
 const beta = await product("Magnesio parcial", "P3-MAG", 10);
 
 // Impresión: un pedido, varios, totales, envío, E/S/T, orden de ruta y consolidado.
-let cashOrder = await createOrder([{ productId: alpha.id, quantity: 2, unitPriceSold: 5000 }], {
+let cashOrder = await createOrder([{ productId: alpha.id, quantity: 2, unitPriceSold: 5000, discountAmount: 500 }], {
   phone: "7000-1001", expectedPaymentMethod: "CASH", deliveryFee: 1000,
 });
 let sinpeOrder = await createOrder([{ productName: "Producto manual físico", quantity: 3, unitPriceSold: 2000 }], {
@@ -155,7 +155,12 @@ assert.equal(printModel.amountToCollectTotal, cardOrder.balance + cashOrder.bala
 assert.equal(printModel.rows.find((row) => row.phone === "7000-1001").cash, true);
 assert.equal(printModel.rows.find((row) => row.phone === "7000-1002").sinpe, true);
 assert.equal(printModel.rows.find((row) => row.phone === "7000-1003").card, true);
-assert.ok(printModel.rows.find((row) => row.phone === "7000-1001").products.some((line) => line.replace(/\s/g, "") === "Envío₡1000"));
+const cashPrintRow = printModel.rows.find((row) => row.phone === "7000-1001");
+assert.equal(cashPrintRow.deliveryFee, 1000);
+assert.equal(cashPrintRow.subtotal, 10000);
+assert.equal(cashPrintRow.discountTotal, 500);
+assert.equal(cashPrintRow.paidTotal, 1000);
+assert.ok(cashPrintRow.products.every((line) => !/^Envío/i.test(line)));
 assert.ok(printModel.productsToLoad.some((line) => line.productId === alpha.id && line.quantity === 2 && !line.manual));
 assert.ok(printModel.productsToLoad.some((line) => line.productName === "Producto manual físico" && line.quantity === 3 && line.manual));
 
@@ -261,6 +266,12 @@ routeReprogrammed = await action(routeReprogrammed, "reprogram", { scheduledDeli
 assert.equal(routeReprogrammed.scheduledDeliveryDate, "2026-09-16");
 let routePending = await createOrder([{ productName: "Pendiente ruta", quantity: 1, unitPriceSold: 2000 }], { phone: "7000-3004", scheduledDeliveryDate: routeDate, deliveryFee: 500 });
 routePending = await assign(closingRoute.id, routePending, 4);
+routePending = await action(routePending, "confirm");
+routePending = await action(routePending, "prepare");
+let routeCloseDelivered = await createOrder([{ productName: "Entregar al cerrar", quantity: 1, unitPriceSold: 3000 }], { phone: "7000-3005", scheduledDeliveryDate: routeDate, deliveryFee: 700 });
+routeCloseDelivered = await assign(closingRoute.id, routeCloseDelivered, 5);
+routeCloseDelivered = await action(routeCloseDelivered, "confirm");
+routeCloseDelivered = await action(routeCloseDelivered, "prepare");
 const routeSnapshot = await call(`/api/delivery-routes/${closingRoute.id}`);
 assert.equal(routeSnapshot.response.status, 200, JSON.stringify(routeSnapshot.body));
 assert.deepEqual({
@@ -268,22 +279,32 @@ assert.deepEqual({
   cancelled: routeSnapshot.body.summary.cancelled,
   reprogrammed: routeSnapshot.body.summary.reprogrammed,
   pending: routeSnapshot.body.summary.pending,
-}, { delivered: 1, cancelled: 1, reprogrammed: 1, pending: 1 });
+}, { delivered: 1, cancelled: 1, reprogrammed: 1, pending: 2 });
 assert.equal(routeSnapshot.body.summary.totalDelivered, routeDelivered.total);
 assert.equal(routeSnapshot.body.summary.totalCollected, 6000);
 assert.equal(routeSnapshot.body.summary.paymentMethods.CASH, 4000);
 assert.equal(routeSnapshot.body.summary.paymentMethods.SINPE, 2000);
-assert.equal(routeSnapshot.body.summary.shippingTotal, routeDelivered.deliveryFee + routePending.deliveryFee);
+assert.equal(routeSnapshot.body.summary.shippingTotal, routeDelivered.deliveryFee);
 const blockedClose = await call(`/api/delivery-routes/${closingRoute.id}/close`, {
   method: "POST", body: JSON.stringify({ operationId: op("phase3-close-blocked"), acknowledgePending: false }),
 });
 assert.equal(blockedClose.response.status, 409);
-assert.equal(blockedClose.body.code, "ROUTE_PENDING_ORDERS");
+assert.equal(blockedClose.body.code, "ROUTE_DECISIONS_REQUIRED");
 const closed = await call(`/api/delivery-routes/${closingRoute.id}/close`, {
-  method: "POST", body: JSON.stringify({ operationId: op("phase3-close"), acknowledgePending: true }),
+  method: "POST", body: JSON.stringify({ operationId: op("phase3-close"), decisions: { [routePending.id]: "NOT_DELIVERED", [routeCloseDelivered.id]: "DELIVERED" } }),
 });
 assert.equal(closed.response.status, 200, JSON.stringify(closed.body));
 assert.equal(closed.body.route.status, "CLOSED");
+assert.equal(closed.body.summary.delivered, 2);
+assert.equal(closed.body.summary.totalDelivered, routeDelivered.total + routeCloseDelivered.total);
+assert.equal(closed.body.summary.shippingTotal, routeDelivered.deliveryFee + routeCloseDelivered.deliveryFee);
+assert.equal(closed.body.orders.find((order) => order.id === routePending.id).status, "PREPARED");
+assert.equal(closed.body.orders.find((order) => order.id === routeCloseDelivered.id).status, "DELIVERED");
+const repeatedClose = await call(`/api/delivery-routes/${closingRoute.id}/close`, {
+  method: "POST", body: JSON.stringify({ operationId: op("phase3-close-retry"), decisions: { [routePending.id]: "NOT_DELIVERED", [routeCloseDelivered.id]: "DELIVERED" } }),
+});
+assert.equal(repeatedClose.response.status, 200);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM order_fulfillments WHERE order_id=?").bind(routeCloseDelivered.id).first()).total), 1);
 
 // Encargo iniciado desde No inventario, abonos mixtos, Camino A, misma NP/ruta e impresión por saldo.
 const quoteMutation = op("phase3-quote");
@@ -300,10 +321,11 @@ let special = await createOrder([{ productName: quote.body.quote.name, barcode: 
   estimatedArrivalDate: "2026-09-20",
   expectedPaymentMethod: "SINPE",
   deliveryFee: 1000,
+  initialPayment: { amount: 5000, method: "SINPE" },
 });
 const specialNumber = special.orderNumber;
-assert.equal(special.payments.length, 0);
-special = await action(special, "payments", { amount: 5000, method: "SINPE" });
+assert.equal(special.payments.length, 1);
+assert.equal(special.paidTotal, 5000);
 special = await action(special, "payments", { amount: 2000, method: "CASH" });
 assert.equal(special.paidTotal, 7000);
 special = await specialTransition(special, "ORDERED_FROM_SUPPLIER");
@@ -386,7 +408,7 @@ const source = `${viewSource}\n${printSource}`;
 for (const label of [
   "Imprimir hoja", "Ruta del día", "Reabrir/Corregir", "Registrar devolución", "Registrar entrega parcial",
   "Ingresar estas unidades al inventario ahora", "Ya fue ingresado mediante Facturas/Inventario", "Agregar a lista de entrega",
-  "Productos para cargar", "Cerrar y conservar pendientes",
+  "Productos para cargar", "Confirmar cierre", "Abono inicial opcional",
 ]) assert.match(source, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
 assert.match(css, /@media \(max-width: 620px\)/);
 assert.match(css, /\.receipt-mode-picker/);

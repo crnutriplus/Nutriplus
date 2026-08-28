@@ -5,7 +5,16 @@ NutriPlus mantiene dos identificadores independientes:
 - **Versión pública:** se muestra a las personas usuarias y avanza como `2.3`, `2.4`, `2.5`, etc.
 - **Checkpoint / commit / deployment:** identifica técnicamente un estado del código. Nunca es el número público de NutriPlus.
 
-`package.json` usa SemVer, por lo que representa la versión pública `2.20` como `2.20.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+`package.json` usa SemVer, por lo que representa la versión pública `2.21` como `2.21.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+
+## 2.21 — 2026-08-28
+
+- “Pedido al proveedor” vuelve a ejecutar y persistir la transición del Encargo; los identificadores de operación generados por la UI cumplen el contrato seguro del servidor.
+- La Ruta del día sincroniza los pedidos Confirmados/Preparados con las asignaciones canónicas existentes y deriva contadores, montos, envíos, abonos y saldos desde esos pedidos.
+- Cerrar ruta exige decidir Entregado/No entregado por pedido. Solo Entregado registra la entrega existente; No entregado permanece pendiente y reprogramable. Los reintentos no duplican inventario, fulfillments ni pagos.
+- Listas, detalle y PDF separan Subtotal, Descuento, Envío, Total, Abonado y Saldo; Envío dejó de presentarse como producto.
+- Crear Encargo admite un abono inicial opcional, insertado atómicamente en el ledger append-only sin reconocer una venta.
+- Cancelar la confirmación de salida rearma el mismo guard con el historial existente, sin aumentar `history.length`; Salir conserva un único retroceso normal.
 
 ## 2.20 — 2026-08-22
 

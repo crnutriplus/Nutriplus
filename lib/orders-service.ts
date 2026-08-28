@@ -620,6 +620,15 @@ export async function listOrders(db: D1Database, request: Request) {
 export async function createOrder(db: D1Database, payload: Record<string, unknown>) {
   const operationId = requiredOperationId(payload);
   const parsed = await parseOrderPayload(db, payload, null, []);
+  const initialPaymentSource = payload.initialPayment == null ? null : asRow(payload.initialPayment);
+  let initialPayment: { amount: number; method: PaymentMethod } | null = null;
+  if (initialPaymentSource) {
+    if (parsed.orderType !== "SPECIAL_ORDER") throw new OrderError("El abono inicial solo está disponible al crear un Encargo. Corregí el tipo de pedido; todavía no se creó ni registró ningún pago.", 400, "INITIAL_PAYMENT_SPECIAL_ONLY", "Abono inicial no disponible");
+    const amount = integerValue(initialPaymentSource.amount, "El monto del abono inicial", 1, parsed.total);
+    const method = cleanText(initialPaymentSource.method, 20).toUpperCase() as PaymentMethod;
+    if (!PAYMENT_METHODS.includes(method)) throw new OrderError("Seleccioná un método válido para el abono inicial. El Encargo todavía no se creó y no se registró ningún pago.", 400, "ORDER_PAYMENT_METHOD_INVALID", "Método inválido");
+    initialPayment = { amount, method };
+  }
   const candidateId = newOrderId();
   const claim = await beginOperation(db, candidateId, "CREATE", operationId, payload, true);
   if (claim.replayed) return { order: await loadOrder(db, claim.orderId), idempotent: true };
@@ -639,6 +648,11 @@ export async function createOrder(db: D1Database, payload: Record<string, unknow
     ...(parsed.orderType === "SPECIAL_ORDER" ? [db.prepare(`INSERT INTO special_order_details (
       order_id,special_order_status,requested_at,estimated_arrival_date,created_at,updated_at
     ) VALUES (?,'REQUESTED',?,?,?,?)`).bind(claim.orderId, now, parsed.estimatedArrivalDate, now, now)] : []),
+    ...(initialPayment ? [db.prepare(`INSERT INTO order_payments (
+      id,order_id,amount,currency,method,payment_type,status,reference,reverses_payment_id,reason,operation_id,created_at
+    ) VALUES (?,?,?,'CRC',?,'PAYMENT','POSTED','Abono inicial del Encargo',NULL,NULL,?,?)`).bind(
+      newOrderChildId("payment"), claim.orderId, initialPayment.amount, initialPayment.method, `${operationId}:initial-payment`, now,
+    ), eventStatement(db, claim.orderId, "payment.recorded", operationId, { type: "PAYMENT", amount: initialPayment.amount, method: initialPayment.method, initial: true }, now)] : []),
     statusEventStatement(db, claim.orderId, null, "DRAFT", operationId, null, now),
     eventStatement(db, claim.orderId, "order.created", operationId, { source: parsed.source }, now),
     completeOperationStatement(db, operationId, claim.orderId, now),
@@ -1457,6 +1471,7 @@ export async function loadDeliveryRoute(db: D1Database, routeId: string) {
     methodTotals[method] += payment.type === "PAYMENT" ? payment.amount : -payment.amount;
   }));
   const pending = active.filter((order) => !["DELIVERED", "CANCELLED"].includes(order.status));
+  const delivered = active.filter((order) => order.status === "DELIVERED");
   const reprogrammed = rows.filter((order) => !order.routeMembership.active && order.scheduledDeliveryDate !== String(route.route_date));
   return {
     route: {
@@ -1469,33 +1484,44 @@ export async function loadDeliveryRoute(db: D1Database, routeId: string) {
     },
     orders: rows,
     summary: {
-      delivered: active.filter((order) => order.status === "DELIVERED").length,
+      delivered: delivered.length,
       cancelled: active.filter((order) => order.status === "CANCELLED").length,
       reprogrammed: reprogrammed.length,
       pending: pending.length,
-      totalDelivered: active.filter((order) => order.status === "DELIVERED").reduce((sum, order) => sum + order.total, 0),
+      totalDelivered: delivered.reduce((sum, order) => sum + order.total, 0),
       totalCollected: nonCancelled.reduce((sum, order) => sum + order.paidTotal, 0),
       balancePending: nonCancelled.reduce((sum, order) => sum + order.balance, 0),
       paymentMethods: methodTotals,
-      shippingTotal: nonCancelled.reduce((sum, order) => sum + order.deliveryFee, 0),
+      shippingTotal: delivered.reduce((sum, order) => sum + order.deliveryFee, 0),
     },
-    pendingOrders: pending.map((order) => ({ id: order.id, orderNumber: order.orderNumber, customerName: order.customerName, status: order.status })),
+    pendingOrders: pending.map((order) => ({ id: order.id, orderNumber: order.orderNumber, customerName: order.customerName, status: order.status, total: order.total, deliveryFee: order.deliveryFee, paidTotal: order.paidTotal, balance: order.balance })),
   };
 }
 
 export async function closeDeliveryRoute(db: D1Database, routeId: string, payload: Record<string, unknown>) {
-  requiredOperationId(payload);
-  const snapshot = await loadDeliveryRoute(db, routeId);
+  const operationId = requiredOperationId(payload);
+  let snapshot = await loadDeliveryRoute(db, routeId);
   if (snapshot.route.status === "CLOSED") return { ...snapshot, idempotent: true };
-  if (snapshot.pendingOrders.length && payload.acknowledgePending !== true) {
-    throw new OrderError(
-      `La ruta todavía tiene ${snapshot.pendingOrders.length} pedido${snapshot.pendingOrders.length === 1 ? "" : "s"} pendiente${snapshot.pendingOrders.length === 1 ? "" : "s"}. Revisalos o confirmá expresamente que querés cerrar la ruta sin borrar ni cambiar esos pedidos.`,
-      409,
-      "ROUTE_PENDING_ORDERS",
-      "Ruta con pedidos pendientes",
-      { pendingOrders: snapshot.pendingOrders },
-    );
+  const decisions = asRow(payload.decisions);
+  const missing = snapshot.pendingOrders.filter((order) => !["DELIVERED", "NOT_DELIVERED"].includes(cleanText(decisions[order.id], 20).toUpperCase()));
+  if (missing.length) {
+    throw new OrderError(`Indicá Entregado o No entregado para ${missing.length} pedido${missing.length === 1 ? "" : "s"}. La ruta, los pedidos, pagos e inventario conservaron su estado actual.`, 409, "ROUTE_DECISIONS_REQUIRED", "Decisiones incompletas", { pendingOrders: missing });
   }
+  for (const pending of snapshot.pendingOrders) {
+    if (cleanText(decisions[pending.id], 20).toUpperCase() !== "DELIVERED") continue;
+    let order = await loadOrder(db, pending.id);
+    if (!order || order.status === "DELIVERED") continue;
+    if (order.status === "CONFIRMED") {
+      const prepared = (await prepareOrder(db, order.id, { operationId: `${operationId}:${order.id}:prepare`, version: order.version })).order;
+      if (!prepared) throw new OrderError("El pedido dejó de estar disponible durante el cierre. Actualizá la ruta; permanece abierta y no se registraron pagos ni movimientos adicionales de inventario.", 409, "ROUTE_ORDER_CHANGED", "Pedido actualizado");
+      order = prepared;
+    }
+    if (order.status !== "PREPARED") {
+      throw new OrderError(`${order.orderNumber} no está Confirmado ni Preparado. Preparalo antes de cerrar la ruta como entregado; la ruta sigue abierta y no se registraron pagos ni movimientos adicionales de inventario.`, 409, "ROUTE_ORDER_NOT_READY", "Pedido no listo");
+    }
+    await deliverOrder(db, order.id, { operationId: `${operationId}:${order.id}:deliver`, version: order.version });
+  }
+  snapshot = await loadDeliveryRoute(db, routeId);
   const now = new Date().toISOString();
   const result = await db.prepare("UPDATE delivery_routes SET status='CLOSED',closed_at=? WHERE id=? AND status='OPEN'")
     .bind(now, routeId).run();

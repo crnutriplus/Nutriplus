@@ -5,7 +5,7 @@ const NAVIGATION_KEY = "__nutriplus_navigation__";
 type BoundaryState = { [NAVIGATION_KEY]: "boundary" };
 type ScreenState = { [NAVIGATION_KEY]: "screen"; section: AppSection; sequence: number };
 type NavigationState = BoundaryState | ScreenState;
-type HistoryLike = Pick<History, "state" | "back" | "pushState" | "replaceState">;
+type HistoryLike = Pick<History, "state" | "back" | "forward" | "pushState" | "replaceState">;
 type PopStateTarget = Pick<Window, "addEventListener" | "removeEventListener">;
 
 export type NavigationController = {
@@ -76,7 +76,7 @@ export function installAppNavigation(
     cancelExit() {
       if (!exitPending || exiting) return;
       exitPending = false;
-      history.pushState(current, "");
+      history.forward();
     },
     confirmExit() {
       if (!exitPending || exiting) return;

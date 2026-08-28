@@ -5,12 +5,13 @@ import { installAppNavigation } from "../lib/app-navigation.ts";
 
 function harness(initialState = null) {
   const listeners = new Set();
-  const calls = { replace: [], push: [], back: 0, exits: 0, sections: [], closeLayer: false };
+  const calls = { replace: [], push: [], back: 0, forward: 0, exits: 0, sections: [], closeLayer: false };
   const history = {
     state: initialState,
     replaceState(state) { this.state = state; calls.replace.push(state); },
     pushState(state) { this.state = state; calls.push.push(state); },
     back() { calls.back += 1; },
+    forward() { calls.forward += 1; },
   };
   const target = {
     addEventListener(type, listener) { if (type === "popstate") listeners.add(listener); },
@@ -50,13 +51,21 @@ test("Atrás closes one temporary layer before changing section", () => {
   assert.equal(app.calls.push.at(-1).section, "products");
 });
 
-test("Cancel restores one boundary entry and remount does not grow history", () => {
+test("Cancel rearms the same guard without growing history and remount does not add entries", () => {
   const app = harness();
+  const pushes = app.calls.push.length;
   app.target.pop({ __nutriplus_navigation__: "boundary" });
   app.controller.cancelExit();
-  assert.equal(app.calls.push.length, 2);
+  assert.equal(app.calls.forward, 1);
+  assert.equal(app.calls.push.length, pushes);
+  for (let cycle = 0; cycle < 20; cycle += 1) {
+    app.target.pop({ __nutriplus_navigation__: "boundary" });
+    app.controller.cancelExit();
+  }
+  assert.equal(app.calls.forward, 21);
+  assert.equal(app.calls.push.length, pushes);
   app.controller.dispose();
-  const remount = harness(app.calls.push.at(-1));
+  const remount = harness(app.calls.push[0]);
   assert.equal(remount.calls.replace.length, 0);
   assert.equal(remount.calls.push.length, 0);
 });

@@ -19,6 +19,9 @@ export type OrdersPrintModel = {
     phone: string;
     address: string;
     products: string[];
+    subtotal: number;
+    discountTotal: number;
+    deliveryFee: number;
     orderTotal: number;
     paidTotal: number;
     amountToCollect: number;
@@ -63,12 +66,14 @@ export async function buildOrdersPrintModel(db: D1Database, rawDate: unknown): P
   const orders = (await Promise.all(result.results.map((row) => loadOrder(db, row.id)))).filter((order) => order !== null);
   const rows = orders.map((order, index) => {
     const products = (order.lines || []).map((line: PrintLine) => `${line.productName} × ${line.quantity}`);
-    if (order.deliveryFee > 0) products.push(`Envío ${crc(order.deliveryFee)}`);
     return {
       position: index + 1,
       phone: order.phoneRaw || order.phoneNormalized || "-",
       address: order.deliveryAddress || order.deliveryInstructions || "Sin dirección",
       products,
+      subtotal: order.subtotal,
+      discountTotal: order.discountTotal,
+      deliveryFee: order.deliveryFee,
       orderTotal: order.total,
       paidTotal: order.paidTotal,
       amountToCollect: order.balance,
@@ -113,7 +118,7 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   const pageSize: [number, number] = [841.89, 595.28];
   const margin = 24;
   const widths = [26, 88, 188, 263, 91, 30, 30, 30];
-  const headers = ["#", "Teléfono", "Dirección", "Productos", "Total", "E", "S", "T"];
+  const headers = ["#", "Teléfono", "Dirección", "Productos", "Totales", "E", "S", "T"];
   const colors = {
     green: rgb(40 / 255, 94 / 255, 63 / 255),
     greenDark: rgb(25 / 255, 59 / 255, 43 / 255),
@@ -168,12 +173,19 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
       row.phone,
       row.address,
       row.products.join("\n"),
-      crc(row.amountToCollect),
+      [
+        `Subtotal ${crc(row.subtotal)}`,
+        ...(row.discountTotal > 0 ? [`Descuento -${crc(row.discountTotal)}`] : []),
+        `Envío +${crc(row.deliveryFee)}`,
+        `Total ${crc(row.orderTotal)}`,
+        ...(row.paidTotal > 0 ? [`Abonado -${crc(row.paidTotal)}`] : []),
+        `Saldo ${crc(row.amountToCollect)}`,
+      ].join("\n"),
       row.cash ? "X" : "",
       row.sinpe ? "X" : "",
       row.card ? "X" : "",
     ];
-    const lineSets = values.map((value, index) => index === 3
+    const lineSets = values.map((value, index) => index === 3 || index === 4
       ? value.split("\n").flatMap((line) => wrap(line, widths[index] - 7, 7.1))
       : wrap(value, widths[index] - 7, 7.1));
     const rowHeight = Math.max(23, Math.max(...lineSets.map((lines) => lines.length)) * 8.2 + 8);

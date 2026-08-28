@@ -113,7 +113,7 @@ El editor permite buscar por nombre/código, usar el escáner existente, selecci
 
 La ficha del pedido ofrece revisión de stock antes de confirmar, edición por delta, checklist de preparación, entrega total o parcial, cancelación con motivo/consecuencia, reprogramación, ledger de abonos mixtos y orden de ruta persistente. La corrección reabre con motivo, expone consecuencias antes de editar y conserva el delta en inventario y el historial. Las devoluciones registran por línea si la unidad vuelve o no a existencias.
 
-Rutas permite ordenar, imprimir, revisar totales y cerrar con advertencia de pendientes. Historial busca y pagina en servidor y filtra por fecha, tipo, estado y método. Encargos expone la máquina de proveedor, ambos caminos de recepción, cantidades reales, creación/vinculación segura desde No inventario con stock cero, pagos, incorporación posterior a una ruta y entrega normal bajo el mismo NP.
+Rutas permite ordenar, imprimir y revisar totales derivados de `route_orders`. Al abrir la ruta diaria, la interfaz sincroniza allí los pedidos Confirmados/Preparados de esa fecha que todavía no tienen asignación activa. El cierre exige una decisión Entregado/No entregado por cada pendiente: solo Entregado usa la transición y fulfillment existentes; No entregado conserva estado, pagos, inventario y capacidad de reprogramación. Historial busca y pagina en servidor y filtra por fecha, tipo, estado y método. Encargos expone la máquina de proveedor, ambos caminos de recepción, cantidades reales, creación/vinculación segura desde No inventario con stock cero, abono inicial atómico en el ledger existente, incorporación posterior a una ruta y entrega normal bajo el mismo NP.
 
 ## Dinero y tiempo
 

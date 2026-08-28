@@ -160,6 +160,8 @@ type OrderDraft = {
   scheduledDeliveryDate: string;
   estimatedArrivalDate: string;
   expectedPaymentMethod: "" | PaymentMethod;
+  initialPaymentAmount: string;
+  initialPaymentMethod: PaymentMethod;
   deliveryFee: string;
   internalNotes: string;
   deliveryNotes: string;
@@ -190,8 +192,9 @@ type RouteSnapshot = {
     paymentMethods: Record<PaymentMethod, number>;
     shippingTotal: number;
   };
-  pendingOrders: Array<{ id: string; orderNumber: string; customerName: string; status: OrderStatus }>;
+  pendingOrders: Array<{ id: string; orderNumber: string; customerName: string; status: OrderStatus; total: number; deliveryFee: number; paidTotal: number; balance: number }>;
 };
+type RouteDecision = "DELIVERED" | "NOT_DELIVERED";
 type ReceiptDraftLine = { orderLineId: string; productName: string; productId: number | null; quantityReceived: string; pending: number; barcode: string | null };
 
 type Props = {
@@ -235,7 +238,7 @@ const SPECIAL_LABELS: Record<string, string> = {
 
 function operationId(label: string) {
   const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `${label}-${id}`;
+  return `${label.replace(/[^A-Za-z0-9:_-]+/g, "-")}-${id}`;
 }
 
 function costaRicaDate() {
@@ -323,6 +326,8 @@ function emptyDraft(orderType: OrderType, date: string): OrderDraft {
     scheduledDeliveryDate: orderType === "STANDARD" ? date : "",
     estimatedArrivalDate: "",
     expectedPaymentMethod: "",
+    initialPaymentAmount: "",
+    initialPaymentMethod: "SINPE",
     deliveryFee: "0",
     internalNotes: "",
     deliveryNotes: "",
@@ -347,6 +352,8 @@ function orderToDraft(order: OrderRecord): OrderDraft {
     scheduledDeliveryDate: order.scheduledDeliveryDate || "",
     estimatedArrivalDate: order.estimatedArrivalDate || "",
     expectedPaymentMethod: order.expectedPaymentMethod || "",
+    initialPaymentAmount: "",
+    initialPaymentMethod: "SINPE",
     deliveryFee: String(order.deliveryFee),
     internalNotes: order.internalNotes || "",
     deliveryNotes: order.deliveryNotes || "",
@@ -425,6 +432,8 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
   const [routePanelOpen, setRoutePanelOpen] = useState(false);
   const [routePanelLoading, setRoutePanelLoading] = useState(false);
   const [routeCloseConfirm, setRouteCloseConfirm] = useState(false);
+  const [routeDecisions, setRouteDecisions] = useState<Record<string, RouteDecision>>({});
+  const routeCloseOperationId = useRef<string | null>(null);
   const [printing, setPrinting] = useState(false);
   const [orderHistory, setOrderHistory] = useState<OrderHistoryRecord | null>(null);
   const [reopenOpen, setReopenOpen] = useState(false);
@@ -678,6 +687,11 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
       setNotice({ tone: "warning", title: "Descuento inválido", message: "Un descuento no puede superar el subtotal de su producto." });
       return;
     }
+    const editorTotals = draftTotals(editor.lines, editor.deliveryFee);
+    if (!editor.id && editor.orderType === "SPECIAL_ORDER" && editor.initialPaymentAmount && (Number(editor.initialPaymentAmount) < 1 || Number(editor.initialPaymentAmount) > editorTotals.total)) {
+      setNotice({ tone: "warning", title: "Abono inicial inválido", message: `El abono debe ser mayor a cero y no superar el total de ${crc(editorTotals.total)}. El Encargo todavía no fue creado.` });
+      return;
+    }
     setSaving(true);
     try {
       if (!editor.id && !ignoreDuplicate && editor.phone.trim() && editor.scheduledDeliveryDate) {
@@ -704,6 +718,9 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
         internalNotes: editor.internalNotes,
         deliveryNotes: editor.deliveryNotes,
         source: "MANUAL",
+        ...(!editor.id && editor.orderType === "SPECIAL_ORDER" && Number(editor.initialPaymentAmount) > 0 ? {
+          initialPayment: { amount: Math.round(Number(editor.initialPaymentAmount)), method: editor.initialPaymentMethod },
+        } : {}),
         lines: editor.lines.map((line) => ({
           ...(line.id ? { id: line.id } : {}),
           productId: line.productId,
@@ -798,30 +815,48 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
   }, []);
 
   const openRoutePanel = useCallback(async () => {
+    setRouteDecisions({});
+    routeCloseOperationId.current = null;
     setRoutePanelOpen(true);
     setRoutePanelLoading(true);
     try {
       const routeId = await createOrFindRoute(selectedDate);
+      const snapshot = await api<RouteSnapshot>(`/api/delivery-routes/${routeId}`);
+      const assignedIds = new Set(snapshot.orders.filter((order) => order.routeMembership.active).map((order) => order.id));
+      const eligible = orders.filter((order) => ["CONFIRMED", "PREPARED"].includes(order.status));
+      let position = Math.max(0, ...snapshot.orders.filter((order) => order.routeMembership.active).map((order) => order.routeMembership.position));
+      for (const order of eligible) {
+        if (assignedIds.has(order.id)) continue;
+        await api(`/api/delivery-routes/${routeId}/orders`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ orderId: order.id, position: ++position }),
+        });
+      }
       setRouteSnapshot(await api<RouteSnapshot>(`/api/delivery-routes/${routeId}`));
     } catch (error) { showError(error, "No se pudo abrir la ruta del día."); }
     finally { setRoutePanelLoading(false); }
-  }, [createOrFindRoute, selectedDate, showError]);
+  }, [createOrFindRoute, orders, selectedDate, showError]);
 
   const closeRoute = useCallback(async () => {
     if (!routeSnapshot || busyAction) return;
     setBusyAction("close-route");
     try {
+      const closeOperation = routeCloseOperationId.current || operationId("route-close");
+      routeCloseOperationId.current = closeOperation;
       const result = await api<RouteSnapshot>(`/api/delivery-routes/${routeSnapshot.route.id}/close`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operationId: operationId("route-close"), acknowledgePending: true }),
+        body: JSON.stringify({ operationId: closeOperation, decisions: routeDecisions }),
       });
       setRouteSnapshot(result);
       setRouteCloseConfirm(false);
-      setNotice({ tone: "success", title: "Ruta cerrada", message: "El cierre quedó registrado sin reescribir pedidos, pagos ni movimientos de inventario." });
+      setRouteDecisions({});
+      routeCloseOperationId.current = null;
+      setNotice({ tone: "success", title: "Ruta cerrada", message: "Las entregas elegidas quedaron registradas exactamente una vez. Los no entregados siguen pendientes y reprogramables; no se crearon pagos ni movimientos extra de inventario." });
     } catch (error) { showError(error, "No se pudo cerrar la ruta."); }
     finally { setBusyAction(null); }
-  }, [busyAction, routeSnapshot, showError]);
+  }, [busyAction, routeDecisions, routeSnapshot, showError]);
 
   const downloadPrint = useCallback(async () => {
     if (printing) return;
@@ -953,6 +988,21 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
   }, [createOrFindRoute, loadOrders, orders, routeBusy, selectedDate, showError]);
 
   const totals = editor ? draftTotals(editor.lines, editor.deliveryFee) : null;
+  const routeCloseSummary = useMemo(() => {
+    const pending = routeSnapshot?.pendingOrders || [];
+    const delivered = pending.filter((order) => routeDecisions[order.id] === "DELIVERED");
+    const notDelivered = pending.filter((order) => routeDecisions[order.id] === "NOT_DELIVERED");
+    return {
+      total: pending.length,
+      delivered: delivered.length,
+      notDelivered: notDelivered.length,
+      amount: delivered.reduce((sum, order) => sum + order.total, 0),
+      shipping: delivered.reduce((sum, order) => sum + order.deliveryFee, 0),
+      paid: delivered.reduce((sum, order) => sum + order.paidTotal, 0),
+      balance: delivered.reduce((sum, order) => sum + order.balance, 0),
+      complete: pending.length > 0 && delivered.length + notDelivered.length === pending.length,
+    };
+  }, [routeDecisions, routeSnapshot]);
   const allPrepared = Boolean(selected?.lines?.length) && selected!.lines!.every((line) => preparedChecks.has(line.id));
   const selectedSpecialStatus = selected?.specialOrder?.status || selected?.specialOrderStatus || null;
   const canConfirmSelected = Boolean(selected && (selected.status === "REOPENED"
@@ -1005,7 +1055,7 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
           <p className="orders-products">{order.productSummary || `${order.lineCount} productos`} </p>
           <div className="orders-meta"><span><CalendarDays />{dateLabel(order.scheduledDeliveryDate)}</span>{order.phoneRaw && <span><Phone />{order.phoneRaw}</span>}{order.deliveryAddress && <span><MapPin />{order.deliveryAddress}</span>}</div>
           {order.orderType === "SPECIAL_ORDER" && <div className="orders-special-state"><ShoppingBag />{SPECIAL_LABELS[order.specialOrderStatus || ""] || order.specialOrderStatus}{order.estimatedArrivalDate && <small>{elapsedLabel(order.estimatedArrivalDate)}</small>}</div>}
-          <footer><div><b>{crc(order.total)}</b><PaymentBadge order={order} />{order.expectedPaymentMethod && <small>Esperado: {PAYMENT_LABELS[order.expectedPaymentMethod]}</small>}</div><button className="btn secondary small" onClick={() => void loadDetail(order.id)}><Eye />Abrir</button></footer>
+          <footer><div><b>{crc(order.total)}</b>{order.discountTotal > 0 && <small>Descuento: -{crc(order.discountTotal)}</small>}{order.paidTotal > 0 && <small>Abonado: -{crc(order.paidTotal)}</small>}<small>Saldo pendiente: {crc(order.balance)}</small><PaymentBadge order={order} />{order.expectedPaymentMethod && <small>Esperado: {PAYMENT_LABELS[order.expectedPaymentMethod]}</small>}</div><button className="btn secondary small" onClick={() => void loadDetail(order.id)}><Eye />Abrir</button></footer>
         </div>
       </article>)}
     </section>}
@@ -1024,6 +1074,7 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
           <label className="field wide"><span>Indicaciones de entrega</span><input value={editor.deliveryInstructions} onChange={(event) => setEditor({ ...editor, deliveryInstructions: event.target.value })} /></label>
           <label className="field"><span>Fecha programada de entrega</span><input type="date" value={editor.scheduledDeliveryDate} onChange={(event) => setEditor({ ...editor, scheduledDeliveryDate: event.target.value })} /></label>
           {editor.orderType === "SPECIAL_ORDER" && <label className="field"><span>Fecha estimada de llegada</span><input type="date" value={editor.estimatedArrivalDate} onChange={(event) => setEditor({ ...editor, estimatedArrivalDate: event.target.value })} /></label>}
+          {editor.orderType === "SPECIAL_ORDER" && !editor.id && <><label className="field"><span>Abono inicial opcional</span><input type="number" min="1" step="1" value={editor.initialPaymentAmount} onChange={(event) => setEditor({ ...editor, initialPaymentAmount: event.target.value })} placeholder="0" /><small className="hint">Se registrará como pago real, no como venta.</small></label><label className="field"><span>Método del abono</span><select value={editor.initialPaymentMethod} disabled={!editor.initialPaymentAmount} onChange={(event) => setEditor({ ...editor, initialPaymentMethod: event.target.value as PaymentMethod })}>{Object.entries(PAYMENT_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label></>}
           <label className="field"><span>Método esperado de pago</span><select value={editor.expectedPaymentMethod} onChange={(event) => setEditor({ ...editor, expectedPaymentMethod: event.target.value as OrderDraft["expectedPaymentMethod"] })}><option value="">Sin definir</option>{Object.entries(PAYMENT_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><small className="hint">Es una expectativa operativa; no registra dinero recibido.</small></label>
           <label className="field"><span>Costo de entrega</span><input type="number" min="0" step="1" value={editor.deliveryFee} onChange={(event) => setEditor({ ...editor, deliveryFee: event.target.value })} /></label>
         </div>
@@ -1051,7 +1102,7 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
           <label className="field wide"><span>Notas para la entrega</span><textarea value={editor.deliveryNotes} onChange={(event) => setEditor({ ...editor, deliveryNotes: event.target.value })} /></label>
         </div>
 
-        {totals && <section className="orders-totals"><span>Subtotal <b>{crc(totals.subtotal)}</b></span><span>Descuentos <b>-{crc(totals.discounts)}</b></span><span>Entrega <b>{crc(totals.delivery)}</b></span><strong>Total <b>{crc(totals.total)}</b></strong></section>}
+        {totals && <section className="orders-totals"><span>Subtotal <b>{crc(totals.subtotal)}</b></span>{totals.discounts > 0 && <span>Descuento <b>-{crc(totals.discounts)}</b></span>}<span>Envío <b>+{crc(totals.delivery)}</b></span><strong>Total <b>{crc(totals.total)}</b></strong></section>}
         <footer className="orders-editor-actions"><button type="button" className="btn secondary" onClick={() => setEditor(null)}>Cancelar</button><button className="btn primary" disabled={saving}>{saving ? <Loader2 className="spin" /> : <Save />}{editor.id ? "Guardar cambios" : "Guardar borrador"}</button></footer>
       </form>
     </Modal>}
@@ -1066,10 +1117,10 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
     {selected && !editor && <Modal label={`Pedido ${selected.orderNumber}`} onClose={() => setSelected(null)} wide>
       <div className="orders-detail">
         <header className="orders-modal-head"><div><span className="eyebrow">{selected.orderNumber}</span><h2>{selected.customerName}</h2><p>{STATUS_LABELS[selected.status]} · Actualizado {dateTimeLabel(selected.updatedAt)}</p></div><button className="icon-btn" onClick={() => setSelected(null)} aria-label="Cerrar pedido"><X /></button></header>
-        <div className="orders-detail-summary"><span><b>{crc(selected.total)}</b><small>Total</small></span><span><b>{crc(selected.paidTotal)}</b><small>Pagado real</small></span><span><b>{crc(selected.balance)}</b><small>Saldo</small></span><span><b>{selected.expectedPaymentMethod ? PAYMENT_LABELS[selected.expectedPaymentMethod] : "Sin definir"}</b><small>Método esperado</small></span></div>
+        <div className="orders-detail-summary"><span><b>{crc(selected.subtotal)}</b><small>Subtotal productos</small></span>{selected.discountTotal > 0 && <span><b>-{crc(selected.discountTotal)}</b><small>Descuento</small></span>}<span><b>+{crc(selected.deliveryFee)}</b><small>Envío</small></span><span><b>{crc(selected.total)}</b><small>Total del pedido</small></span>{selected.paidTotal > 0 && <span><b>-{crc(selected.paidTotal)}</b><small>Abonado</small></span>}<span><b>{crc(selected.balance)}</b><small>Saldo pendiente</small></span><span><b>{selected.expectedPaymentMethod ? PAYMENT_LABELS[selected.expectedPaymentMethod] : "Sin definir"}</b><small>Método esperado</small></span></div>
         <section className="orders-detail-info"><div><UserRound /><span><b>{selected.customerName}</b><small>{selected.phoneRaw || "Sin teléfono"}</small></span></div><div><MapPin /><span><b>{selected.deliveryAddress || "Sin dirección"}</b><small>{selected.deliveryInstructions || "Sin indicaciones"}</small></span></div><div><CalendarDays /><span><b>{dateLabel(selected.scheduledDeliveryDate)}</b><small>Fecha programada de entrega</small></span></div></section>
         {selected.orderType === "SPECIAL_ORDER" && <section className="orders-special-detail"><ShoppingBag /><div><b>{SPECIAL_LABELS[selected.specialOrder?.status || selected.specialOrderStatus || ""] || selected.specialOrder?.status}</b><span>Solicitud: {dateTimeLabel(selected.specialOrder?.requestedAt || selected.createdAt)}</span>{selected.estimatedArrivalDate && <span>Estimada: {dateLabel(selected.estimatedArrivalDate)} · {elapsedLabel(selected.estimatedArrivalDate)}</span>}<small>{selected.receiptResolvedAt ? "Recepción resuelta" : "La recepción todavía no autoriza inventario ni confirmación."}</small></div></section>}
-        <section className="orders-detail-lines"><header><b>Productos</b><span>{selected.lines?.reduce((sum, line) => sum + line.quantity, 0) || 0} unidades</span></header>{selected.lines?.map((line) => <article key={line.id}><div><b>{line.productName}</b><small>{line.productId ? `Vinculado a inventario #${line.productId}` : "Producto manual · no afecta inventario"}</small></div><span>{line.quantity} × {crc(line.unitPriceSold)}</span><strong>{crc(line.lineTotal)}</strong></article>)}</section>
+        <section className="orders-detail-lines"><header><b>Productos</b><span>{selected.lines?.reduce((sum, line) => sum + line.quantity, 0) || 0} unidades</span></header>{selected.lines?.map((line) => <article key={line.id}><div><b>{line.productName}</b><small>{line.productId ? `Vinculado a inventario #${line.productId}` : "Producto manual · no afecta inventario"}{line.discountAmount > 0 ? ` · Descuento: -${crc(line.discountAmount)}` : ""}</small></div><span>{line.quantity} × {crc(line.unitPriceSold)}</span><strong>{crc(line.lineTotal)}</strong></article>)}</section>
         <section className="orders-payment-ledger"><header><div><WalletCards /><span><b>Pagos reales</b><small>Ledger separado del método esperado</small></span></div>{selected.status !== "CANCELLED" && selected.balance > 0 && <button className="btn secondary small" onClick={() => { setPaymentAmount(String(selected.balance)); setPaymentOpen(true); }}><Plus />Registrar abono</button>}</header>{selected.payments?.length ? selected.payments.map((payment) => <article key={payment.id}><span><b>{payment.type === "PAYMENT" ? PAYMENT_LABELS[payment.method] : "Reversión"}</b><small>{dateTimeLabel(payment.createdAt)}{payment.reference ? ` · ${payment.reference}` : ""}</small></span><strong className={payment.type === "PAYMENT" ? "" : "reversal"}>{payment.type === "PAYMENT" ? "+" : "-"}{crc(payment.amount)}</strong></article>) : <p>Todavía no hay pagos registrados.</p>}</section>
         {orderHistory && <section className="orders-timeline"><header><History /><div><b>Historial del pedido</b><small>Estados y operaciones conservados en orden cronológico</small></div></header><div>{[
           ...orderHistory.statusEvents.map((event) => ({ createdAt: String(event.created_at), label: eventLabel("", STATUS_LABELS[String(event.to_status) as OrderStatus] || String(event.to_status)), detail: event.reason ? String(event.reason) : "Cambio de estado" })),
@@ -1145,8 +1196,8 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
       <div className="route-dashboard"><header className="orders-modal-head"><div><span className="eyebrow">Operación del día</span><h2>Ruta · {dateLabel(routeSnapshot?.route.date || selectedDate)}</h2><p>{routeSnapshot?.route.label || "Entregas NutriPlus"}</p></div><button className="icon-btn" onClick={() => setRoutePanelOpen(false)}><X /></button></header>{routePanelLoading || !routeSnapshot ? <div className="orders-loading"><Loader2 className="spin" />Calculando la ruta…</div> : <><div className="route-status-line"><span className={`orders-status ${routeSnapshot.route.status === "CLOSED" ? "delivered" : "confirmed"}`}>{routeSnapshot.route.status === "CLOSED" ? "Ruta cerrada" : "Ruta abierta"}</span>{routeSnapshot.route.closedAt && <small>Cerrada {dateTimeLabel(routeSnapshot.route.closedAt)}</small>}<div><button className="btn secondary small" onClick={() => void downloadPrint()} disabled={printing}><Printer />Imprimir</button>{routeSnapshot.route.status === "OPEN" && <button className="btn primary small" onClick={() => routeSnapshot.pendingOrders.length ? setRouteCloseConfirm(true) : void closeRoute()}><Check />Cerrar ruta</button>}</div></div><section className="route-summary-grid"><span><b>{routeSnapshot.summary.delivered}</b><small>Entregados</small></span><span><b>{routeSnapshot.summary.cancelled}</b><small>Cancelados</small></span><span><b>{routeSnapshot.summary.reprogrammed}</b><small>Reprogramados</small></span><span><b>{routeSnapshot.summary.pending}</b><small>Pendientes</small></span><span><b>{crc(routeSnapshot.summary.totalDelivered)}</b><small>Total entregado</small></span><span><b>{crc(routeSnapshot.summary.totalCollected)}</b><small>Total cobrado</small></span><span><b>{crc(routeSnapshot.summary.balancePending)}</b><small>Saldo pendiente</small></span><span><b>{crc(routeSnapshot.summary.shippingTotal)}</b><small>Total envíos</small></span></section><section className="route-payment-grid">{Object.entries(routeSnapshot.summary.paymentMethods).map(([method, amount]) => <span key={method}><b>{crc(amount)}</b><small>{PAYMENT_LABELS[method as PaymentMethod]}</small></span>)}</section><section className="route-orders-list"><header><b>Pedidos de la ruta</b><span>{routeSnapshot.orders.length}</span></header>{routeSnapshot.orders.map((order) => <article className={order.routeMembership.active ? "" : "removed"} key={order.id}><span className="route-position">{order.routeMembership.position}</span><div><b>{order.orderNumber} · {order.customerName}</b><small>{order.routeMembership.active ? STATUS_LABELS[order.status] : `Reprogramado a ${dateLabel(order.scheduledDeliveryDate)}`} · saldo {crc(order.balance)}</small></div><button className="btn secondary small" onClick={() => { setRoutePanelOpen(false); void loadDetail(order.id); }}><Eye />Abrir</button></article>)}</section></>}</div>
     </Modal>}
 
-    {routeCloseConfirm && routeSnapshot && <Modal label="Cerrar ruta con pendientes" onClose={() => setRouteCloseConfirm(false)}>
-      <div className="orders-confirm-card"><header className="orders-modal-head"><div><span className="eyebrow">Confirmación explícita</span><h2>La ruta tiene pedidos pendientes</h2><p>Cerrar la ruta no cancela, entrega ni borra esos pedidos. Permanecerán en su estado actual.</p></div><button className="icon-btn" onClick={() => setRouteCloseConfirm(false)}><X /></button></header><div className="pending-route-orders">{routeSnapshot.pendingOrders.map((order) => <article key={order.id}><b>{order.orderNumber} · {order.customerName}</b><small>{STATUS_LABELS[order.status]}</small></article>)}</div><div className="orders-confirm-actions"><button className="btn secondary" onClick={() => setRouteCloseConfirm(false)}>Volver a revisar</button><button className="btn primary" disabled={Boolean(busyAction)} onClick={() => void closeRoute()}><Check />Cerrar y conservar pendientes</button></div></div>
+    {routeCloseConfirm && routeSnapshot && <Modal label="Revisar cierre de ruta" onClose={() => setRouteCloseConfirm(false)} wide>
+      <div className="orders-confirm-card"><header className="orders-modal-head"><div><span className="eyebrow">Decisión por pedido</span><h2>Revisar cierre de ruta</h2><p>Indicá expresamente qué se entregó. No se registrarán pagos ni se volverá a descontar inventario.</p></div><button className="icon-btn" onClick={() => setRouteCloseConfirm(false)}><X /></button></header><div className="pending-route-orders">{routeSnapshot.pendingOrders.map((order) => <article key={order.id}><div><b>{order.orderNumber} · {order.customerName}</b><small>{STATUS_LABELS[order.status]} · total {crc(order.total)} · abonado {crc(order.paidTotal)} · saldo {crc(order.balance)}</small></div><div className="route-decision"><button className={routeDecisions[order.id] === "DELIVERED" ? "active delivered" : ""} onClick={() => setRouteDecisions((current) => ({ ...current, [order.id]: "DELIVERED" }))}>Entregado</button><button className={routeDecisions[order.id] === "NOT_DELIVERED" ? "active pending" : ""} onClick={() => setRouteDecisions((current) => ({ ...current, [order.id]: "NOT_DELIVERED" }))}>No entregado</button></div></article>)}</div><section className="route-summary-grid"><span><b>{routeCloseSummary.total}</b><small>Total pedidos</small></span><span><b>{routeCloseSummary.delivered}</b><small>Entregados</small></span><span><b>{routeCloseSummary.notDelivered}</b><small>No entregados</small></span><span><b>{crc(routeCloseSummary.amount)}</b><small>Monto entregado</small></span><span><b>{crc(routeCloseSummary.shipping)}</b><small>Envíos entregados</small></span><span><b>{crc(routeCloseSummary.paid)}</b><small>Abonos registrados</small></span><span><b>{crc(routeCloseSummary.balance)}</b><small>Saldos pendientes</small></span></section><div className="orders-confirm-actions"><button className="btn secondary" onClick={() => setRouteCloseConfirm(false)}>Volver a revisar</button><button className="btn primary" disabled={Boolean(busyAction) || !routeCloseSummary.complete} onClick={() => void closeRoute()}>{busyAction ? <Loader2 className="spin" /> : <Check />}Confirmar cierre</button></div></div>
     </Modal>}
   </div>;
 }
