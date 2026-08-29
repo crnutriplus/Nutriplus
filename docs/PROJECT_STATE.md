@@ -2,17 +2,17 @@
 
 ## Production
 
-- Version: v2.24
-- Checkpoint: 45
-- Commit: `d23aa47f36ca9a0ff011c1f06eb869442d7a1f8d`
-- Deployment: `appgdep_6a930e8e0abc8191bbfe7762a40ecfc6`
+- Version: v2.25
+- Checkpoint: 46
+- Commit: `e45a944983076d4d5230e1eb74a16c9cdf148d48`
+- Deployment: `appgdep_6a93656623d08191a39700b0f488086b`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0017_equal_microchip.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- v2.25 está preparada para la puerta final: producto inline completo con escáner/cálculo, recuperación segura de pending huérfano, compra pagada visible en Caja con fecha de confirmación y PDF de Ruta sin Cliente. No añade migraciones ni modifica Notifications/Web Push.
+- v2.25 está publicada: producto inline completo con escáner/cálculo, recuperación segura de pending huérfano, compra pagada visible en Caja con fecha de confirmación y PDF de Ruta sin Cliente. No añade migraciones ni modifica Notifications/Web Push.
 
 ## Security
 
