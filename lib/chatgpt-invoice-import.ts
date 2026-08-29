@@ -49,6 +49,22 @@ type ValidatedProduct = {
   asin: string;
   iherbProductId: string;
   reviewStatus: string;
+  grossSubtotalCents: number;
+  explicitDiscountCents: number;
+  allocatedDiscountCents: number;
+  netLineCostCents: number;
+  discountAllocationMethod: "EXPLICIT" | "PROPORTIONAL_ESTIMATE" | "NONE";
+};
+
+export type ImportedInvoicePayment = {
+  method: "CASH" | "SINPE" | "CARD" | "OTHER";
+  type: string;
+  amountCents: number;
+  currency: string;
+  last4: string | null;
+  paidAt: string;
+  cashAffecting: boolean;
+  evidence: string;
 };
 
 export type ChatGptImportSummary = {
@@ -61,6 +77,8 @@ export type ChatGptImportSummary = {
   lineCount: number;
   inventoryUnits: number;
   sourceSha256: string;
+  paymentStatus: "PAID";
+  payments: ImportedInvoicePayment[];
 };
 
 export type ChatGptInvoiceImportResult = {
@@ -123,6 +141,44 @@ function moneyCents(value: unknown, label: string) {
   const cents = Math.round(value * 100);
   if (Math.abs(value - cents / 100) > 0.000001) throw new ChatGptImportError(`${label} debe tener como máximo dos decimales.`);
   return cents;
+}
+
+function optionalMoneyCents(value: unknown, label: string) {
+  return value == null || value === "" ? null : moneyCents(value, label);
+}
+
+function paymentMethod(value: string) {
+  if (/store\s*credit|cr[eé]dito\s*(?:de\s*)?tienda|gift\s*card/i.test(value)) return { method: "OTHER" as const, cashAffecting: false };
+  if (/american express|amex|visa|mastercard|card|tarjeta/i.test(value)) return { method: "CARD" as const, cashAffecting: true };
+  if (/sinpe|transfer/i.test(value)) return { method: "SINPE" as const, cashAffecting: true };
+  if (/cash|efectivo/i.test(value)) return { method: "CASH" as const, cashAffecting: true };
+  return { method: "OTHER" as const, cashAffecting: true };
+}
+
+function safeLast4(value: unknown) {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  return /^\d{4}$/.test(candidate) ? candidate : null;
+}
+
+function redactSensitive(value: unknown, key = ""): unknown {
+  if (/^(?:pan|card_number|account_number|cvv|cvc|pin|otp|password|secret|token)$/i.test(key)) return "[REDACTED]";
+  if (Array.isArray(value)) return value.map((item) => redactSensitive(item));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([childKey, child]) => [childKey, redactSensitive(child, childKey)]));
+  if (typeof value === "string") return value.replace(/\b(?:\d[ -]?){12,19}\b/g, "[REDACTED]");
+  return value;
+}
+
+function allocateByLargestRemainder(total: number, weights: number[]) {
+  if (total <= 0 || !weights.length) return weights.map(() => 0);
+  const weightTotal = weights.reduce((sum, item) => sum + item, 0);
+  if (weightTotal <= 0) return weights.map((_, index) => index === weights.length - 1 ? total : 0);
+  const exact = weights.map((weight) => total * weight / weightTotal);
+  const allocated = exact.map(Math.floor);
+  let remainder = total - allocated.reduce((sum, item) => sum + item, 0);
+  exact.map((value, index) => ({ index, residue: value - allocated[index] }))
+    .sort((a, b) => b.residue - a.residue || a.index - b.index)
+    .forEach(({ index }) => { if (remainder > 0) { allocated[index] += 1; remainder -= 1; } });
+  return allocated;
 }
 
 function dateText(value: unknown) {
@@ -290,7 +346,7 @@ function validateAnalysis(value: unknown) {
   const trackingNumber = optionalText(invoice.tracking_number, "invoice.tracking_number", 160);
   const currency = text(invoice.currency, "invoice.currency", { max: 3 }).toUpperCase();
   if (!/^[A-Z]{3}$/.test(currency)) throw new ChatGptImportError("invoice.currency debe ser un código de moneda de tres letras.");
-  const subtotalCents = moneyCents(invoice.subtotal, "invoice.subtotal");
+  const statedSubtotalCents = moneyCents(invoice.subtotal, "invoice.subtotal");
   const shippingCents = moneyCents(invoice.shipping, "invoice.shipping");
   const taxCents = moneyCents(invoice.tax, "invoice.tax");
   const totalCents = moneyCents(invoice.total, "invoice.total");
@@ -318,11 +374,14 @@ function validateAnalysis(value: unknown) {
     }
     const quantity = quantityValue;
     const unitPriceCents = moneyCents(item.unit_price, `products[${index}].unit_price`);
-    const discountTotalCents = moneyCents(item.discount_total, `products[${index}].discount_total`);
-    const lineSubtotalCents = moneyCents(item.line_subtotal, `products[${index}].line_subtotal`);
-    const grossCents = unitPriceCents * quantity;
-    if (discountTotalCents > grossCents || grossCents - discountTotalCents !== lineSubtotalCents) {
-      throw new ChatGptImportError(`El subtotal de la línea ${lineNumber} no coincide con precio, cantidad y descuento.`);
+    const grossCents = optionalMoneyCents(item.gross_subtotal, `products[${index}].gross_subtotal`) ?? unitPriceCents * quantity;
+    const explicitDiscountCents = optionalMoneyCents(item.explicit_line_discount, `products[${index}].explicit_line_discount`)
+      ?? optionalMoneyCents(item.discount_total, `products[${index}].discount_total`) ?? 0;
+    if (explicitDiscountCents > grossCents) throw new ChatGptImportError(`El descuento de la línea ${lineNumber} supera su subtotal bruto.`);
+    const suppliedNet = optionalMoneyCents(item.net_line_cost, `products[${index}].net_line_cost`)
+      ?? optionalMoneyCents(item.line_subtotal, `products[${index}].line_subtotal`);
+    if (suppliedNet != null && suppliedNet !== grossCents - explicitDiscountCents) {
+      throw new ChatGptImportError(`El costo neto de la línea ${lineNumber} no coincide con su descuento explícito.`);
     }
     const identifiers = item.identifiers == null ? {} : record(item.identifiers, `products[${index}].identifiers`);
     const provenance = item.provenance == null ? {} : record(item.provenance, `products[${index}].provenance`);
@@ -340,14 +399,19 @@ function validateAnalysis(value: unknown) {
       strength: optionalText(item.strength, `products[${index}].strength`, 150),
       quantity,
       unitPriceCents,
-      discountTotalCents,
-      lineSubtotalCents,
+      discountTotalCents: explicitDiscountCents,
+      lineSubtotalCents: grossCents - explicitDiscountCents,
       supplierSku: optionalText(item.supplier_sku, `products[${index}].supplier_sku`, 100).toUpperCase(),
       barcode: validateBarcode(barcode).normalized || "",
       barcodeProvenance: optionalText(provenance.upc_gtin12 || provenance.upc || provenance.ean || provenance.gtin, `products[${index}].provenance`, 80),
       asin: optionalText(identifiers.asin, `products[${index}].identifiers.asin`, 20).toUpperCase(),
       iherbProductId: optionalText(identifiers.iherb_product_id, `products[${index}].identifiers.iherb_product_id`, 100),
       reviewStatus,
+      grossSubtotalCents: grossCents,
+      explicitDiscountCents,
+      allocatedDiscountCents: 0,
+      netLineCostCents: grossCents - explicitDiscountCents,
+      discountAllocationMethod: (explicitDiscountCents ? "EXPLICIT" : "NONE") as ValidatedProduct["discountAllocationMethod"],
     };
   }).sort((left, right) => left.lineNumber - right.lineNumber);
 
@@ -356,15 +420,27 @@ function validateAnalysis(value: unknown) {
   if (products.reduce((sum, product) => sum + product.quantity, 0) !== inventoryUnits) {
     throw new ChatGptImportError("invoice.inventory_units no coincide con la suma de cantidades de productos.");
   }
-  if (products.reduce((sum, product) => sum + product.lineSubtotalCents, 0) !== subtotalCents) {
-    const calculated = products.reduce((sum, product) => sum + product.lineSubtotalCents, 0) / 100;
-    throw new ChatGptImportError(
-      `El total calculado de los productos (${currency} ${calculated.toFixed(2)}) no coincide con el subtotal de la factura (${currency} ${(subtotalCents / 100).toFixed(2)}). Revisá los productos y cantidades antes de continuar. El inventario no fue modificado.`,
-      400,
-      "CHATGPT_TOTAL_INCONSISTENT",
-      "Total inconsistente",
-    );
+  const grossProducts = products.reduce((sum, product) => sum + product.grossSubtotalCents, 0);
+  const explicitDiscounts = products.reduce((sum, product) => sum + product.explicitDiscountCents, 0);
+  const declaredGross = optionalMoneyCents(invoice.gross_subtotal ?? invoice.products_gross_subtotal, "invoice.gross_subtotal") ?? grossProducts;
+  const declaredDiscount = optionalMoneyCents(invoice.discount_total ?? invoice.global_discount, "invoice.discount_total");
+  const declaredNet = optionalMoneyCents(invoice.net_products_total, "invoice.net_products_total")
+    ?? (declaredDiscount != null ? declaredGross - declaredDiscount : statedSubtotalCents);
+  if (declaredGross !== grossProducts || declaredNet < 0 || declaredNet > grossProducts - explicitDiscounts) {
+    throw new ChatGptImportError("El total calculado de los productos no concilia con los subtotales bruto/neto del documento. Revisá el paquete; el inventario no fue modificado.", 400, "CHATGPT_TOTAL_INCONSISTENT", "Total inconsistente");
   }
+  const globalToAllocate = grossProducts - explicitDiscounts - declaredNet;
+  const eligible = products.map((product, index) => ({ product, index })).filter(({ product }) => product.grossSubtotalCents > product.explicitDiscountCents);
+  const allocations = allocateByLargestRemainder(globalToAllocate, eligible.map(({ product }) => product.grossSubtotalCents));
+  eligible.forEach(({ product }, index) => {
+    product.allocatedDiscountCents = allocations[index];
+    product.netLineCostCents = product.grossSubtotalCents - product.explicitDiscountCents - allocations[index];
+    product.discountTotalCents = product.explicitDiscountCents + allocations[index];
+    product.lineSubtotalCents = product.netLineCostCents;
+    if (allocations[index] > 0) product.discountAllocationMethod = "PROPORTIONAL_ESTIMATE";
+  });
+  const subtotalCents = products.reduce((sum, product) => sum + product.netLineCostCents, 0);
+  if (subtotalCents !== declaredNet) throw new ChatGptImportError("No se pudo reconciliar el descuento global al centavo. No se creó la factura ni se modificó el inventario.", 400, "CHATGPT_DISCOUNT_RECONCILIATION_FAILED", "Descuento sin conciliar");
   if (subtotalCents + shippingCents + taxCents !== totalCents) {
     const calculated = (subtotalCents + shippingCents + taxCents) / 100;
     throw new ChatGptImportError(
@@ -375,8 +451,35 @@ function validateAnalysis(value: unknown) {
     );
   }
 
+  const rawPayments = Array.isArray(root.payments) ? root.payments : Array.isArray(invoice.payments) ? invoice.payments : [];
+  const payments: ImportedInvoicePayment[] = rawPayments.map((value, index) => {
+    const item = record(value, `payments[${index}]`);
+    const type = text(item.payment_method ?? item.payment_type ?? item.method, `payments[${index}].payment_method`, { max: 100 });
+    const mapped = paymentMethod(type);
+    return {
+      ...mapped,
+      type,
+      amountCents: moneyCents(item.amount, `payments[${index}].amount`),
+      currency: optionalText(item.currency, `payments[${index}].currency`, 3).toUpperCase() || currency,
+      last4: safeLast4(item.last4 ?? item.card_last4),
+      paidAt: optionalText(item.payment_date ?? item.date, `payments[${index}].payment_date`, 10) || purchaseDate,
+      evidence: optionalText(item.evidence ?? item.provenance, `payments[${index}].evidence`, 500) || "Documento importado",
+    };
+  });
+  if (!payments.length) {
+    const type = optionalText(invoice.payment_method ?? invoice.payment_type, "invoice.payment_method", 100) || "No especificado";
+    payments.push({ ...paymentMethod(type), type, amountCents: totalCents, currency, last4: safeLast4(invoice.last4 ?? invoice.card_last4), paidAt: purchaseDate, evidence: "Documento importado; factura confirmada como pagada por regla del flujo" });
+  }
+  if (payments.some((payment) => payment.currency !== currency) || payments.reduce((sum, payment) => sum + payment.amountCents, 0) !== totalCents) {
+    throw new ChatGptImportError("Los medios de pago no concilian exactamente con el total de la factura. Corregí analysis.json; no se creó la factura ni se modificó el inventario.", 400, "CHATGPT_PAYMENT_RECONCILIATION_FAILED", "Pagos sin conciliar");
+  }
+  const safeRoot = redactSensitive(root) as Record<string, unknown>;
+  safeRoot.payment_status = "PAID";
+  safeRoot.payments = payments.map((payment) => ({ payment_method: payment.type, normalized_method: payment.method, amount: payment.amountCents / 100, currency: payment.currency, last4: payment.last4, payment_date: payment.paidAt, cash_affecting: payment.cashAffecting, evidence: payment.evidence }));
+  safeRoot.products = products.map((product) => ({ ...(redactSensitive((root.products as Record<string, unknown>[])[product.lineNumber - 1]) as Record<string, unknown>), gross_subtotal: product.grossSubtotalCents / 100, explicit_line_discount: product.explicitDiscountCents / 100, allocated_global_discount: product.allocatedDiscountCents / 100, net_line_cost: product.netLineCostCents / 100, discount_allocation_method: product.discountAllocationMethod }));
+
   return {
-    root,
+    root: safeRoot,
     sourceFileName,
     sourceSha256,
     pageCount,
@@ -394,6 +497,7 @@ function validateAnalysis(value: unknown) {
     lineCount,
     inventoryUnits,
     products,
+    payments,
   };
 }
 
@@ -438,6 +542,11 @@ function parsedProduct(product: ValidatedProduct, provider: ParsedInvoice["provi
       unit_price: { value: (product.unitPriceCents / 100).toFixed(2), confidence: 100, page: 1, source: evidenceSource },
       discount_total: { value: (product.discountTotalCents / 100).toFixed(2), confidence: 100, page: 1, source: evidenceSource },
       line_subtotal: { value: (product.lineSubtotalCents / 100).toFixed(2), confidence: 100, page: 1, source: evidenceSource },
+      gross_subtotal: { value: (product.grossSubtotalCents / 100).toFixed(2), confidence: 100, page: 1, source: evidenceSource },
+      explicit_line_discount: { value: (product.explicitDiscountCents / 100).toFixed(2), confidence: 100, page: 1, source: evidenceSource },
+      allocated_global_discount: { value: (product.allocatedDiscountCents / 100).toFixed(2), confidence: product.allocatedDiscountCents ? 70 : 100, page: 1, source: product.allocatedDiscountCents ? "proportional_estimate" : evidenceSource },
+      net_line_cost: { value: (product.netLineCostCents / 100).toFixed(2), confidence: product.allocatedDiscountCents ? 70 : 100, page: 1, source: product.discountAllocationMethod.toLowerCase() },
+      discount_allocation_method: { value: product.discountAllocationMethod, confidence: 100, page: 1, source: evidenceSource },
     },
     warnings,
     specialType: "product",
@@ -562,6 +671,8 @@ export async function parseChatGptInvoiceImport(file: File): Promise<ChatGptInvo
       lineCount: validated.lineCount,
       inventoryUnits: validated.inventoryUnits,
       sourceSha256: actualSha256,
+      paymentStatus: "PAID",
+      payments: validated.payments,
     },
     reviewRequired: reviewIssues.length > 0,
     reviewIssues: [...new Set(reviewIssues)],

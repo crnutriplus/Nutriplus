@@ -79,6 +79,41 @@ test("validates a ChatGPT package and converts it to the existing draft contract
   assert.equal(result.reviewRequired, false);
 });
 
+test("keeps split payments, safe last4 and non-cash store credit", async () => {
+  const value = analysis();
+  value.invoice.subtotal = 141.02;
+  value.invoice.total = 141.02;
+  value.products[0].quantity = 1;
+  value.products[0].unit_price = 141.02;
+  value.products[0].discount_total = 0;
+  value.products[0].line_subtotal = 141.02;
+  value.invoice.inventory_units = 1;
+  value.payments = [
+    { payment_method: "American Express", amount: 127.82, currency: "USD", last4: "7706", payment_date: "2026-07-03", evidence: "American Express x7706" },
+    { payment_method: "Store Credit", amount: 13.20, currency: "USD", payment_date: "2026-07-03", evidence: "Store Credit" },
+  ];
+  const result = await parseChatGptInvoiceImport(packageFile(value));
+  assert.equal(result.summary.paymentStatus, "PAID");
+  assert.equal(result.summary.payments.length, 2);
+  assert.equal(result.summary.payments[0].last4, "7706");
+  assert.equal(result.summary.payments[0].cashAffecting, true);
+  assert.equal(result.summary.payments[1].cashAffecting, false);
+  assert.equal(result.summary.payments.reduce((sum, payment) => sum + payment.amountCents, 0), 14102);
+});
+
+test("allocates a global discount with exact cent reconciliation", async () => {
+  const value = analysis();
+  value.invoice = { ...value.invoice, gross_subtotal: 411.71, discount_total: 46.20, subtotal: 365.51, total: 365.51, line_count: 2, inventory_units: 2 };
+  value.products = [
+    { ...value.products[0], line_number: 1, quantity: 1, unit_price: 200.00, discount_total: 0, line_subtotal: 200.00, supplier_sku: "A" },
+    { ...value.products[0], line_number: 2, quantity: 1, unit_price: 211.71, discount_total: 0, line_subtotal: 211.71, supplier_sku: "B", identifiers: { upc_gtin12: "012345678905" } },
+  ];
+  const result = await parseChatGptInvoiceImport(packageFile(value));
+  const costs = result.parsedInvoice.lines.map((line) => Number(line.fieldEvidence.net_line_cost.value));
+  assert.equal(Math.round(costs.reduce((sum, amount) => sum + amount, 0) * 100), 36551);
+  assert.ok(result.parsedInvoice.lines.every((line) => line.fieldEvidence.discount_allocation_method.value === "PROPORTIONAL_ESTIMATE"));
+});
+
 test("blocks a package when source.sha256 does not match invoice.*", async () => {
   const value = analysis();
   value.source.sha256 = "0".repeat(64);

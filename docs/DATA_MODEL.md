@@ -38,6 +38,8 @@ Relaciones lógicas:
 
 La huella de `inventory_documents` es única. La combinación documento/número de análisis también es única, al igual que la clave de línea dentro de cada documento.
 
+`CHATGPT_IMPORT` conserva en la extracción normalizada el costo bruto/neto por línea, descuentos explícitos o prorrateados y el desglose seguro de pagos. Al confirmar, esos datos alimentan el ledger `finance_expenses` existente con claves idempotentes por documento/medio; las líneas personales permanecen conciliables pero se excluyen del gasto del negocio. Los créditos de tienda quedan como movimiento no monetario y no alteran caja. No se crea una tabla ni una fuente financiera paralela.
+
 ### Movimientos y auditoría de inventario
 
 | Tabla | Propósito |

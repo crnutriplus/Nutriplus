@@ -7,6 +7,14 @@ NutriPlus mantiene dos identificadores independientes:
 
 `package.json` usa SemVer, por lo que representa la versión pública `2.23` como `2.23.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
 
+## 2.24 — 2026-08-29
+
+- Las facturas importadas desde ChatGPT conservan estado pagado, pagos divididos, método, moneda, fecha, procedencia y solo los últimos cuatro dígitos; al confirmar Inventario crean una única salida idempotente por medio en el ledger financiero existente.
+- Los costos netos por línea respetan descuentos explícitos y distribuyen descuentos globales por proporción y mayor resto, con suma exacta en centavos. Las líneas personales siguen conciliables, pero no afectan las finanzas del negocio; Store Credit se registra sin reducir caja.
+- Finanzas admite montos CRC enteros o con dos decimales sin pérdida, y volver desde el detalle de una venta restaura Finanzas/Ventas y su estado mediante el historial real.
+- Facturas permite crear un producto faltante en línea con la API y validación existentes, lo selecciona automáticamente y conserva el borrador sin crear existencias.
+- El PDF de Ruta es monocromático, recupera la numeración consecutiva, integra NP bajo el teléfono, formatea teléfonos de Costa Rica y amplía Productos con ajuste dinámico y paginación.
+
 ## 2.23 — 2026-08-29
 
 - Nuevo módulo móvil **Finanzas / Ventas y gastos**: ventas solo al estado `DELIVERED`, COGS desde snapshots históricos, descuentos y envío separados, caja derivada del ledger de pagos, cuentas por cobrar, rentabilidad por producto/pedido/ruta y cifras trazables.

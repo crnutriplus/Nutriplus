@@ -12,7 +12,7 @@
 
 ## Current development
 
-- NutriPlus v2.23 is published. Finanzas v1 reconoce ventas solo al entregar, conserva costos históricos, separa caja/pagos de ventas, administra gastos, presupuestos y recurrencias explícitas, y exporta Excel/PDF. Importar vive en Ajustes > Datos y la barra principal incluye Finanzas. La salida usa CloseWatcher/Navigation API cuando están disponibles, sin centinelas ni crecimiento artificial del historial. Notifications/Web Push permanece intacto.
+- v2.24 está preparada para la puerta final: pago automático idempotente de facturas CHATGPT_IMPORT, descuentos/costos exactos, exclusión personal, montos CRC decimales, alta en línea de productos, retorno contextual de Finanzas/Ventas y PDF operativo de Ruta en blanco y negro. No añade migraciones ni modifica Notifications/Web Push.
 
 ## Security
 

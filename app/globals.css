@@ -635,6 +635,8 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .status-pill.partial, .status-pill.reviewing { background: #fff1cf; color: #7d6225; }
 .status-pill.draft { background: #edf1eb; color: #5e6b60; }
 .line-omit-btn { flex: 0 0 auto; }
+.inline-product-create { margin-top: 8px; align-self: flex-start; }
+.inline-product-card { width: min(560px, calc(100vw - 24px)); }
 .invoice-line-grid .wide { grid-column: span 2; }
 .barcode-field > div { display: flex; gap: 6px; }
 .barcode-field input { flex: 1; }

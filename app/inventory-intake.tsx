@@ -517,6 +517,9 @@ export function InventoryIntakeModal(props: Props) {
   const [reverseReason, setReverseReason] = useState("");
   const [reversing, setReversing] = useState(false);
   const [pendingVerification, setPendingVerification] = useState<{ operationId: string; documentId: string; lineIds?: string[] } | null>(null);
+  const [createProductLine, setCreateProductLine] = useState<IntakeLineDto | null>(null);
+  const [creatingProduct, setCreatingProduct] = useState(false);
+  const [newProduct, setNewProduct] = useState({ name: "", brand: "", presentation: "", code: "", purchasePriceUsd: "", weightLb: "" });
 
   const updateLine = useCallback((id: string, changes: Partial<IntakeLineDto>, reclassify = true) => {
     lineRevisionRef.current.set(id, (lineRevisionRef.current.get(id) || 0) + 1);
@@ -539,6 +542,41 @@ export function InventoryIntakeModal(props: Props) {
     setMetaDirty(true);
     setDocument((current) => current ? { ...current, ...changes } : current);
   }, []);
+
+  function openCreateProduct(line: IntakeLineDto) {
+    const net = Number(line.fieldEvidence?.net_line_cost?.value || 0);
+    const quantity = Math.max(1, Number(line.billedQuantity || 1));
+    setCreateProductLine(line);
+    setNewProduct({ name: line.name, brand: line.brand, presentation: line.presentation, code: line.barcode || "", purchasePriceUsd: net > 0 ? (net / quantity).toFixed(2) : "", weightLb: "" });
+  }
+
+  async function saveInlineProduct() {
+    if (!createProductLine || !newProduct.name.trim() || creatingProduct) return;
+    setCreatingProduct(true);
+    const mutationId = operationId("invoice-product");
+    try {
+      const result = await apiJson<{ product: ProductRecord; deduplicated?: boolean }>(await fetch("/api/products", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Mutation-Id": mutationId },
+        body: JSON.stringify({ mutationId, name: newProduct.name.trim(), brand: newProduct.brand.trim() || null, presentation: newProduct.presentation.trim() || null, code: newProduct.code.trim() || null,
+          purchasePriceUsd: newProduct.purchasePriceUsd === "" ? null : Number(newProduct.purchasePriceUsd),
+          weightLb: newProduct.weightLb === "" ? null : Number(newProduct.weightLb), quantityAvailable: 0,
+          minimumStock: 0, minimumStockEnabled: false }),
+      }));
+      const product = result.product;
+      onProductsChanged(products.some((item) => item.id === product.id) ? products : [...products, product]);
+      updateLine(createProductLine.id, {
+        matchProductId: product.id, matchNonInventoryId: null, action: "existing", status: "confirmed",
+        match: { source: "inventory", id: product.id, name: product.name, code: product.code, quantityAvailable: product.quantityAvailable },
+      }, false);
+      setCreateProductLine(null);
+      onNotify({ type: "success", text: result.deduplicated
+        ? "El producto ya existía y quedó seleccionado. La factura y su progreso se conservaron."
+        : "Producto creado y seleccionado en esta misma línea. La factura continúa abierta y el inventario todavía no aumentó." });
+    } catch (error) {
+      onNotify({ type: "error", text: `${intakeErrorText(error, "No pudimos crear el producto.")} La factura sigue abierta y no se agregó inventario.`, sticky: true });
+    } finally { setCreatingProduct(false); }
+  }
 
   const resetInvoiceReview = useCallback(() => {
     setDocument(null);
@@ -567,6 +605,8 @@ export function InventoryIntakeModal(props: Props) {
     setSavingLineId(null);
     setConfirmingLineId(null);
     setRemovingLineId(null);
+    setCreateProductLine(null);
+    setCreatingProduct(false);
   }, []);
 
   useEffect(() => {
@@ -1475,7 +1515,7 @@ export function InventoryIntakeModal(props: Props) {
                   <label><span>Presentación</span><input value={line.presentation} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { presentation: event.target.value }, false)} /></label>
                   <label><span>Tamaño / contenido</span><input value={line.size} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { size: event.target.value }, false)} /></label>
                   <label><span>{document.provider === "amazon" ? "ASIN" : document.provider === "iherb" ? "Código iHerb" : "Identificador proveedor"}</span><input value={line.secondaryId} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { secondaryId: event.target.value, secondaryType: document.provider === "amazon" ? "asin" : document.provider === "iherb" ? "iherb" : "other" }, false)} /></label>
-                  <label className="wide"><span>Producto de NutriPlus</span><select disabled={hasMovementHistory || isIgnored} value={line.matchProductId ? `inventory:${line.matchProductId}` : line.matchNonInventoryId ? `no_inventory:${line.matchNonInventoryId}` : ""} onChange={(event) => chooseMatch(line, event.target.value)}><option value="">Seleccionar o crear producto nuevo</option><optgroup label="Inventario">{products.map((product) => <option value={`inventory:${product.id}`} key={`p-${product.id}`}>{product.name}{product.code ? ` · ${product.code}` : ""}</option>)}</optgroup><optgroup label="No inventario">{quotes.map((quote) => <option value={`no_inventory:${quote.id}`} key={`q-${quote.id}`}>{quote.name}{quote.code ? ` · ${quote.code}` : ""}</option>)}</optgroup></select></label>
+                  <label className="wide"><span>Producto de NutriPlus</span><select disabled={hasMovementHistory || isIgnored} value={line.matchProductId ? `inventory:${line.matchProductId}` : line.matchNonInventoryId ? `no_inventory:${line.matchNonInventoryId}` : ""} onChange={(event) => chooseMatch(line, event.target.value)}><option value="">Seleccionar producto existente</option><optgroup label="Inventario">{products.map((product) => <option value={`inventory:${product.id}`} key={`p-${product.id}`}>{product.name}{product.code ? ` · ${product.code}` : ""}</option>)}</optgroup><optgroup label="No inventario">{quotes.map((quote) => <option value={`no_inventory:${quote.id}`} key={`q-${quote.id}`}>{quote.name}{quote.code ? ` · ${quote.code}` : ""}</option>)}</optgroup></select>{!hasMovementHistory && !isIgnored && !line.matchProductId && <button type="button" className="btn secondary small inline-product-create" onClick={() => openCreateProduct(line)}><PackagePlus />Crear producto nuevo</button>}</label>
                   <label><span>Cantidad facturada</span><input inputMode="numeric" value={line.billedQuantity ?? ""} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { billedQuantity: event.target.value === "" ? null : Number(event.target.value) }, false)} /></label>
                   <label><span>Cantidad recibida</span><input inputMode="numeric" value={line.receivedQuantity ?? ""} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { receivedQuantity: event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0) })} /></label>
                   <label><span>Unidades por paquete</span><input inputMode="numeric" value={line.unitsPerPackage} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { unitsPerPackage: Math.max(1, Number(event.target.value) || 1), barcodeLevel: Number(event.target.value) > 1 ? line.barcodeLevel : "unit" })} /></label>
@@ -1547,5 +1587,6 @@ export function InventoryIntakeModal(props: Props) {
     {reanalyzeConfirmOpen && document && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card reanalyze-card"><div className="download-symbol"><Sparkles /></div><span className="eyebrow">Acción administrativa</span><h2>{reanalyzeTarget === "sol" ? "¿Reanalizar con Sol?" : "¿Analizar nuevamente con IA?"}</h2><p>{reanalyzeTarget === "sol" ? <>Se enviará otra vez la factura completa a OpenAI usando <b>gpt-5.6-sol</b>. Esta segunda llamada <b>genera un nuevo consumo</b> y se guardará separada del análisis de Terra.</> : <>Esto enviará otra vez todos los archivos de esta factura a OpenAI usando el modelo principal configurado y <b>generará un nuevo consumo</b>. No se usa el análisis en caché.</>} Los productos ya confirmados y el progreso guardado se conservan.</p>{analysis && <div className="reanalyze-cost"><span>Último análisis</span><b>{costLabel(analysis.estimatedCostUsd)}</b><small>Referencia estimada; el nuevo costo puede variar según páginas y búsquedas.</small></div>}<div className="confirm-actions"><button className="btn secondary" onClick={() => setReanalyzeConfirmOpen(false)} disabled={reanalyzing}>No, conservar análisis</button><button className="btn primary" onClick={() => void reanalyzeInvoice()} disabled={reanalyzing || !aiConfig?.aiAvailable}>{reanalyzing ? <Loader2 className="spin" /> : <Sparkles />}{reanalyzeTarget === "sol" ? "Sí, reanalizar con Sol" : "Sí, generar nuevo consumo"}</button></div></div></div>}
     {pendingBarcode && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card barcode-confirm"><div className="download-symbol"><Barcode /></div><h2>Confirmar código detectado</h2><p>Verificá el número y la presentación antes de guardarlo. No se utilizará hasta que lo confirmés.</p><strong>{pendingBarcode.code}</strong><small>{validateBarcode(pendingBarcode.code).type}</small>{pendingBarcode.sourceUrl && <a className="pending-source-link" href={pendingBarcode.sourceUrl} target="_blank" rel="noreferrer">{pendingBarcode.sourceTitle || pendingBarcode.source}</a>}{pendingBarcode.differences?.map((difference) => <div className="alert warning" key={difference}><AlertCircle />{difference}</div>)}<div className="confirm-actions"><button className="btn secondary" onClick={() => setPendingBarcode(null)}>Cancelar</button><button className="btn primary" onClick={confirmPendingBarcode}><Check />Confirmar código</button></div></div></div>}
     {reverseTarget && <div className="nested-modal" role="dialog" aria-modal="true"><div className="confirm-card reverse-card"><div className="delete-symbol"><RotateCcw /></div><h2>Revertir ingreso</h2><p>Se creará un movimiento contrario sin borrar el historial original. Si ya se vendieron unidades y no hay suficiente inventario, la operación se bloqueará.</p><label className="field"><span>Razón de la reversión</span><textarea value={reverseReason} onChange={(event) => setReverseReason(event.target.value)} placeholder="Ej. cantidad ingresada incorrectamente" /></label><div className="confirm-actions"><button className="btn secondary" onClick={() => setReverseTarget(null)} disabled={reversing}>Cancelar</button><button className="btn danger-solid" onClick={() => void reverseOperation()} disabled={reversing || reverseReason.trim().length < 3}>{reversing ? <Loader2 className="spin" /> : <RotateCcw />}Crear reversión</button></div></div></div>}
+    {createProductLine && <div className="nested-modal" role="dialog" aria-modal="true" aria-label="Crear producto desde factura"><div className="confirm-card inline-product-card"><PackagePlus /><h2>Crear producto nuevo</h2><p>Se guardará con las mismas reglas de Productos y quedará seleccionado en esta línea. La factura no se cerrará ni se agregará inventario hasta confirmar el ingreso.</p><label className="field"><span>Nombre</span><input value={newProduct.name} onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })} required /></label><div className="two"><label className="field"><span>Marca</span><input value={newProduct.brand} onChange={(event) => setNewProduct({ ...newProduct, brand: event.target.value })} /></label><label className="field"><span>Presentación</span><input value={newProduct.presentation} onChange={(event) => setNewProduct({ ...newProduct, presentation: event.target.value })} /></label></div><label className="field"><span>UPC / EAN / GTIN</span><input inputMode="numeric" value={newProduct.code} onChange={(event) => setNewProduct({ ...newProduct, code: event.target.value })} /></label><div className="two"><label className="field"><span>Precio de compra USD</span><input type="number" min="0" step=".01" value={newProduct.purchasePriceUsd} onChange={(event) => setNewProduct({ ...newProduct, purchasePriceUsd: event.target.value })} /></label><label className="field"><span>Peso lb</span><input type="number" min="0" step=".001" value={newProduct.weightLb} onChange={(event) => setNewProduct({ ...newProduct, weightLb: event.target.value })} /></label></div><div className="confirm-actions"><button className="btn secondary" onClick={() => setCreateProductLine(null)} disabled={creatingProduct}>Cancelar</button><button className="btn primary" onClick={() => void saveInlineProduct()} disabled={creatingProduct || !newProduct.name.trim()}>{creatingProduct ? <Loader2 className="spin" /> : <Save />}Guardar y seleccionar</button></div></div></div>}
   </div>;
 }

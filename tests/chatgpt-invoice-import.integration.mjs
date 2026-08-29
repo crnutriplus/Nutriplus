@@ -223,6 +223,7 @@ try {
   assert.equal(firstConfirmation.response.status, 200, JSON.stringify(firstConfirmation.body));
   assert.equal((await DB.prepare("SELECT quantity_available FROM products WHERE code=?").bind("036000291452").first()).quantity_available, 1);
   assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_movements WHERE document_line_id=?").bind(firstLine.id).first()).total), 1);
+  assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM finance_expenses WHERE source_type LIKE 'INVENTORY_INVOICE_%' AND source_id LIKE ?").bind(`${partialImport.body.document.id}:payment:%`).first()).total), 1);
 
   // Simula el estado real encontrado: el movimiento existe, pero la fila procesada dejó de estar en la revisión.
   await DB.prepare("DELETE FROM inventory_document_lines WHERE id=?").bind(firstLine.id).run();
@@ -257,6 +258,7 @@ try {
   });
   assert.equal(secondConfirmation.response.status, 200, JSON.stringify(secondConfirmation.body));
   assert.equal((await DB.prepare("SELECT quantity_available FROM products WHERE code=?").bind("5901234123457").first()).quantity_available, 2);
+  assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM finance_expenses WHERE source_id LIKE ?").bind(`${partialImport.body.document.id}:payment:%`).first()).total), 1, "reprocessing must not duplicate the paid invoice movement");
   const secondRetry = await callJson(`/api/inventory-intake/${partialImport.body.document.id}/confirm`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -310,6 +312,23 @@ try {
   assert.ok(history.body.operations.some((operation) => operation.id === "reversal-chatgpt-partial-2"));
   assert.ok(history.body.operations.some((operation) => operation.id === "ingress-chatgpt-partial-3"));
   assert.equal(history.body.documents.filter((invoice) => invoice.id === partialImport.body.document.id).length, 1);
+
+  const personalImport = await uploadBytes(twoLinePackage({ purchaseNumber: "PERSONAL-EXCLUDE", invoiceBytes: encoder.encode("%PDF-1.4\n% personal exclusion fixture\n%%EOF") }));
+  assert.equal(personalImport.response.status, 201, JSON.stringify(personalImport.body));
+  const [businessLine, personalLine] = personalImport.body.lines;
+  const omitted = await callJson(`/api/inventory-intake/${personalImport.body.document.id}`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ metadataChanged: false, lines: [{ ...personalLine, lineIndex: 1, action: "ignore", status: "ignored", selectedForIngress: false }], deletedLineIds: [], reviewedLineIds: [personalLine.id] }),
+  });
+  assert.equal(omitted.response.status, 200, JSON.stringify(omitted.body));
+  const businessProduct = await DB.prepare("SELECT id FROM products WHERE code=?").bind("036000291452").first();
+  const personalConfirm = await callJson(`/api/inventory-intake/${personalImport.body.document.id}/confirm`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ operationId: "ingress-personal-exclude", lines: [{ ...businessLine, action: "existing", status: "confirmed", matchProductId: Number(businessProduct.id), barcodeConfirmed: true, barcodeLevel: "unit", selected: true }] }),
+  });
+  assert.equal(personalConfirm.response.status, 200, JSON.stringify(personalConfirm.body));
+  const personalExpense = await DB.prepare("SELECT original_amount_minor FROM finance_expenses WHERE source_id LIKE ? LIMIT 1").bind(`${personalImport.body.document.id}:payment:%`).first();
+  assert.equal(Number(personalExpense.original_amount_minor), 600, "only the USD 6.00 business line must enter NutriPlus finance");
 
   const invalidZip = await uploadBytes(encoder.encode("not a zip"));
   assert.equal(invalidZip.response.status, 400);

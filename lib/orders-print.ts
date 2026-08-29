@@ -17,6 +17,7 @@ export type OrdersPrintModel = {
   rows: Array<{
     position: number;
     orderNumber: string;
+    customerName: string;
     phone: string;
     address: string;
     products: string[];
@@ -54,6 +55,12 @@ function safeText(value: string) {
     .trim();
 }
 
+export function formatCostaRicaPhoneForPrint(value: string) {
+  const digits = value.replace(/\D/g, "");
+  const local = digits.length === 11 && digits.startsWith("506") ? digits.slice(3) : digits;
+  return /^\d{8}$/.test(local) ? `${local.slice(0, 4)}-${local.slice(4)}` : safeText(value) || "-";
+}
+
 export async function buildOrdersPrintModel(db: D1Database, rawDate: unknown): Promise<OrdersPrintModel> {
   const date = costaRicaDate(rawDate, "La fecha de impresión");
   if (!date) throw new OrderError("Seleccioná la fecha que querés imprimir. No se generó ningún documento.", 400, "ORDER_PRINT_DATE_REQUIRED", "Fecha requerida");
@@ -70,7 +77,8 @@ export async function buildOrdersPrintModel(db: D1Database, rawDate: unknown): P
     return {
       position: index + 1,
       orderNumber: order.orderNumber,
-      phone: order.phoneRaw || order.phoneNormalized || "-",
+      customerName: order.customerName,
+      phone: formatCostaRicaPhoneForPrint(order.phoneRaw || order.phoneNormalized || "-"),
       address: order.deliveryAddress || order.deliveryInstructions || "Sin dirección",
       products,
       subtotal: order.subtotal,
@@ -119,27 +127,35 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   const bold = await pdf.embedFont(boldBytes, { subset: true });
   const pageSize: [number, number] = [841.89, 595.28];
   const margin = 24;
-  const widths = [70, 82, 165, 242, 97, 30, 30, 30];
-  const headers = ["NP", "Teléfono", "Dirección", "Productos", "Totales", "E", "S", "T"];
+  const widths = [24, 90, 75, 130, 225, 118, 28, 28, 28];
+  const headers = ["N.", "Cliente", "Teléfono", "Dirección", "Productos", "Totales", "E", "S", "T"];
   const colors = {
-    green: rgb(40 / 255, 94 / 255, 63 / 255),
-    greenDark: rgb(25 / 255, 59 / 255, 43 / 255),
-    greenLight: rgb(239 / 255, 246 / 255, 236 / 255),
-    ink: rgb(41 / 255, 50 / 255, 41 / 255),
-    muted: rgb(105 / 255, 116 / 255, 106 / 255),
-    line: rgb(217 / 255, 226 / 255, 215 / 255),
+    ink: rgb(0, 0, 0),
+    muted: rgb(.32, .32, .32),
+    line: rgb(.42, .42, .42),
     white: rgb(1, 1, 1),
-    brown: rgb(132 / 255, 84 / 255, 48 / 255),
+    light: rgb(.94, .94, .94),
   };
 
-  function wrap(value: string, width: number, size: number) {
+  function wrap(value: string, width: number, size: number, font = regular) {
     const words = safeText(value).split(" ").filter(Boolean);
     const lines: string[] = [];
     let current = "";
     words.forEach((word) => {
       const attempt = current ? `${current} ${word}` : word;
-      if (!current || regular.widthOfTextAtSize(attempt, size) <= width) current = attempt;
-      else { lines.push(current); current = word; }
+      if (!current || font.widthOfTextAtSize(attempt, size) <= width) current = attempt;
+      else {
+        lines.push(current);
+        if (font.widthOfTextAtSize(word, size) <= width) current = word;
+        else {
+          let part = "";
+          [...word].forEach((character) => {
+            if (part && font.widthOfTextAtSize(`${part}${character}`, size) > width) { lines.push(part); part = character; }
+            else part += character;
+          });
+          current = part;
+        }
+      }
     });
     if (current) lines.push(current);
     return lines.length ? lines : ["-"];
@@ -148,17 +164,17 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   function addPage() {
     const page = pdf.addPage(pageSize);
     const pageHeight = pageSize[1];
-    page.drawRectangle({ x: 0, y: pageHeight - 66, width: pageSize[0], height: 66, color: colors.greenDark });
-    page.drawText("NUTRIPLUS · HOJA DE PEDIDOS", { x: margin, y: pageHeight - 25, size: 13, font: bold, color: colors.white });
-    page.drawText(`FECHA  ${model.date}`, { x: margin, y: pageHeight - 47, size: 9, font: bold, color: colors.white });
-    page.drawText(`TOTAL  ${crc(model.orderTotal)}`, { x: 285, y: pageHeight - 47, size: 9, font: bold, color: colors.white });
-    page.drawText(`ENVÍO  ${crc(model.shippingTotal)}`, { x: 535, y: pageHeight - 47, size: 9, font: bold, color: colors.white });
+    page.drawText("NUTRIPLUS - RUTA DE ENTREGAS", { x: margin, y: pageHeight - 24, size: 13, font: bold, color: colors.ink });
+    page.drawText(`FECHA  ${model.date}`, { x: margin, y: pageHeight - 45, size: 8.5, font: bold, color: colors.ink });
+    page.drawText(`TOTAL  ${crc(model.orderTotal)}`, { x: 285, y: pageHeight - 45, size: 8.5, font: bold, color: colors.ink });
+    page.drawText(`ENVÍO  ${crc(model.shippingTotal)}`, { x: 535, y: pageHeight - 45, size: 8.5, font: bold, color: colors.ink });
+    page.drawLine({ start: { x: margin, y: pageHeight - 55 }, end: { x: pageSize[0] - margin, y: pageHeight - 55 }, thickness: .8, color: colors.ink });
     const y = pageHeight - 76;
     let x = margin;
     headers.forEach((header, index) => {
-      page.drawRectangle({ x, y: y - 24, width: widths[index], height: 24, color: colors.green });
+      page.drawRectangle({ x, y: y - 24, width: widths[index], height: 24, color: colors.white, borderColor: colors.ink, borderWidth: .7 });
       const textWidth = bold.widthOfTextAtSize(header, 7.2);
-      page.drawText(header, { x: x + Math.max(3, (widths[index] - textWidth) / 2), y: y - 15, size: 7.2, font: bold, color: colors.white });
+      page.drawText(header, { x: x + Math.max(3, (widths[index] - textWidth) / 2), y: y - 15, size: 7.2, font: bold, color: colors.ink });
       x += widths[index];
     });
     return { page, y: y - 24 };
@@ -169,10 +185,11 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
     state.page.drawText("No hay pedidos activos para esta fecha.", { x: margin, y: state.y - 28, size: 10, font: regular, color: colors.muted });
     state.y -= 48;
   }
-  model.rows.forEach((row, rowIndex) => {
+  model.rows.forEach((row) => {
     const values = [
-      `${row.orderNumber}\n#${row.position}`,
-      row.phone,
+      String(row.position),
+      row.customerName,
+      `${row.phone}\n${row.orderNumber}`,
       row.address,
       row.products.join("\n"),
       [
@@ -187,9 +204,12 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
       row.sinpe ? "X" : "",
       row.card ? "X" : "",
     ];
-    const lineSets = values.map((value, index) => index === 3 || index === 4
-      ? value.split("\n").flatMap((line) => wrap(line, widths[index] - 7, 7.1))
-      : wrap(value, widths[index] - 7, 7.1));
+    const lineSets = values.map((value, index) => value.split("\n").flatMap((line) => wrap(
+      line,
+      widths[index] - 9,
+      index === 4 ? 7.3 : 7.1,
+      index === 5 || index >= 6 ? bold : regular,
+    )));
     const rowHeight = Math.max(23, Math.max(...lineSets.map((lines) => lines.length)) * 8.2 + 8);
     if (state.y - rowHeight < 38) state = addPage();
     let x = margin;
@@ -199,20 +219,20 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
         y: state.y - rowHeight,
         width: widths[columnIndex],
         height: rowHeight,
-        color: rowIndex % 2 ? colors.greenLight : colors.white,
+        color: colors.white,
         borderColor: colors.line,
         borderWidth: .4,
       });
       lineSets[columnIndex].forEach((line, lineIndex) => {
         const size = 7.1;
-        const width = regular.widthOfTextAtSize(line, size);
-        const centered = columnIndex === 0 || columnIndex >= 5;
-        const right = columnIndex === 4;
+        const font = columnIndex === 5 || columnIndex >= 6 ? bold : regular;
+        const width = font.widthOfTextAtSize(line, size);
+        const centered = columnIndex === 0 || columnIndex >= 6;
         state.page.drawText(line, {
-          x: centered ? x + (widths[columnIndex] - width) / 2 : right ? x + widths[columnIndex] - width - 4 : x + 4,
+          x: centered ? x + (widths[columnIndex] - width) / 2 : x + 4,
           y: state.y - 12 - lineIndex * 8.2,
           size,
-          font: columnIndex === 4 || columnIndex >= 5 ? bold : regular,
+          font,
           color: colors.ink,
         });
       });
@@ -224,23 +244,23 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   const sectionHeaderHeight = 29;
   if (state.y - sectionHeaderHeight - 42 < 38) state = addPage();
   state.y -= 13;
-  state.page.drawRectangle({ x: margin, y: state.y - sectionHeaderHeight, width: 746, height: sectionHeaderHeight, color: colors.brown });
-  state.page.drawText("PRODUCTOS PARA CARGAR", { x: margin + 10, y: state.y - 18, size: 10, font: bold, color: colors.white });
+  state.page.drawRectangle({ x: margin, y: state.y - sectionHeaderHeight, width: 746, height: sectionHeaderHeight, color: colors.white, borderColor: colors.ink, borderWidth: .8 });
+  state.page.drawText("PRODUCTOS PARA CARGAR", { x: margin + 10, y: state.y - 18, size: 10, font: bold, color: colors.ink });
   state.y -= sectionHeaderHeight;
   if (!model.productsToLoad.length) {
     state.page.drawText("No hay productos confirmados o preparados para consolidar.", { x: margin + 4, y: state.y - 22, size: 8, font: regular, color: colors.muted });
     state.y -= 35;
   }
-  model.productsToLoad.forEach((product, index) => {
+  model.productsToLoad.forEach((product) => {
     const label = `${product.productName} × ${product.quantity}${product.manual ? " · MANUAL / NO INVENTARIO" : ""}`;
     const lines = wrap(label, 730, 8.2);
     const height = Math.max(22, lines.length * 9 + 7);
     if (state.y - height < 38) {
       state = addPage();
-      state.page.drawText("PRODUCTOS PARA CARGAR · continuación", { x: margin, y: state.y - 18, size: 10, font: bold, color: colors.brown });
+      state.page.drawText("PRODUCTOS PARA CARGAR - continuación", { x: margin, y: state.y - 18, size: 10, font: bold, color: colors.ink });
       state.y -= 30;
     }
-    state.page.drawRectangle({ x: margin, y: state.y - height, width: 746, height, color: index % 2 ? colors.greenLight : colors.white, borderColor: colors.line, borderWidth: .4 });
+    state.page.drawRectangle({ x: margin, y: state.y - height, width: 746, height, color: colors.white, borderColor: colors.line, borderWidth: .4 });
     lines.forEach((line, lineIndex) => state.page.drawText(line, { x: margin + 7, y: state.y - 14 - lineIndex * 9, size: 8.2, font: regular, color: colors.ink }));
     state.y -= height;
   });

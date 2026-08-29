@@ -2,6 +2,7 @@ import { ensureDatabase, getD1 } from "@/db";
 import { validateBarcode } from "@/lib/barcodes";
 import { descriptionSignature, descriptionsCompatible, lineFromRow, presentationSignature } from "@/lib/inventory-intake";
 import { documentStatusStatement, loadDocumentMovementRows, progressForLine } from "@/lib/inventory-line-progress";
+import { invoiceFinanceStatements } from "@/lib/inventory-invoice-finance";
 import { normalizeName, productFromRow } from "@/lib/pricing";
 import { requestUserLabel } from "@/lib/request-user";
 
@@ -501,6 +502,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         ));
       }
     });
+
+    statements.push(...await invoiceFinanceStatements(db, document, storedLines.results, now));
 
     statements.push(documentStatusStatement(db, documentId, now));
     statements.push(db.prepare("UPDATE inventory_documents SET confirmed_at=COALESCE(confirmed_at,?),confirmed_by=COALESCE(confirmed_by,?) WHERE id=?")

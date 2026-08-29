@@ -189,6 +189,15 @@ assert.equal(Number(DB.sqlite.prepare("SELECT COUNT(*) AS total FROM finance_exp
 finance = await snapshot();
 assert.equal(finance.metrics.operatingExpenses, 500);
 
+for (const amount of ["30000", "30000.01", "29999.01"]) {
+  const exact = await call("/api/finance/expenses", { method: "POST", body: JSON.stringify({
+    operationId: op(`exact-${amount.replace(".", "-")}`), date: "2026-08-28", category: "OTHER", description: `Monto exacto ${amount}`,
+    amount, currency: "CRC", paymentMethod: "CASH", personal: true,
+  }) });
+  assert.equal(exact.response.status, 200, JSON.stringify(exact.body));
+  assert.equal(exact.body.expense.exactOriginalAmount, Number(amount));
+}
+
 // Factura confirmada solo se vuelve salida de caja mediante evidencia explícita; no duplica COGS.
 DB.sqlite.prepare(`INSERT INTO inventory_documents (
   id,file_fingerprint,file_name,mime_types_json,provider,page_count,file_count,processing_mode,analysis_status,

@@ -216,6 +216,7 @@ type Props = {
   onConsumeScan: () => void;
   onRequestScan: () => void;
   onInventoryChanged: () => Promise<void> | void;
+  onReturnToOrigin?: () => void;
   onCatalogChanged: () => Promise<void> | void;
 };
 
@@ -407,7 +408,7 @@ function PaymentBadge({ order }: { order: OrderRecord }) {
   </span>;
 }
 
-export function OrdersView({ products, quotes, settings, scannedBarcode, onConsumeScan, onRequestScan, onInventoryChanged, onCatalogChanged }: Props) {
+export function OrdersView({ products, quotes, settings, scannedBarcode, onConsumeScan, onRequestScan, onInventoryChanged, onCatalogChanged, onReturnToOrigin }: Props) {
   const today = useMemo(() => costaRicaDate(), []);
   const tomorrow = useMemo(() => addDays(today, 1), [today]);
   const [section, setSection] = useState<OrdersSection>("deliveries");
@@ -467,6 +468,14 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
   const [specialRouteDate, setSpecialRouteDate] = useState(today);
   const [catalogBusy, setCatalogBusy] = useState<string | null>(null);
   const initialDeepLinkHandled = useRef(false);
+  const [detailOrigin, setDetailOrigin] = useState<"orders" | "finance">("orders");
+  const closeDetail = useCallback(() => {
+    const returnToFinance = detailOrigin === "finance";
+    setSelected(null);
+    setOrderHistory(null);
+    setDetailOrigin("orders");
+    if (returnToFinance) window.setTimeout(() => onReturnToOrigin?.(), 0);
+  }, [detailOrigin, onReturnToOrigin]);
 
   useEffect(() => {
     const onBack = (event: Event) => {
@@ -489,12 +498,12 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
       if (close(specialRouteOpen, () => setSpecialRouteOpen(false))) return;
       if (close(duplicateOrders.length > 0, () => setDuplicateOrders([]))) return;
       if (close(Boolean(editor), () => setEditor(null))) return;
-      if (close(Boolean(selected), () => setSelected(null))) return;
+      if (close(Boolean(selected), closeDetail)) return;
       close(routePanelOpen, () => setRoutePanelOpen(false));
     };
     window.addEventListener("nutriplus:navigation-back", onBack);
     return () => window.removeEventListener("nutriplus:navigation-back", onBack);
-  }, [cancelOpen, confirmOpen, deliverOpen, duplicateOrders.length, editor, paymentOpen, receiptOpen, reprogramOpen, reopenOpen, returnOpen, routeCloseConfirm, routePanelOpen, selected, specialRouteOpen]);
+  }, [cancelOpen, closeDetail, confirmOpen, deliverOpen, duplicateOrders.length, editor, paymentOpen, receiptOpen, reprogramOpen, reopenOpen, returnOpen, routeCloseConfirm, routePanelOpen, selected, specialRouteOpen]);
 
   useEffect(() => {
     const deepLinkTimer = window.setTimeout(() => {
@@ -573,8 +582,9 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
 
   useEffect(() => {
     const openFromFinance = (event: Event) => {
-      const orderId = (event as CustomEvent<{ orderId?: string }>).detail?.orderId?.trim();
-      if (orderId) void loadDetail(orderId);
+      const detail = (event as CustomEvent<{ orderId?: string; origin?: string }>).detail;
+      const orderId = detail?.orderId?.trim();
+      if (orderId) { setDetailOrigin(detail?.origin === "finance" ? "finance" : "orders"); void loadDetail(orderId); }
     };
     window.addEventListener("nutriplus:open-order", openFromFinance);
     return () => window.removeEventListener("nutriplus:open-order", openFromFinance);
@@ -1136,9 +1146,9 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
       </div>
     </Modal>}
 
-    {selected && !editor && <Modal label={`Pedido ${selected.orderNumber}`} onClose={() => setSelected(null)} wide>
+    {selected && !editor && <Modal label={`Pedido ${selected.orderNumber}`} onClose={closeDetail} wide>
       <div className="orders-detail">
-        <header className="orders-modal-head"><div><span className="eyebrow">{selected.orderNumber}</span><h2>{selected.customerName}</h2><p>{STATUS_LABELS[selected.status]} · Actualizado {dateTimeLabel(selected.updatedAt)}</p></div><button className="icon-btn" onClick={() => setSelected(null)} aria-label="Cerrar pedido"><X /></button></header>
+        <header className="orders-modal-head"><div><span className="eyebrow">{selected.orderNumber}</span><h2>{selected.customerName}</h2><p>{STATUS_LABELS[selected.status]} · Actualizado {dateTimeLabel(selected.updatedAt)}</p></div><button className="icon-btn" onClick={closeDetail} aria-label="Cerrar pedido"><X /></button></header>
         <div className="orders-detail-summary"><span><b>{crc(selected.subtotal)}</b><small>Subtotal productos</small></span>{selected.discountTotal > 0 && <span><b>-{crc(selected.discountTotal)}</b><small>Descuento</small></span>}<span><b>+{crc(selected.deliveryFee)}</b><small>Envío</small></span><span><b>{crc(selected.total)}</b><small>Total del pedido</small></span>{selected.paidTotal > 0 && <span><b>-{crc(selected.paidTotal)}</b><small>Abonado</small></span>}<span><b>{crc(selected.balance)}</b><small>Saldo pendiente</small></span><span><b>{selected.expectedPaymentMethod ? PAYMENT_LABELS[selected.expectedPaymentMethod] : "Sin definir"}</b><small>Método esperado</small></span></div>
         <section className="orders-detail-info"><div><UserRound /><span><b>{selected.customerName}</b><small>{selected.phoneRaw || "Sin teléfono"}</small></span></div><div><MapPin /><span><b>{selected.deliveryAddress || "Sin dirección"}</b><small>{selected.deliveryInstructions || "Sin indicaciones"}</small></span></div>{(selected.orderType === "STANDARD" || selected.receiptResolvedAt) && <div><CalendarDays /><span><b>{dateLabel(selected.scheduledDeliveryDate)}</b><small>Fecha de entrega al cliente</small></span></div>}</section>
         {selected.orderType === "SPECIAL_ORDER" && <section className="orders-special-detail"><ShoppingBag /><div><b>{SPECIAL_LABELS[selected.specialOrder?.status || selected.specialOrderStatus || ""] || selected.specialOrder?.status}</b><span>Solicitud: {dateTimeLabel(selected.specialOrder?.requestedAt || selected.createdAt)}</span>{selected.estimatedArrivalDate && <span>Estimada: {dateLabel(selected.estimatedArrivalDate)} · {elapsedLabel(selected.estimatedArrivalDate)}</span>}<small>{selected.receiptResolvedAt ? "Recepción resuelta" : "La recepción todavía no autoriza inventario ni confirmación."}</small></div></section>}

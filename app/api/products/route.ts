@@ -52,15 +52,17 @@ export async function POST(request: Request) {
   try {
     const payload = (await request.json()) as Record<string, unknown>;
     const product = parseProductInput(payload, { allowPending: true });
+    const brand = typeof payload.brand === "string" ? payload.brand.trim().slice(0, 200) || null : null;
+    const presentation = typeof payload.presentation === "string" ? payload.presentation.trim().slice(0, 250) || null : null;
     await ensureDatabase();
     const db = getD1();
     const result = await runIdempotentMutation(db, request, payload, async () => {
       const row = await db.prepare(`INSERT OR IGNORE INTO products (
-        name,normalized_name,code,purchase_price_usd_cents,weight_milli_lb,quantity_available,
+        name,normalized_name,code,brand,presentation,purchase_price_usd_cents,weight_milli_lb,quantity_available,
         minimum_stock,minimum_stock_enabled,zero_stock_since,version,created_at,updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,CASE WHEN ?=0 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,1,
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,CASE WHEN ?=0 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,1,
         strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now')) RETURNING *`)
-        .bind(product.name, product.normalizedName, product.code, product.purchasePriceUsdCents, product.weightMilliLb,
+        .bind(product.name, product.normalizedName, product.code, brand, presentation, product.purchasePriceUsdCents, product.weightMilliLb,
           product.quantityAvailable, product.minimumStock, product.minimumStockEnabled ? 1 : 0, product.quantityAvailable).first();
       if (!row) {
         const existing = await db.prepare(`SELECT * FROM products

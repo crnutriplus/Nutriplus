@@ -126,7 +126,7 @@ const beta = await product("Magnesio parcial", "P3-MAG", 10);
 
 // Impresión: un pedido, varios, totales, envío, E/S/T, orden de ruta y consolidado.
 let cashOrder = await createOrder([{ productId: alpha.id, quantity: 2, unitPriceSold: 5000, discountAmount: 500 }], {
-  phone: "7000-1001", expectedPaymentMethod: "CASH", deliveryFee: 1000,
+  phone: "87658076", expectedPaymentMethod: "CASH", deliveryFee: 1000,
 });
 let sinpeOrder = await createOrder([{ productName: "Producto manual físico", quantity: 3, unitPriceSold: 2000 }], {
   phone: "7000-1002", expectedPaymentMethod: "SINPE", deliveryFee: 500,
@@ -149,14 +149,14 @@ const printModelResult = await call("/api/orders/print?date=2026-09-10&format=js
 assert.equal(printModelResult.response.status, 200, JSON.stringify(printModelResult.body));
 const printModel = printModelResult.body;
 assert.equal(printModel.rows.length, 3);
-assert.deepEqual(printModel.rows.map((row) => row.phone), ["7000-1003", "7000-1001", "7000-1002"]);
+assert.deepEqual(printModel.rows.map((row) => row.phone), ["7000-1003", "8765-8076", "7000-1002"]);
 assert.equal(printModel.orderTotal, cardOrder.total + cashOrder.total + sinpeOrder.total);
 assert.equal(printModel.shippingTotal, 1500);
 assert.equal(printModel.amountToCollectTotal, cardOrder.balance + cashOrder.balance + sinpeOrder.balance);
-assert.equal(printModel.rows.find((row) => row.phone === "7000-1001").cash, true);
+assert.equal(printModel.rows.find((row) => row.phone === "8765-8076").cash, true);
 assert.equal(printModel.rows.find((row) => row.phone === "7000-1002").sinpe, true);
 assert.equal(printModel.rows.find((row) => row.phone === "7000-1003").card, true);
-const cashPrintRow = printModel.rows.find((row) => row.phone === "7000-1001");
+const cashPrintRow = printModel.rows.find((row) => row.phone === "8765-8076");
 assert.equal(cashPrintRow.orderNumber, cashOrder.orderNumber);
 assert.equal(cashPrintRow.deliveryFee, 1000);
 assert.equal(cashPrintRow.subtotal, 10000);
@@ -180,6 +180,9 @@ for (let pageNumber = 1; pageNumber <= routePdfDocument.numPages; pageNumber += 
 }
 await loadingRoutePdf.destroy();
 const renderedRouteText = routePdfText.join(" ").replace(/\s+/g, " ");
+assert.match(renderedRouteText, /N\. Cliente Teléfono Dirección Productos Totales E S T/);
+assert.ok(!renderedRouteText.includes("NP Teléfono"), "NP must not be an independent column");
+assert.ok(renderedRouteText.includes("8765-8076"));
 for (const order of [cardOrder, cashOrder, sinpeOrder]) {
   assert.ok(renderedRouteText.includes(order.orderNumber), `the real delivery PDF must show ${order.orderNumber}`);
 }

@@ -97,6 +97,15 @@ function paymentMethod(value: unknown) {
   return clean as (typeof PAYMENT_METHODS)[number];
 }
 
+function moneyMinor(value: unknown, label: string) {
+  const clean = typeof value === "string" ? value.trim() : "";
+  if (!/^(?:\d+)(?:\.\d{1,2})?$/.test(clean)) throw new FinanceError(`${label} debe ser un monto positivo con máximo dos decimales. Corregilo; no se creó ningún movimiento.`, 400, "FINANCE_AMOUNT_INVALID", "Monto inválido");
+  const [whole, decimals = ""] = clean.split(".");
+  const minor = Number(whole) * 100 + Number(decimals.padEnd(2, "0"));
+  if (!Number.isSafeInteger(minor) || minor <= 0) throw new FinanceError(`${label} debe ser mayor que cero. Corregilo; no se creó ningún movimiento.`, 400, "FINANCE_AMOUNT_INVALID", "Monto inválido");
+  return minor;
+}
+
 function expenseFromRow(row: Row) {
   return {
     id: String(row.id),
@@ -106,6 +115,7 @@ function expenseFromRow(row: Row) {
     description: String(row.description),
     amountCrc: Number(row.amount_crc),
     originalAmountMinor: Number(row.original_amount_minor),
+    exactOriginalAmount: String(row.source_type) === "MANUAL_CRC_CENTS" ? Number(row.original_amount_minor) / 100 : String(row.currency) === "USD" ? Number(row.original_amount_minor) / 100 : Number(row.original_amount_minor),
     currency: String(row.currency),
     exchangeRateCrc: Number(row.exchange_rate_crc),
     paymentMethod: String(row.payment_method),
@@ -292,7 +302,8 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
   const businessExpenses = expenses.filter((item) => item.businessScope === "BUSINESS");
   const signedExpense = (item: ReturnType<typeof expenseFromRow>) => item.entryType === "REVERSAL" ? -item.amountCrc : item.amountCrc;
   const operatingExpenses = businessExpenses.filter((item) => item.category !== "INVENTORY_PURCHASE").reduce((sum, item) => sum + signedExpense(item), 0);
-  const allCashOut = businessExpenses.reduce((sum, item) => sum + signedExpense(item), 0);
+  const cashExpenses = businessExpenses.filter((item) => item.sourceType !== "INVENTORY_INVOICE_NON_CASH");
+  const allCashOut = cashExpenses.reduce((sum, item) => sum + signedExpense(item), 0);
   const salesTotal = sales.reduce((sum, sale) => sum + sale.totalIncome, 0);
   const productSales = sales.reduce((sum, sale) => sum + sale.productNet, 0);
   const deliveryIncome = sales.reduce((sum, sale) => sum + sale.deliveryIncome, 0);
@@ -308,7 +319,7 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
   const cashIn = paymentEntries.reduce((sum, item) => sum + item.signedAmount, 0);
   const methods = Object.fromEntries(PAYMENT_METHODS.map((method) => {
     const incoming = paymentEntries.filter((item) => item.method === method).reduce((sum, item) => sum + item.signedAmount, 0);
-    const outgoing = businessExpenses.filter((item) => item.paymentMethod === method).reduce((sum, item) => sum + signedExpense(item), 0);
+    const outgoing = cashExpenses.filter((item) => item.paymentMethod === method).reduce((sum, item) => sum + signedExpense(item), 0);
     return [method, { incoming, outgoing, net: incoming - outgoing }];
   }));
   const today = defaultRange().to;
@@ -334,7 +345,7 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
     return existing;
   };
   sales.forEach((sale) => { day(sale.deliveredDate).sales += sale.totalIncome; });
-  businessExpenses.forEach((item) => { const amount = signedExpense(item); day(item.date).cashOut += amount; if (item.category !== "INVENTORY_PURCHASE") day(item.date).expenses += amount; });
+  businessExpenses.forEach((item) => { const amount = signedExpense(item); if (item.sourceType !== "INVENTORY_INVOICE_NON_CASH") day(item.date).cashOut += amount; if (item.category !== "INVENTORY_PURCHASE") day(item.date).expenses += amount; });
   paymentEntries.forEach((item) => { day(costaRicaDay(item.createdAt)).cashIn += item.signedAmount; });
   const productProfitability = Object.values(lineResult.results.reduce<Record<string, {
     productId: number | null; name: string; units: number; income: number; cogsKnown: number; missingCost: boolean;
@@ -386,7 +397,8 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
       orderNumber: row.order_number ? String(row.order_number) : null, documentDate: row.document_date ? String(row.document_date) : null,
       confirmedAt: String(row.confirmed_at), currency: invoice.currency ? String(invoice.currency) : null,
       suggestedAmount: invoice.total == null ? null : Number(invoice.total),
-      alreadyLinked: expenses.some((expense) => expense.sourceType === "INVENTORY_INVOICE" && expense.sourceId === String(row.id) && expense.entryType === "EXPENSE"),
+      alreadyLinked: expenses.some((expense) => expense.entryType === "EXPENSE" && (expense.sourceType === "INVENTORY_INVOICE" && expense.sourceId === String(row.id)
+        || expense.sourceType.startsWith("INVENTORY_INVOICE_") && expense.sourceId?.startsWith(`${String(row.id)}:payment:`))),
     };
   });
   return {
@@ -432,9 +444,10 @@ export async function createExpense(db: D1Database, payload: Row) {
   if (description.length < 3) throw new FinanceError("Describí el gasto con al menos tres caracteres. No se creó ningún movimiento.", 400, "FINANCE_DESCRIPTION_REQUIRED", "Descripción requerida");
   const currency = text(payload.currency || "CRC", 3).toUpperCase();
   if (!['CRC', 'USD'].includes(currency)) throw new FinanceError("Finanzas v1 admite gastos en CRC o USD. Corregí la moneda; no se creó ningún movimiento.", 400, "FINANCE_CURRENCY_INVALID", "Moneda inválida");
-  const originalAmountMinor = positiveInteger(payload.originalAmountMinor, "El monto original");
+  const exactManualMinor = payload.amount == null ? null : moneyMinor(payload.amount, "El monto original");
+  const originalAmountMinor = exactManualMinor ?? positiveInteger(payload.originalAmountMinor, "El monto original");
   const exchangeRateCrc = currency === "CRC" ? 1 : positiveInteger(payload.exchangeRateCrc, "El tipo de cambio", 100_000);
-  const amountCrc = currency === "CRC" ? originalAmountMinor : Math.round((originalAmountMinor / 100) * exchangeRateCrc);
+  const amountCrc = currency === "CRC" ? (exactManualMinor == null ? originalAmountMinor : Math.max(1, Math.round(originalAmountMinor / 100))) : Math.round((originalAmountMinor / 100) * exchangeRateCrc);
   const method = paymentMethod(payload.paymentMethod ?? payload.method);
   const provider = text(payload.provider, 250) || null;
   const notes = text(payload.notes, 2000) || null;
@@ -442,7 +455,7 @@ export async function createExpense(db: D1Database, payload: Row) {
   const orderId = text(payload.orderId, 160) || null;
   const businessScope = payload.personal === true || text(payload.businessScope, 20).toUpperCase() === "PERSONAL" ? "PERSONAL" : "BUSINESS";
   const invoiceId = text(payload.invoiceId, 160) || null;
-  let sourceType = "MANUAL";
+  let sourceType = currency === "CRC" && exactManualMinor != null ? "MANUAL_CRC_CENTS" : "MANUAL";
   let sourceId: string | null = null;
   if (invoiceId) {
     if (expenseCategory !== "INVENTORY_PURCHASE") throw new FinanceError("Una factura de compra solo puede vincularse a Compra de inventario/productos. Corregí la categoría; no se creó ningún movimiento.", 400, "FINANCE_INVOICE_CATEGORY_INVALID", "Categoría incompatible");

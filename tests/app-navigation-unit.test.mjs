@@ -154,3 +154,12 @@ test("the App Shell keeps module roots mounted and exposes the five requested ta
   assert.match(notifications, /Centro de notificaciones/);
   assert.match(notifications, /navigator\.serviceWorker\.register/);
 });
+
+test("orders opened from Finance return to the real Finance history entry", async () => {
+  const client = await readFile(new URL("../app/client-app.tsx", import.meta.url), "utf8");
+  const orders = await readFile(new URL("../app/orders-view.tsx", import.meta.url), "utf8");
+  assert.match(client, /detail: \{ orderId, origin: "finance" \}/);
+  assert.match(client, /onReturnToOrigin=\{\(\) => window\.history\.back\(\)\}/);
+  assert.match(orders, /detailOrigin === "finance"/);
+  assert.doesNotMatch(orders, /history\.pushState\([^\n]+finance/);
+});
