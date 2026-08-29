@@ -2,17 +2,17 @@
 
 ## Production
 
-- Version: v2.23
-- Checkpoint: 44
-- Commit: `f419675397ec0d0f75dc3830d5d6fafec973d9a4`
-- Deployment: `appgdep_6a92da5cca8881918e1d660a4cc441d9`
+- Version: v2.24
+- Checkpoint: 45
+- Commit: `d23aa47f36ca9a0ff011c1f06eb869442d7a1f8d`
+- Deployment: `appgdep_6a930e8e0abc8191bbfe7762a40ecfc6`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0017_equal_microchip.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- v2.24 está preparada para la puerta final: pago automático idempotente de facturas CHATGPT_IMPORT, descuentos/costos exactos, exclusión personal, montos CRC decimales, alta en línea de productos, retorno contextual de Finanzas/Ventas y PDF operativo de Ruta en blanco y negro. No añade migraciones ni modifica Notifications/Web Push.
+- NutriPlus v2.24 está publicada: pago automático idempotente de facturas CHATGPT_IMPORT, descuentos/costos exactos, exclusión personal, montos CRC decimales, alta en línea de productos, retorno contextual de Finanzas/Ventas y PDF operativo de Ruta en blanco y negro. No añadió migraciones ni modificó Notifications/Web Push.
 
 ## Security
 
