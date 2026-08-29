@@ -2,17 +2,17 @@
 
 ## Production
 
-- Version: v2.22
-- Checkpoint: 43
-- Commit: `8c70b5a22cf88d63988e8809edd5fc140dd0cb45`
-- Deployment: `appgdep_6a91a4cc2bc4819181588097f9a2925a`
+- Version: v2.23
+- Checkpoint: 44
+- Commit: `f419675397ec0d0f75dc3830d5d6fafec973d9a4`
+- Deployment: `appgdep_6a92da5cca8881918e1d660a4cc441d9`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
-- Last production migration: `0016_round_scarlet_witch.sql`
+- Last production migration: `0017_equal_microchip.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- NutriPlus v2.22 is published. La navegación fría sincroniza la sección persistida; Historial usa SQL compatible con D1; pedidos normales admiten abono inicial; Encargos separan llegada estimada de entrega, conservan líneas recibidas al editar y aparecen/reprograman en Entregas y Rutas mediante una única asignación activa. Consultar otra fecha de Ruta no muta asignaciones. Los recordatorios horarios con la app cerrada continúan bloqueados por falta de scheduler en Sites.
+- NutriPlus v2.23 is published. Finanzas v1 reconoce ventas solo al entregar, conserva costos históricos, separa caja/pagos de ventas, administra gastos, presupuestos y recurrencias explícitas, y exporta Excel/PDF. Importar vive en Ajustes > Datos y la barra principal incluye Finanzas. La salida usa CloseWatcher/Navigation API cuando están disponibles, sin centinelas ni crecimiento artificial del historial. Notifications/Web Push permanece intacto.
 
 ## Security
 
@@ -36,3 +36,4 @@
 
 - Orders v2.16 remains under real user validation.
 - Web Push receipt with the Android/PWA closed was physically validated by the user.
+- Android/PWA physical validation remains pending for the new exit-confirmation path.
