@@ -51,13 +51,14 @@ import {
 } from "react";
 import Image from "next/image";
 import { InventoryIntakeModal, type IntakeScanEvent } from "./inventory-intake";
+import { FinanceView } from "./finance-view";
 import { NotificationCenter } from "./notification-center";
 import { OrdersView, type OrderScanEvent } from "./orders-view";
 import type { ImportChangedProduct, ImportJobRecord } from "@/lib/import-jobs";
 import type { ProductDeletionJobRecord } from "@/lib/deletion-jobs";
 import { NUTRIPLUS_PUBLIC_VERSION } from "@/lib/public-version";
 import { runSpreadsheetWorker } from "@/lib/spreadsheet-import-client";
-import { installAppNavigation, type AppSection, type NavigationController } from "@/lib/app-navigation";
+import { installAppNavigation, type AppSection, type NavigationCapabilities, type NavigationController } from "@/lib/app-navigation";
 import type { SpreadsheetCellWarning, SpreadsheetParseResult } from "@/lib/spreadsheet-import-parser";
 import { spreadsheetImportErrorMessage, validateSpreadsheetFile } from "@/lib/spreadsheet-import-security";
 import {
@@ -82,7 +83,7 @@ import {
   type QueuedMutation,
 } from "@/lib/offline-store";
 
-type Tab = "calculator" | "orders" | "products" | "import" | "settings";
+type Tab = "calculator" | "orders" | "products" | "finance" | "settings";
 type NumericField = "purchasePriceUsd" | "weightLb" | "code";
 type ScannerIntent = "assign" | "lookup-products" | "lookup-calculator" | "floating" | "intake" | "orders";
 type Form = {
@@ -718,7 +719,7 @@ function ImportView({ settings, job, deletionJob, productCount, history, summary
 
   useEffect(() => {
     const onBack = (event: Event) => {
-      if ((event as CustomEvent<{ section?: string }>).detail?.section !== "import") return;
+      if ((event as CustomEvent<{ section?: string }>).detail?.section !== "settings") return;
       if (deleteConfirm) { event.preventDefault(); setDeleteConfirm(false); }
       else if (restoreTarget) { event.preventDefault(); setRestoreTarget(null); }
     };
@@ -834,7 +835,13 @@ function ImportView({ settings, job, deletionJob, productCount, history, summary
   </div>;
 }
 
-function SettingsView({ current, onSave }: { current: PricingSettings; onSave: (value: PricingSettings) => Promise<void> }) {
+function SettingsView({ current, onSave, onImport, onExport, onNotifications }: {
+  current: PricingSettings;
+  onSave: (value: PricingSettings) => Promise<void>;
+  onImport: () => void;
+  onExport: () => void;
+  onNotifications: () => void;
+}) {
   const [draft, setDraft] = useState<Record<keyof PricingSettings, string>>(() => Object.fromEntries(
     (Object.keys(current) as Array<keyof PricingSettings>).map((key) => [key, String(current[key])]),
   ) as Record<keyof PricingSettings, string>);
@@ -861,7 +868,11 @@ function SettingsView({ current, onSave }: { current: PricingSettings; onSave: (
     setBusy(true);
     try { await onSave(parsed); } finally { setBusy(false); }
   }
-  return <div className="view"><header className="view-head"><span className="eyebrow">Valores generales</span><h1>Ajustes</h1><p>Los cambios recalculan todos los productos guardados.</p></header><form className="surface settings-form" onSubmit={submit}><div className="mapping">{fields.map(([key, label, prefix, suffix, step]) => <label className="field" key={key}><span>{label}</span><div className="number-box">{prefix && <i>{prefix}</i>}<input type="number" min="0" step={step} value={draft[key]} onChange={(event) => setDraft({ ...draft, [key]: event.target.value })} />{suffix && <small>{suffix}</small>}</div></label>)}</div>{!validDraft && <p className="alert warning"><AlertCircle />Completá todos los valores antes de guardar.</p>}<div className="settings-note"><CircleDollarSign /><span>Se conservan el precio de compra y el peso; los precios de venta se actualizan con estos valores.</span></div><button className="btn primary full" disabled={busy || !validDraft}>{busy ? <Loader2 className="spin" /> : <Save />}Guardar ajustes</button></form></div>;
+  return <div className="view"><header className="view-head"><span className="eyebrow">Configuración organizada</span><h1>Ajustes</h1><p>Los mismos parámetros y herramientas, agrupados sin cambiar su lógica.</p></header>
+    <section className="settings-group"><header><span>A</span><div><h2>Parámetros de cálculo</h2><p>Courier, peso, entrega, Correos, tipo de cambio, ganancias y redondeo.</p></div></header><form className="surface settings-form" onSubmit={submit}><div className="mapping">{fields.map(([key, label, prefix, suffix, step]) => <label className="field" key={key}><span>{label}</span><div className="number-box">{prefix && <i>{prefix}</i>}<input type="number" min="0" step={step} value={draft[key]} onChange={(event) => setDraft({ ...draft, [key]: event.target.value })} />{suffix && <small>{suffix}</small>}</div></label>)}</div>{!validDraft && <p className="alert warning"><AlertCircle />Completá todos los valores antes de guardar.</p>}<div className="settings-note"><CircleDollarSign /><span>Se conservan el precio de compra y el peso; los precios de venta se actualizan con estos valores.</span></div><button className="btn primary full" disabled={busy || !validDraft}>{busy ? <Loader2 className="spin" /> : <Save />}Guardar ajustes</button></form></section>
+    <section className="settings-group"><header><span>B</span><div><h2>Datos</h2><p>Herramientas actuales de importación y exportación.</p></div></header><div className="surface settings-links"><button onClick={onImport}><FileSpreadsheet /><span><b>Importar datos</b><small>Importar productos e inventario desde archivos</small></span><ChevronDown /></button><button onClick={onExport}><Download /><span><b>Exportar datos</b><small>Descargar el inventario actual en Excel o PDF</small></span><ChevronDown /></button></div></section>
+    <section className="settings-group"><header><span>C</span><div><h2>Aplicación</h2><p>Preferencias y servicios de NutriPlus.</p></div></header><div className="surface settings-links"><button onClick={onNotifications}><Bell /><span><b>Notificaciones</b><small>Abrir el Centro de alertas y preferencias de Push</small></span><ChevronDown /></button></div></section>
+  </div>;
 }
 
 function Empty({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) { return <div className="empty">{icon}<h2>{title}</h2>{text && <p>{text}</p>}</div>; }
@@ -869,11 +880,17 @@ function Empty({ icon, title, text }: { icon: React.ReactNode; title: string; te
 function initialTab(): Tab {
   if (typeof window === "undefined") return "calculator";
   const requested = new URLSearchParams(window.location.search).get("tab");
-  return ["calculator", "orders", "products", "import", "settings"].includes(requested || "") ? requested as Tab : "calculator";
+  if (requested === "import") return "settings";
+  return ["calculator", "orders", "products", "finance", "settings"].includes(requested || "") ? requested as Tab : "calculator";
 }
 
 export function NutriPlusApp() {
   const [tab, setTab] = useState<Tab>(initialTab);
+  const [settingsPanel, setSettingsPanel] = useState<"home" | "import">(() => {
+    if (typeof window === "undefined") return "home";
+    const params = new URLSearchParams(window.location.search);
+    return params.get("tab") === "import" || params.get("view") === "import" ? "import" : "home";
+  });
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [calculatorForm, setCalculatorForm] = useState<Form>(EMPTY);
   const [productForm, setProductForm] = useState<Form>({ ...EMPTY, addToInventory: true });
@@ -926,40 +943,58 @@ export function NutriPlusApp() {
   const notificationProductHandled = useRef(false);
   const navigation = useRef<NavigationController | null>(null);
   const tabRef = useRef<Tab>(tab);
-  const scrollByTab = useRef<Record<Tab, number>>({ calculator: 0, orders: 0, products: 0, import: 0, settings: 0 });
+  const financeViewRef = useRef<string | undefined>(undefined);
+  const settingsViewRef = useRef<string | undefined>(settingsPanel === "import" ? "import" : undefined);
+  const scrollByTab = useRef<Record<Tab, number>>({ calculator: 0, orders: 0, products: 0, finance: 0, settings: 0 });
   const closeTopLayer = useRef<() => boolean>(() => false);
 
   const notify = useCallback((next: NonNullable<Toast>) => {
     setToast(next);
   }, []);
 
-  const activateTab = useCallback((next: AppSection) => {
+  const activateLocation = useCallback((next: AppSection, view?: string) => {
     const previous = tabRef.current;
-    if (previous === next) return;
-    scrollByTab.current[previous] = window.scrollY;
-    tabRef.current = next;
-    setActiveNumeric(null);
-    setTab(next);
-    window.requestAnimationFrame(() => window.scrollTo({ top: scrollByTab.current[next], behavior: "auto" }));
+    if (previous !== next) {
+      scrollByTab.current[previous] = window.scrollY;
+      tabRef.current = next;
+      setActiveNumeric(null);
+      setTab(next);
+      window.requestAnimationFrame(() => window.scrollTo({ top: scrollByTab.current[next], behavior: "auto" }));
+    }
+    if (next === "settings") {
+      settingsViewRef.current = view === "import" ? "import" : undefined;
+      setSettingsPanel(view === "import" ? "import" : "home");
+    }
+    if (next === "finance") {
+      financeViewRef.current = view;
+      window.dispatchEvent(new CustomEvent("nutriplus:finance-location", { detail: { view } }));
+    }
   }, []);
 
   const navigateTab = useCallback((next: Tab) => {
-    if (navigation.current) navigation.current.navigate(next);
-    else activateTab(next);
-  }, [activateTab]);
+    const view = next === "finance" ? financeViewRef.current : next === "settings" ? settingsViewRef.current : undefined;
+    if (navigation.current) navigation.current.navigate(next, view);
+    else activateLocation(next);
+  }, [activateLocation]);
 
   useEffect(() => {
+    const modernWindow = window as unknown as { CloseWatcher?: NavigationCapabilities["CloseWatcher"]; navigation?: NavigationCapabilities["navigation"] };
     const controller = installAppNavigation(window.history, window, tabRef.current, {
-      onSection: activateTab,
+      onLocation: activateLocation,
       onBeforeBack: () => closeTopLayer.current(),
       onRequestExit: () => setExitConfirmOpen(true),
+    }, {
+      CloseWatcher: modernWindow.CloseWatcher,
+      navigation: modernWindow.navigation,
+      location: window.location,
+      closeWindow: window.matchMedia("(display-mode: standalone)").matches ? () => window.close() : undefined,
     });
     navigation.current = controller;
     return () => {
       controller.dispose();
       if (navigation.current === controller) navigation.current = null;
     };
-  }, [activateTab]);
+  }, [activateLocation]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1921,7 +1956,7 @@ export function NutriPlusApp() {
     }
   }
 
-  const nav: Array<[Tab, string, typeof Calculator]> = [["calculator", "Calcular", Calculator], ["orders", "Pedidos", Truck], ["products", "Productos", PackageSearch], ["import", "Importar", FileSpreadsheet], ["settings", "Ajustes", Settings]];
+  const nav: Array<[Tab, string, typeof Calculator]> = [["calculator", "Calcular", Calculator], ["orders", "Pedidos", Truck], ["products", "Productos", PackageSearch], ["finance", "Finanzas", CircleDollarSign], ["settings", "Ajustes", Settings]];
   if (loading) return <main className="loading"><Image className="loading-logo" src="/nutriplus-logo.jpg" alt="NutriPlus Supplements" width={94} height={94} priority /><Loader2 className="spin" />Preparando NutriPlus…</main>;
 
   return <main className="app-shell">
@@ -1933,6 +1968,8 @@ export function NutriPlusApp() {
 
       <div className="module-slot" hidden={tab !== "orders"}><OrdersView products={products} quotes={quotes} settings={settings} scannedBarcode={orderScannedBarcode} onConsumeScan={() => setOrderScannedBarcode(null)} onRequestScan={() => openScanner("orders")} onInventoryChanged={refreshProducts} onCatalogChanged={async () => { await Promise.all([refreshProducts(), refreshQuotes()]); }} /></div>
 
+      <div className="module-slot" hidden={tab !== "finance"}><FinanceView active={tab === "finance"} onNavigateView={(view) => navigation.current?.navigate("finance", view === "summary" ? undefined : view)} onOpenOrder={(orderId) => { navigateTab("orders"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("nutriplus:open-order", { detail: { orderId } })), 0); }} onNotify={notify} /></div>
+
       {tab === "products" && <div className="view"><header className="view-head products-head"><div><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá, agregá o editá cualquier producto guardado.</p></div><button className={`restock-head-btn ${lowStockProducts.length ? "has-items" : ""}`} onClick={() => setRestockOpen(true)} aria-label={`Ver productos por abastecer: ${lowStockProducts.length}`}><BellRing /><span>Por abastecer</span><b>{lowStockProducts.length}</b></button></header>
         <div className="products-toolbar"><button className="btn primary" onClick={addInProducts}><Plus />Agregar producto</button><button className="btn secondary" onClick={() => setNoInventoryOpen(true)}><Package />No inventario ({quotes.length})</button><button className="btn secondary" onClick={() => void openRecent()}><Clock3 />Guardados recientemente</button><button className="btn secondary" onClick={() => setInventoryIntakeOpen(true)}><Upload />Agregar inventario</button><button className={`btn ${selectionMode ? "ghost" : "secondary"}`} onClick={() => { setSelectionMode((current) => !current); setSelectedProductIds(new Set()); }} disabled={!products.length}><Check />{selectionMode ? "Cancelar selección" : "Seleccionar varios"}</button>{selectionMode && selectedProductIds.size > 0 && <button className="btn danger-solid" onClick={() => setBulkDeleteConfirm(true)} disabled={bulkDeleting}><Trash2 />Eliminar ({selectedProductIds.size})</button>}<button className="btn secondary" onClick={() => setExportConfirm(true)} disabled={!products.length && !quotes.length}><Download />Descargar inventario</button></div>
         <section className={`surface stock-notification-strip ${lowStockProducts.length ? "has-alerts" : ""}`}><div className="stock-alert-heading"><span className="stock-alert-icon">{lowStockProducts.length ? <BellRing /> : <Bell />}</span><div><h2>{lowStockProducts.length ? `${pendingRestockProducts.length} pendiente${pendingRestockProducts.length === 1 ? "" : "s"} de compra · ${lowStockProducts.length - pendingRestockProducts.length} comprado${lowStockProducts.length - pendingRestockProducts.length === 1 ? "" : "s"}` : "Stock mínimo al día"}</h2><p>Las alertas se generan al cruzar el mínimo o llegar a cero, sin repetirse por cada cambio.</p></div></div><button className="btn secondary small" onClick={() => window.dispatchEvent(new Event("nutriplus:open-notifications"))}><Bell />Ver Centro de alertas</button></section>
@@ -1941,8 +1978,8 @@ export function NutriPlusApp() {
         {!filteredProducts.length ? <Empty icon={<PackageSearch />} title={query ? "No hay coincidencias" : "Todavía no hay productos"} text={query ? "Probá con otras palabras o escaneá el código." : "Agregá el primer producto desde el botón superior."} /> : <><div className="results-count">{selectionMode ? `${selectedProductIds.size} seleccionado${selectedProductIds.size === 1 ? "" : "s"} · tocá las casillas de los productos` : query ? `${filteredProducts.length} coincidencias` : `${products.length} productos guardados`}</div><div className="product-grid">{filteredProducts.slice(0, visibleCount).map((product) => { const complete = hasCompletePricing(product); const prices = complete ? calculatePrices(product.purchasePriceUsd, product.weightLb, settings) : null; const lowStock = (product.minimumStockEnabled && product.quantityAvailable <= product.minimumStock) || product.quantityAvailable === 0; const selected = selectedProductIds.has(product.id); const pendingOnlineSave = product.id < 0 && isOnline; return <article className={`product-card ${complete ? "" : "pending-product"} ${lowStock ? "low-stock" : ""} ${selected ? "selected-product" : ""}`} key={product.id}><div className="product-title">{selectionMode && <label className="product-selector"><input type="checkbox" checked={selected} disabled={pendingOnlineSave} onChange={() => setSelectedProductIds((current) => { const next = new Set(current); if (next.has(product.id)) next.delete(product.id); else next.add(product.id); return next; })} aria-label={`Seleccionar ${product.name}`} /><span><Check /></span></label>}<span className="avatar">{product.name[0].toUpperCase()}</span><div><h2>{product.name}</h2>{product.code && <small><ScanLine />{product.code}</small>}{!complete && <small className="pending-label"><AlertCircle />Incompleto</small>}{lowStock && <small className="stock-label"><AlertCircle />{product.quantityAvailable === 0 ? "Stock 0" : "Stock bajo"}</small>}</div><div className="card-actions"><button className="icon-btn" onClick={() => editInProducts(product)} aria-label={`Editar ${product.name}`} disabled={pendingOnlineSave}><Pencil /></button><button className="icon-btn danger" onClick={() => setDeleteTarget(product)} aria-label={`Eliminar ${product.name}`} disabled={pendingOnlineSave}><Trash2 /></button></div></div><div className="facts"><div><span>Compra</span><b>{product.purchasePriceUsd === null ? "—" : usd(product.purchasePriceUsd)}</b></div><div><span>Peso</span><b>{product.weightLb === null ? "—" : `${product.weightLb.toFixed(2)} lb`}</b></div><div className="green"><span>Venta GAM</span><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></div><div className="brown"><span>Venta Puerto</span><b>{prices ? crc(prices.puertoPriceCrc) : "Incompleto"}</b></div><div className="stock"><span>Cantidad disponible</span><b>{product.quantityAvailable}</b></div><div className="stock"><span>Stock mínimo</span><b>{product.minimumStockEnabled ? product.minimumStock : "No configurado"}</b></div></div></article>; })}</div>{visibleCount < filteredProducts.length && <button className="btn secondary load-more" onClick={() => setVisibleCount((current) => current + 36)}>Mostrar más productos</button>}</>}
       </div>}
 
-      <div className="module-slot" hidden={tab !== "import"}><ImportView key={importJob?.id ?? "sin-importacion"} settings={settings} job={importJob} deletionJob={deletionJob} productCount={products.filter((product) => product.id > 0).length} history={importHistory} summary={importSummary} restoringId={restoringImportId} onStart={startImport} onRestore={restoreImport} onDeleteAll={startDeletion} /></div>
-      <div className="module-slot" hidden={tab !== "settings"}><SettingsView key={JSON.stringify(settings)} current={settings} onSave={saveSettings} /></div>
+      <div className="module-slot" hidden={tab !== "settings" || settingsPanel !== "import"}><ImportView key={importJob?.id ?? "sin-importacion"} settings={settings} job={importJob} deletionJob={deletionJob} productCount={products.filter((product) => product.id > 0).length} history={importHistory} summary={importSummary} restoringId={restoringImportId} onStart={startImport} onRestore={restoreImport} onDeleteAll={startDeletion} /></div>
+      <div className="module-slot" hidden={tab !== "settings" || settingsPanel !== "home"}><SettingsView key={JSON.stringify(settings)} current={settings} onSave={saveSettings} onImport={() => navigation.current?.navigate("settings", "import")} onExport={() => setExportConfirm(true)} onNotifications={() => window.dispatchEvent(new Event("nutriplus:open-notifications"))} /></div>
     </div></div>
     <nav className="bottom" aria-label="Navegación principal">{nav.map(([id, label, Icon]) => <a href={`/?tab=${id}`} className={tab === id ? "active" : ""} aria-current={tab === id ? "page" : undefined} onClick={(event) => { event.preventDefault(); navigateTab(id); }} key={id}><Icon />{label}</a>)}</nav><span className="app-version" aria-label={`Versión pública ${NUTRIPLUS_PUBLIC_VERSION}`}>NutriPlus v{NUTRIPLUS_PUBLIC_VERSION}</span><button className="float-scan" onPointerDown={() => void preloadScanner()} onClick={() => openScanner("floating")} aria-label="Escanear"><ScanLine /></button>
     {scannerIntent && <Scanner onClose={() => setScannerIntent(null)} onCode={handleScannerCode} />}

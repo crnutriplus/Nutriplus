@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { PDFDocument } from "pdf-lib";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { LocalD1Database } from "./helpers/local-bindings.mjs";
 
 const DB = new LocalD1Database();
@@ -156,6 +157,7 @@ assert.equal(printModel.rows.find((row) => row.phone === "7000-1001").cash, true
 assert.equal(printModel.rows.find((row) => row.phone === "7000-1002").sinpe, true);
 assert.equal(printModel.rows.find((row) => row.phone === "7000-1003").card, true);
 const cashPrintRow = printModel.rows.find((row) => row.phone === "7000-1001");
+assert.equal(cashPrintRow.orderNumber, cashOrder.orderNumber);
 assert.equal(cashPrintRow.deliveryFee, 1000);
 assert.equal(cashPrintRow.subtotal, 10000);
 assert.equal(cashPrintRow.discountTotal, 500);
@@ -163,6 +165,24 @@ assert.equal(cashPrintRow.paidTotal, 1000);
 assert.ok(cashPrintRow.products.every((line) => !/^Envío/i.test(line)));
 assert.ok(printModel.productsToLoad.some((line) => line.productId === alpha.id && line.quantity === 2 && !line.manual));
 assert.ok(printModel.productsToLoad.some((line) => line.productName === "Producto manual físico" && line.quantity === 3 && line.manual));
+const routePdfResult = await call("/api/orders/print?date=2026-09-10");
+assert.equal(routePdfResult.response.status, 200);
+if (process.env.SAVE_ORDER_PDF === "1") {
+  await mkdir(new URL("../tmp/pdfs/", import.meta.url), { recursive: true });
+  await writeFile(new URL("../tmp/pdfs/orders-route-np.pdf", import.meta.url), routePdfResult.body);
+}
+const loadingRoutePdf = getDocument({ data: routePdfResult.body });
+const routePdfDocument = await loadingRoutePdf.promise;
+const routePdfText = [];
+for (let pageNumber = 1; pageNumber <= routePdfDocument.numPages; pageNumber += 1) {
+  const content = await (await routePdfDocument.getPage(pageNumber)).getTextContent();
+  routePdfText.push(content.items.map((item) => "str" in item ? item.str : "").join(" "));
+}
+await loadingRoutePdf.destroy();
+const renderedRouteText = routePdfText.join(" ").replace(/\s+/g, " ");
+for (const order of [cardOrder, cashOrder, sinpeOrder]) {
+  assert.ok(renderedRouteText.includes(order.orderNumber), `the real delivery PDF must show ${order.orderNumber}`);
+}
 
 // La misma salida crece a varias páginas sin depender de un tamaño fijo.
 await Promise.all(Array.from({ length: 48 }, (_, index) => createOrder([{

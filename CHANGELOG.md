@@ -5,7 +5,15 @@ NutriPlus mantiene dos identificadores independientes:
 - **Versión pública:** se muestra a las personas usuarias y avanza como `2.3`, `2.4`, `2.5`, etc.
 - **Checkpoint / commit / deployment:** identifica técnicamente un estado del código. Nunca es el número público de NutriPlus.
 
-`package.json` usa SemVer, por lo que representa la versión pública `2.22` como `2.22.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+`package.json` usa SemVer, por lo que representa la versión pública `2.23` como `2.23.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
+
+## 2.23 — 2026-08-29
+
+- Nuevo módulo móvil **Finanzas / Ventas y gastos**: ventas solo al estado `DELIVERED`, COGS desde snapshots históricos, descuentos y envío separados, caja derivada del ledger de pagos, cuentas por cobrar, rentabilidad por producto/pedido/ruta y cifras trazables.
+- Gastos confirmados e idempotentes con reversas append-only, moneda y tipo de cambio histórico, vínculos opcionales a ruta/pedido/factura pagada, exclusión personal, plantillas recurrentes de generación explícita y presupuestos mensuales.
+- Exportaciones Excel/PDF por período y migración aditiva `0017_equal_microchip.sql`; los pagos existentes no se copian ni se convierten en un ledger paralelo.
+- La barra principal ahora muestra Calcular, Pedidos, Productos, Finanzas y Ajustes. Importar conserva su módulo y estado bajo Ajustes → Datos; los parámetros y la exportación actuales permanecen intactos.
+- El PDF real de Entregas/Ruta muestra claramente el NP de cada pedido. La salida sustituye los guards artificiales por detección de `CloseWatcher` y Navigation API, sin crecimiento de historial; la comprobación física Android/PWA queda pendiente.
 
 ## 2.22 — 2026-08-28
 
@@ -155,8 +163,8 @@ Un checkpoint guardado no prueba por sí solo que ese estado haya sido desplegad
 
 La evidencia disponible permite afirmar que el checkpoint 20 tuvo un deployment exitoso y que el 21 era la versión desplegada inmediatamente antes de esta normalización. Sites expone el historial completo de checkpoints guardados, pero no un listado histórico equivalente de todos los deployments; por eso no se atribuye un despliegue independiente a los demás checkpoints cuando no puede probarse. Los checkpoints 1 y 11 están identificados expresamente como prueba privada y parche intermedio, respectivamente, y no como publicaciones públicas independientes.
 
-La publicación actual de este documento corresponde a NutriPlus **v2.16**. Su checkpoint y commit técnicos quedan registrados por Sites y Git al guardar la publicación; no se incrustan en el propio commit porque un commit no puede contener su propio hash.
+La publicación actual de este documento corresponde a NutriPlus **v2.23**. Su checkpoint y commit técnicos quedan registrados por Sites y Git al guardar la publicación; no se incrustan en el propio commit porque un commit no puede contener su propio hash.
 
 ## Regla futura
 
-La próxima implementación publicada después de `2.16` será `2.17`, y así sucesivamente. No se usarán `2.0.3`, `2.0.4` ni números de checkpoint o deployment como versiones públicas.
+La próxima implementación publicada después de `2.23` será `2.24`, y así sucesivamente. No se usarán números de checkpoint o deployment como versiones públicas.

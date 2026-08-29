@@ -1,4 +1,5 @@
 import { calculatePrices, settingsFromRow } from "./pricing";
+import { financeSaleReversalStatements, financeSaleStatements } from "./finance";
 import {
   ORDER_SOURCES,
   PAYMENT_METHODS,
@@ -843,17 +844,21 @@ async function transitionOrder(
     throw new OrderError("Indicá el motivo de esta operación. El pedido y el inventario conservaron su estado anterior.", 400, "ORDER_REASON_REQUIRED", "Motivo requerido");
   }
   if (await completedOperation(db, orderId, operationType, operationId, payload)) return { order: await loadOrder(db, orderId), idempotent: true };
-  const current = await db.prepare("SELECT status,order_type FROM orders WHERE id=? LIMIT 1").bind(orderId).first<{ status: string; order_type: string }>();
+  const current = await db.prepare("SELECT * FROM orders WHERE id=? LIMIT 1").bind(orderId).first<Row>();
   if (!current) throw new OrderError("No encontramos el pedido. Actualizá la lista; no se realizó ningún cambio.", 404, "ORDER_NOT_FOUND", "Pedido no encontrado");
   if (current.status !== fromStatus) throw new OrderError("El estado actual del pedido no permite esa acción. Actualizalo; no se realizó ningún cambio.", 409, "ORDER_INVALID_TRANSITION", "Transición no permitida");
   const claim = await beginOperation(db, orderId, operationType, operationId, payload);
   if (claim.replayed) return { order: await loadOrder(db, orderId), idempotent: true };
   const now = new Date().toISOString();
+  const activeSale = toStatus === "REOPENED"
+    ? await db.prepare("SELECT * FROM finance_sales WHERE order_id=? AND status='RECOGNIZED' LIMIT 1").bind(orderId).first<Row>()
+    : null;
   const timestampSql = options.timestampColumn ? `,${options.timestampColumn}=?` : "";
   const bindings = options.timestampColumn ? [toStatus, now, now, orderId, version, fromStatus] : [toStatus, now, orderId, version, fromStatus];
   const statements: D1PreparedStatement[] = [
     guardStatement(db, operationId, orderId, version, [fromStatus]),
     db.prepare(`UPDATE orders SET status=?,version=version+1,updated_at=?${timestampSql} WHERE id=? AND version=? AND status=?`).bind(...bindings),
+    ...(activeSale ? financeSaleReversalStatements(db, activeSale, operationId, reason || "Pedido reabierto para corrección", now) : []),
     statusEventStatement(db, orderId, fromStatus, toStatus, operationId, reason, now),
     eventStatement(db, orderId, options.eventType, operationId, reason ? { reason } : {}, now),
     completeOperationStatement(db, operationId, orderId, now),
@@ -938,7 +943,7 @@ export async function deliverOrder(db: D1Database, orderId: string, payload: Rec
   const operationId = requiredOperationId(payload);
   const version = requiredVersion(payload);
   if (await completedOperation(db, orderId, "DELIVER", operationId, payload)) return { order: await loadOrder(db, orderId), idempotent: true };
-  const current = await db.prepare("SELECT status,order_type FROM orders WHERE id=? LIMIT 1").bind(orderId).first<{ status: string; order_type: string }>();
+  const current = await db.prepare("SELECT * FROM orders WHERE id=? LIMIT 1").bind(orderId).first<Row>();
   if (!current) throw new OrderError("No encontramos el pedido. Actualizá la lista; no se realizó ningún cambio.", 404, "ORDER_NOT_FOUND", "Pedido no encontrado");
   if (current.status !== "PREPARED") throw new OrderError("Prepará el pedido antes de marcarlo como entregado. No se realizó ningún cambio ni se descontó inventario adicional.", 409, "ORDER_DELIVER_REQUIRES_PREPARED", "Pedido no preparado");
   const claim = await beginOperation(db, orderId, "DELIVER", operationId, payload);
@@ -960,6 +965,7 @@ export async function deliverOrder(db: D1Database, orderId: string, payload: Rec
       WHERE order_id=? AND special_order_status='ADDED_TO_ROUTE'`).bind(now, orderId)] : []),
     statusEventStatement(db, orderId, "PREPARED", "DELIVERED", operationId, null, now),
     eventStatement(db, orderId, "order.delivered", operationId, { lineCount: pendingLines.length }, now),
+    ...financeSaleStatements(db, current, lines.results, operationId, now),
     completeOperationStatement(db, operationId, orderId, now),
   ];
   try { await db.batch(statements); }
@@ -973,8 +979,7 @@ export async function fulfillOrder(db: D1Database, orderId: string, payload: Rec
     return { order: await loadOrder(db, orderId), idempotent: true };
   }
   const version = requiredVersion(payload);
-  const current = await db.prepare("SELECT status,order_type,route_id,scheduled_delivery_date FROM orders WHERE id=? LIMIT 1")
-    .bind(orderId).first<{ status: string; order_type: string; route_id: string | null; scheduled_delivery_date: string | null }>();
+  const current = await db.prepare("SELECT * FROM orders WHERE id=? LIMIT 1").bind(orderId).first<Row>();
   if (!current) throw new OrderError("No encontramos el pedido. Actualizá la lista; no se realizó ningún cambio.", 404, "ORDER_NOT_FOUND", "Pedido no encontrado");
   if (current.status !== "PREPARED") {
     throw new OrderError("Prepará el pedido antes de registrar una entrega total o parcial. No se realizó ningún cambio ni movimiento de inventario.", 409, "ORDER_FULFILL_REQUIRES_PREPARED", "Pedido no preparado");
@@ -1035,6 +1040,7 @@ export async function fulfillOrder(db: D1Database, orderId: string, payload: Rec
       pendingDeliveryDate: pendingDate,
       removedFromRoute: removeFromRoute,
     }, now),
+    ...(completed ? financeSaleStatements(db, current, lines.results, operationId, now) : []),
     completeOperationStatement(db, operationId, orderId, now),
   ];
   try { await db.batch(statements); }

@@ -572,6 +572,15 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
   }, [showError]);
 
   useEffect(() => {
+    const openFromFinance = (event: Event) => {
+      const orderId = (event as CustomEvent<{ orderId?: string }>).detail?.orderId?.trim();
+      if (orderId) void loadDetail(orderId);
+    };
+    window.addEventListener("nutriplus:open-order", openFromFinance);
+    return () => window.removeEventListener("nutriplus:open-order", openFromFinance);
+  }, [loadDetail]);
+
+  useEffect(() => {
     if (initialDeepLinkHandled.current) return;
     const orderId = new URLSearchParams(window.location.search).get("order")?.trim();
     if (!orderId) return;

@@ -16,6 +16,7 @@ export type OrdersPrintModel = {
   shippingTotal: number;
   rows: Array<{
     position: number;
+    orderNumber: string;
     phone: string;
     address: string;
     products: string[];
@@ -68,6 +69,7 @@ export async function buildOrdersPrintModel(db: D1Database, rawDate: unknown): P
     const products = (order.lines || []).map((line: PrintLine) => `${line.productName} × ${line.quantity}`);
     return {
       position: index + 1,
+      orderNumber: order.orderNumber,
       phone: order.phoneRaw || order.phoneNormalized || "-",
       address: order.deliveryAddress || order.deliveryInstructions || "Sin dirección",
       products,
@@ -117,8 +119,8 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   const bold = await pdf.embedFont(boldBytes, { subset: true });
   const pageSize: [number, number] = [841.89, 595.28];
   const margin = 24;
-  const widths = [26, 88, 188, 263, 91, 30, 30, 30];
-  const headers = ["#", "Teléfono", "Dirección", "Productos", "Totales", "E", "S", "T"];
+  const widths = [70, 82, 165, 242, 97, 30, 30, 30];
+  const headers = ["NP", "Teléfono", "Dirección", "Productos", "Totales", "E", "S", "T"];
   const colors = {
     green: rgb(40 / 255, 94 / 255, 63 / 255),
     greenDark: rgb(25 / 255, 59 / 255, 43 / 255),
@@ -169,7 +171,7 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   }
   model.rows.forEach((row, rowIndex) => {
     const values = [
-      String(row.position),
+      `${row.orderNumber}\n#${row.position}`,
       row.phone,
       row.address,
       row.products.join("\n"),

@@ -8,6 +8,7 @@ import {
   NOTIFICATION_DATABASE_TRIGGER_SQL,
 } from "../lib/notifications-database";
 import { ORDER_DATABASE_SQL, ORDER_DATABASE_TRIGGER_SQL } from "../lib/orders-database";
+import { FINANCE_DATABASE_SQL } from "../lib/finance-database";
 import * as schema from "./schema";
 
 let initialization: Promise<void> | null = null;
@@ -374,6 +375,7 @@ export async function ensureDatabase() {
       await db.batch([
         ...ORDER_DATABASE_SQL.map((statement) => db.prepare(statement)),
         ...ORDER_DATABASE_TRIGGER_SQL.map((statement) => db.prepare(statement)),
+        ...FINANCE_DATABASE_SQL.map((statement) => db.prepare(statement)),
       ]);
 
       const orderColumns = await db.prepare("PRAGMA table_info(orders)").all<{ name: string }>();
