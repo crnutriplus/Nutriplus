@@ -232,16 +232,34 @@ UPC: 5901234123457
 });
 assert.equal(packageInvoice.response.status, 201);
 assert.equal(packageInvoice.body.lines[0].status, "requires_conversion");
-const packageLine = { ...packageInvoice.body.lines[0], receivedQuantity: 2, unitsPerPackage: 3, totalToAdd: 6, barcodeLevel: "unit", barcodeConfirmed: true, status: "new_product", action: "create", selected: true };
+const inlineProduct = await call("/api/products", {
+  method: "POST",
+  headers: { "x-mutation-id": "invoice-inline-product-0001" },
+  body: JSON.stringify({ mutationId: "invoice-inline-product-0001", name: "Nutri Test Omega 3 Pack of 3 Bottles 60 Softgels", brand: "Nutri Test", presentation: "3 botellas", code: "5901234123457", purchasePriceUsd: 23.45, weightLb: 0.678, quantityAvailable: 0, minimumStock: 0, minimumStockEnabled: false }),
+});
+assert.equal(inlineProduct.response.status, 201, JSON.stringify(inlineProduct.body));
+assert.equal(inlineProduct.body.product.code, "5901234123457");
+assert.equal(inlineProduct.body.product.purchasePriceUsd, 23.45);
+assert.equal(inlineProduct.body.product.weightLb, 0.678);
+assert.equal(inlineProduct.body.product.brand, "Nutri Test");
+const packageLine = { ...packageInvoice.body.lines[0], receivedQuantity: 2, unitsPerPackage: 3, totalToAdd: 6, barcodeLevel: "unit", barcodeConfirmed: true, status: "confirmed", action: "existing", matchProductId: inlineProduct.body.product.id, selected: true };
 const packageConfirm = await call(`/api/inventory-intake/${packageInvoice.body.document.id}/confirm`, {
   method: "POST",
+  headers: { "x-mutation-id": "ingress-package-0001" },
   body: JSON.stringify({ operationId: "ingress-package-0001", lines: [packageLine] }),
 });
 assert.equal(packageConfirm.response.status, 200);
+const packageRetry = await call(`/api/inventory-intake/${packageInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  headers: { "x-mutation-id": "ingress-package-0001" },
+  body: JSON.stringify({ operationId: "ingress-package-0001", lines: [packageLine] }),
+});
+assert.ok([200, 202].includes(packageRetry.response.status));
 const createdPackage = (await call("/api/products?code=5901234123457")).body.product;
 assert.equal(createdPackage.quantityAvailable, 6);
-assert.equal(createdPackage.purchasePriceUsd, null);
-assert.equal(createdPackage.weightLb, null);
+assert.equal(createdPackage.purchasePriceUsd, 23.45);
+assert.equal(createdPackage.weightLb, 0.678);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_movements WHERE operation_id='ingress-package-0001'").first()).total), 1);
 
 const badDocument = await analyze({
   id: 6,

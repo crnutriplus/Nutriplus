@@ -102,7 +102,7 @@ Resultado local final del 2026-08-21:
 
 ## Pruebas opcionales con archivos
 
-La integración autocontenida `tests/invoice-finance.integration.mjs` forma parte de `npm test`, `check:invoices` y `check:finance`. Verifica factura pagada automática, métodos divididos, últimos cuatro dígitos seguros, crédito de tienda no monetario, exclusión personal e idempotencia de reintentos sin depender de archivos externos.
+La integración autocontenida `tests/invoice-finance.integration.mjs` forma parte de `npm test`, `check:invoices` y `check:finance`. Verifica factura pagada automática, métodos divididos, últimos cuatro dígitos seguros, crédito de tienda no monetario, exclusión personal, fecha financiera de confirmación e idempotencia de reintentos sin depender de archivos externos. `tests/inventory-inline-unit.test.mjs` cubre el escáner reutilizado, cálculo con parámetros vigentes, autoselección y recuperación segura del guard de confirmación.
 
 ### Paquete ChatGPT real
 

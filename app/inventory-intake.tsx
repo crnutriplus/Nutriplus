@@ -30,7 +30,7 @@ import {
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { validateBarcode } from "@/lib/barcodes";
 import type { IntakeLineDto, IntakeLineStatus } from "@/lib/inventory-intake";
-import type { NonInventoryRecord, ProductRecord } from "@/lib/pricing";
+import { calculatePrices, normalizeName, type NonInventoryRecord, type PricingSettings, type ProductRecord } from "@/lib/pricing";
 
 type Notice = { type: "success" | "info" | "error" | "warning"; title?: string; text: string; sticky?: boolean; dismissOnPageTouch?: boolean; durationMs?: number };
 
@@ -206,6 +206,7 @@ type Props = {
   open: boolean;
   products: ProductRecord[];
   quotes: NonInventoryRecord[];
+  settings: PricingSettings;
   quickText: string;
   setQuickText: (value: string) => void;
   onQuickSave: () => void;
@@ -458,7 +459,7 @@ function emptyManualLine(): IntakeLineDto {
 
 export function InventoryIntakeModal(props: Props) {
   const {
-    open, products, quotes, quickText, setQuickText, onQuickSave, onClose, onNotify,
+    open, products, quotes, settings, quickText, setQuickText, onQuickSave, onClose, onNotify,
     onProductsChanged, onRefresh, onRequestScan, scannedBarcode, onConsumeScan, readBarcodeImage,
   } = props;
   const [tab, setTab] = useState<"invoice" | "quick" | "history">("invoice");
@@ -520,6 +521,13 @@ export function InventoryIntakeModal(props: Props) {
   const [createProductLine, setCreateProductLine] = useState<IntakeLineDto | null>(null);
   const [creatingProduct, setCreatingProduct] = useState(false);
   const [newProduct, setNewProduct] = useState({ name: "", brand: "", presentation: "", code: "", purchasePriceUsd: "", weightLb: "" });
+  const inlinePricing = useMemo(() => {
+    const purchase = Number(newProduct.purchasePriceUsd);
+    const weight = Number(newProduct.weightLb);
+    return newProduct.purchasePriceUsd !== "" && newProduct.weightLb !== "" && Number.isFinite(purchase) && purchase >= 0 && Number.isFinite(weight) && weight >= 0
+      ? calculatePrices(purchase, weight, settings)
+      : null;
+  }, [newProduct.purchasePriceUsd, newProduct.weightLb, settings]);
 
   const updateLine = useCallback((id: string, changes: Partial<IntakeLineDto>, reclassify = true) => {
     lineRevisionRef.current.set(id, (lineRevisionRef.current.get(id) || 0) + 1);
@@ -552,19 +560,45 @@ export function InventoryIntakeModal(props: Props) {
 
   async function saveInlineProduct() {
     if (!createProductLine || !newProduct.name.trim() || creatingProduct) return;
+    if (newProduct.purchasePriceUsd === "" || newProduct.weightLb === "") {
+      onNotify({ type: "error", text: "Faltan el precio de compra o el peso. Completalos para calcular el precio; la factura sigue abierta y no se agregó inventario.", sticky: true });
+      return;
+    }
+    const sameName = products.find((product) => normalizeName(product.name) === normalizeName(newProduct.name));
+    if (sameName) {
+      onNotify({ type: "error", text: `Ya existe el producto ${sameName.name}. Seleccionalo en la línea en lugar de crear otro; la factura sigue abierta y no se agregó inventario.`, sticky: true });
+      return;
+    }
+    let normalizedCode: string | null = null;
+    if (newProduct.code.trim()) {
+      const checked = validateBarcode(newProduct.code);
+      if (!checked.valid || !checked.normalized) {
+        onNotify({ type: "error", text: `${checked.error || "El código de barras no es válido."} Corregilo o escanealo nuevamente; la factura sigue abierta y no se agregó inventario.`, sticky: true });
+        return;
+      }
+      const owners = equivalentOwners(checked.normalized, products, quotes);
+      const existingOwner = owners.products[0] || owners.quotes[0];
+      if (existingOwner) {
+        onNotify({ type: "error", text: `El código ${checked.normalized} ya pertenece a ${existingOwner.name}. Seleccioná ese producto o usá otro código; la factura sigue abierta y no se agregó inventario.`, sticky: true });
+        return;
+      }
+      normalizedCode = checked.normalized;
+    }
     setCreatingProduct(true);
     const mutationId = operationId("invoice-product");
     try {
       const result = await apiJson<{ product: ProductRecord; deduplicated?: boolean }>(await fetch("/api/products", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Mutation-Id": mutationId },
-        body: JSON.stringify({ mutationId, name: newProduct.name.trim(), brand: newProduct.brand.trim() || null, presentation: newProduct.presentation.trim() || null, code: newProduct.code.trim() || null,
+        body: JSON.stringify({ mutationId, name: newProduct.name.trim(), brand: newProduct.brand.trim() || null, presentation: newProduct.presentation.trim() || null, code: normalizedCode,
           purchasePriceUsd: newProduct.purchasePriceUsd === "" ? null : Number(newProduct.purchasePriceUsd),
           weightLb: newProduct.weightLb === "" ? null : Number(newProduct.weightLb), quantityAvailable: 0,
           minimumStock: 0, minimumStockEnabled: false }),
       }));
       const product = result.product;
-      onProductsChanged(products.some((item) => item.id === product.id) ? products : [...products, product]);
+      onProductsChanged(products.some((item) => item.id === product.id)
+        ? products.map((item) => item.id === product.id ? product : item)
+        : [...products, product]);
       updateLine(createProductLine.id, {
         matchProductId: product.id, matchNonInventoryId: null, action: "existing", status: "confirmed",
         match: { source: "inventory", id: product.id, name: product.name, code: product.code, quantityAvailable: product.quantityAvailable },
@@ -636,11 +670,20 @@ export function InventoryIntakeModal(props: Props) {
       onConsumeScan();
       return;
     }
-    // El escáner llega como un evento externo y debe hidratar la confirmación una sola vez.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (scannedBarcode.lineId.startsWith("inline:")) {
+      const targetLineId = scannedBarcode.lineId.slice("inline:".length);
+      if (createProductLine?.id === targetLineId) {
+        // El escáner entrega un evento externo que debe hidratar el formulario una sola vez.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setNewProduct((current) => ({ ...current, code: checked.normalized || "" }));
+        onNotify({ type: "success", text: `Código ${checked.normalized} agregado al producto nuevo. El formulario y la factura permanecen abiertos.` });
+      }
+      onConsumeScan();
+      return;
+    }
     setPendingBarcode({ lineId: scannedBarcode.lineId, code: checked.normalized, method: "scanner", source: "Producto físico escaneado" });
     onConsumeScan();
-  }, [onConsumeScan, onNotify, scannedBarcode]);
+  }, [createProductLine?.id, onConsumeScan, onNotify, scannedBarcode]);
 
   useEffect(() => {
     if (!open) return;
@@ -662,6 +705,7 @@ export function InventoryIntakeModal(props: Props) {
   )), [lines]);
   const hasUnsavedChanges = metaDirty || dirtyLineIds.size > 0 || deletedLineIds.size > 0;
   const selectedInvoiceFile = invoiceFiles[selectedFileIndex] || invoiceFiles[0] || null;
+  const documentPendingVerification = pendingVerification?.documentId === document?.id ? pendingVerification : null;
 
   const cancelDraftRequest = useCallback(async (documentId: string) => {
     return apiJson<{ canceled: boolean }>(await fetch(`/api/inventory-intake/${encodeURIComponent(documentId)}/cancel`, {
@@ -682,7 +726,7 @@ export function InventoryIntakeModal(props: Props) {
       onNotify({ type: "error", text: "Esta factura ya tiene movimientos en el historial y no puede borrarse. Podés cerrarla sin perder el progreso o gestionar sus reversas desde el historial.", sticky: true });
       return false;
     }
-    if (pendingVerification) {
+    if (documentPendingVerification) {
       onNotify({ type: "error", text: "Primero comprobá el estado del ingreso pendiente antes de cancelar la factura.", sticky: true });
       return false;
     }
@@ -1094,16 +1138,29 @@ export function InventoryIntakeModal(props: Props) {
     updateLine(line.id, { selectedForIngress: nextSelected }, false);
   }
 
-  async function verifyPendingOperation(target = pendingVerification) {
+  function clearPendingOperation(target: { operationId: string }) {
+    try {
+      const stored = localStorage.getItem("nutriplus-pending-intake-operation");
+      const parsed = stored ? JSON.parse(stored) as { operationId?: string } : null;
+      if (parsed?.operationId === target.operationId) localStorage.removeItem("nutriplus-pending-intake-operation");
+    } catch { localStorage.removeItem("nutriplus-pending-intake-operation"); }
+    setPendingVerification((current) => current?.operationId === target.operationId ? null : current);
+  }
+
+  async function verifyPendingOperation(target = documentPendingVerification) {
     if (!target) return;
     try {
       const response = await fetch(`/api/inventory-intake/operations/${encodeURIComponent(target.operationId)}`);
+      if (response.status === 404) {
+        clearPendingOperation(target);
+        onNotify({ type: "warning", text: "El servidor confirmó que ese ingreso nunca se creó. Se retiró el bloqueo huérfano; la factura sigue abierta y el inventario no cambió.", sticky: true });
+        return;
+      }
       const result = await apiJson<{ operation: { status: string }; products: ProductRecord[]; movements?: Array<{ documentLineId?: string }> }>(response);
       if (result.operation.status === "completed") {
         onProductsChanged(result.products);
         await onRefresh();
-        localStorage.removeItem("nutriplus-pending-intake-operation");
-        setPendingVerification(null);
+        clearPendingOperation(target);
         onNotify({ type: "success", text: "El ingreso sí había sido completado y quedó verificado en el historial.", sticky: true });
         const confirmedLineIds = new Set((result.movements || []).map((movement) => movement.documentLineId).filter((value): value is string => Boolean(value)).concat(target.lineIds || []));
         if (document?.id === target.documentId) {
@@ -1399,7 +1456,7 @@ export function InventoryIntakeModal(props: Props) {
         <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><History />Historial</button>
       </div>
 
-      {pendingVerification && <div className="alert warning intake-verification"><AlertCircle /><span>Hay un ingreso pendiente de comprobación. No lo confirmés de nuevo hasta revisar su estado.</span><button className="btn secondary small" onClick={() => void verifyPendingOperation()}>Comprobar estado</button></div>}
+      {documentPendingVerification && <div className="alert warning intake-verification"><AlertCircle /><span>Hay un ingreso real de esta factura pendiente de comprobación. No lo confirmés de nuevo hasta revisar su estado.</span><button className="btn secondary small" onClick={() => void verifyPendingOperation()}>Comprobar estado</button></div>}
 
       {tab === "quick" && <section className="intake-pane quick-intake">
         <div className="intake-intro"><PackagePlus /><div><h3>Ingreso rápido por código</h3><p>Usá una línea por producto. La cantidad ingresada se <b>suma</b>; no reemplaza la existencia.</p></div></div>
@@ -1537,7 +1594,7 @@ export function InventoryIntakeModal(props: Props) {
                   <div>{line.status === "new_product" && <p><b>Producto nuevo:</b> se creará en Inventario sin precios únicamente cuando confirmés el ingreso.</p>}{line.reviewSavedAt && !dirtyLineIds.has(line.id) && <small>Si cerrás la página, este avance se recuperará al volver a subir la factura.</small>}</div>
                   <div className="line-action-buttons">
                     <button className={`btn small ${line.reviewSavedAt && !dirtyLineIds.has(line.id) ? "success-static" : "secondary"}`} onClick={() => void saveOneLine(line.id)} disabled={!isSelected || savingDraft || confirming || line.reviewSavedAt !== "" && !dirtyLineIds.has(line.id)}>{savingLineId === line.id ? <Loader2 className="spin" /> : line.reviewSavedAt && !dirtyLineIds.has(line.id) ? <Check /> : <Save />}{line.reviewSavedAt && !dirtyLineIds.has(line.id) ? "Producto guardado" : line.reviewSavedAt ? "Guardar cambios" : "Guardar producto"}</button>
-                    <button className="btn primary small" onClick={() => void confirmIngreso(line.id)} disabled={!isSelected || confirming || savingDraft || !CONFIRMABLE.has(line.status) || line.action === "pending" || availableQuantity <= 0 || Boolean(pendingVerification)}>{confirmingLineId === line.id ? <Loader2 className="spin" /> : <ShieldCheck />}{confirmingLineId === line.id ? "Ingresando…" : `Ingresar este producto (+${availableQuantity})`}</button>
+                    <button className="btn primary small" onClick={() => void confirmIngreso(line.id)} disabled={!isSelected || confirming || savingDraft || !CONFIRMABLE.has(line.status) || line.action === "pending" || availableQuantity <= 0 || Boolean(documentPendingVerification)}>{confirmingLineId === line.id ? <Loader2 className="spin" /> : <ShieldCheck />}{confirmingLineId === line.id ? "Ingresando…" : `Ingresar este producto (+${availableQuantity})`}</button>
                   </div>
                 </div>}
               </article>;
@@ -1545,7 +1602,7 @@ export function InventoryIntakeModal(props: Props) {
           </div>
           <p className="split-help">Para distribuir un set entre productos diferentes, agregá una línea manual por componente y marcá la línea original como Omitida. Así siempre quedará disponible para auditoría o reactivación.</p>
           {blockedSelected.length > 0 && <div className="alert error"><AlertCircle />{blockedSelected.length} línea{blockedSelected.length === 1 ? " seleccionada necesita" : "s seleccionadas necesitan"} revisión antes de confirmar.</div>}
-          <div className="intake-footer"><button className="btn secondary" onClick={closeModal} disabled={canceling || confirming}><X />Cerrar factura</button>{!hasHistoricalMovements && <button className="btn danger-outline" onClick={() => setCancelConfirmOpen(true)} disabled={canceling || confirming || Boolean(pendingVerification)}>Eliminar borrador</button>}<button className="btn secondary" onClick={() => void saveDraft({ reviewedLineIds: new Set(lines.filter((line) => selected.has(line.id) && line.status !== "processed").map((line) => line.id)) })} disabled={savingDraft || confirming}>{savingDraft && !savingLineId ? <Loader2 className="spin" /> : <Save />}Guardar toda la revisión</button><button className="btn primary" onClick={() => void confirmIngreso()} disabled={confirming || savingDraft || !selectedLines.length || blockedSelected.length > 0 || Boolean(pendingVerification)}>{confirming ? <Loader2 className="spin" /> : <ShieldCheck />}Confirmar ingreso ({selectedLines.reduce((total, line) => total + pendingQuantity(line), 0)} unidades)</button></div>
+          <div className="intake-footer"><button className="btn secondary" onClick={closeModal} disabled={canceling || confirming}><X />Cerrar factura</button>{!hasHistoricalMovements && <button className="btn danger-outline" onClick={() => setCancelConfirmOpen(true)} disabled={canceling || confirming || Boolean(documentPendingVerification)}>Eliminar borrador</button>}<button className="btn secondary" onClick={() => void saveDraft({ reviewedLineIds: new Set(lines.filter((line) => selected.has(line.id) && line.status !== "processed").map((line) => line.id)) })} disabled={savingDraft || confirming}>{savingDraft && !savingLineId ? <Loader2 className="spin" /> : <Save />}Guardar toda la revisión</button><button className="btn primary" onClick={() => void confirmIngreso()} disabled={confirming || savingDraft || !selectedLines.length || blockedSelected.length > 0 || Boolean(documentPendingVerification)}>{confirming ? <Loader2 className="spin" /> : <ShieldCheck />}Confirmar ingreso ({selectedLines.reduce((total, line) => total + pendingQuantity(line), 0)} unidades)</button></div>
         </>}
       </section>}
 
@@ -1587,6 +1644,6 @@ export function InventoryIntakeModal(props: Props) {
     {reanalyzeConfirmOpen && document && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card reanalyze-card"><div className="download-symbol"><Sparkles /></div><span className="eyebrow">Acción administrativa</span><h2>{reanalyzeTarget === "sol" ? "¿Reanalizar con Sol?" : "¿Analizar nuevamente con IA?"}</h2><p>{reanalyzeTarget === "sol" ? <>Se enviará otra vez la factura completa a OpenAI usando <b>gpt-5.6-sol</b>. Esta segunda llamada <b>genera un nuevo consumo</b> y se guardará separada del análisis de Terra.</> : <>Esto enviará otra vez todos los archivos de esta factura a OpenAI usando el modelo principal configurado y <b>generará un nuevo consumo</b>. No se usa el análisis en caché.</>} Los productos ya confirmados y el progreso guardado se conservan.</p>{analysis && <div className="reanalyze-cost"><span>Último análisis</span><b>{costLabel(analysis.estimatedCostUsd)}</b><small>Referencia estimada; el nuevo costo puede variar según páginas y búsquedas.</small></div>}<div className="confirm-actions"><button className="btn secondary" onClick={() => setReanalyzeConfirmOpen(false)} disabled={reanalyzing}>No, conservar análisis</button><button className="btn primary" onClick={() => void reanalyzeInvoice()} disabled={reanalyzing || !aiConfig?.aiAvailable}>{reanalyzing ? <Loader2 className="spin" /> : <Sparkles />}{reanalyzeTarget === "sol" ? "Sí, reanalizar con Sol" : "Sí, generar nuevo consumo"}</button></div></div></div>}
     {pendingBarcode && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card barcode-confirm"><div className="download-symbol"><Barcode /></div><h2>Confirmar código detectado</h2><p>Verificá el número y la presentación antes de guardarlo. No se utilizará hasta que lo confirmés.</p><strong>{pendingBarcode.code}</strong><small>{validateBarcode(pendingBarcode.code).type}</small>{pendingBarcode.sourceUrl && <a className="pending-source-link" href={pendingBarcode.sourceUrl} target="_blank" rel="noreferrer">{pendingBarcode.sourceTitle || pendingBarcode.source}</a>}{pendingBarcode.differences?.map((difference) => <div className="alert warning" key={difference}><AlertCircle />{difference}</div>)}<div className="confirm-actions"><button className="btn secondary" onClick={() => setPendingBarcode(null)}>Cancelar</button><button className="btn primary" onClick={confirmPendingBarcode}><Check />Confirmar código</button></div></div></div>}
     {reverseTarget && <div className="nested-modal" role="dialog" aria-modal="true"><div className="confirm-card reverse-card"><div className="delete-symbol"><RotateCcw /></div><h2>Revertir ingreso</h2><p>Se creará un movimiento contrario sin borrar el historial original. Si ya se vendieron unidades y no hay suficiente inventario, la operación se bloqueará.</p><label className="field"><span>Razón de la reversión</span><textarea value={reverseReason} onChange={(event) => setReverseReason(event.target.value)} placeholder="Ej. cantidad ingresada incorrectamente" /></label><div className="confirm-actions"><button className="btn secondary" onClick={() => setReverseTarget(null)} disabled={reversing}>Cancelar</button><button className="btn danger-solid" onClick={() => void reverseOperation()} disabled={reversing || reverseReason.trim().length < 3}>{reversing ? <Loader2 className="spin" /> : <RotateCcw />}Crear reversión</button></div></div></div>}
-    {createProductLine && <div className="nested-modal" role="dialog" aria-modal="true" aria-label="Crear producto desde factura"><div className="confirm-card inline-product-card"><PackagePlus /><h2>Crear producto nuevo</h2><p>Se guardará con las mismas reglas de Productos y quedará seleccionado en esta línea. La factura no se cerrará ni se agregará inventario hasta confirmar el ingreso.</p><label className="field"><span>Nombre</span><input value={newProduct.name} onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })} required /></label><div className="two"><label className="field"><span>Marca</span><input value={newProduct.brand} onChange={(event) => setNewProduct({ ...newProduct, brand: event.target.value })} /></label><label className="field"><span>Presentación</span><input value={newProduct.presentation} onChange={(event) => setNewProduct({ ...newProduct, presentation: event.target.value })} /></label></div><label className="field"><span>UPC / EAN / GTIN</span><input inputMode="numeric" value={newProduct.code} onChange={(event) => setNewProduct({ ...newProduct, code: event.target.value })} /></label><div className="two"><label className="field"><span>Precio de compra USD</span><input type="number" min="0" step=".01" value={newProduct.purchasePriceUsd} onChange={(event) => setNewProduct({ ...newProduct, purchasePriceUsd: event.target.value })} /></label><label className="field"><span>Peso lb</span><input type="number" min="0" step=".001" value={newProduct.weightLb} onChange={(event) => setNewProduct({ ...newProduct, weightLb: event.target.value })} /></label></div><div className="confirm-actions"><button className="btn secondary" onClick={() => setCreateProductLine(null)} disabled={creatingProduct}>Cancelar</button><button className="btn primary" onClick={() => void saveInlineProduct()} disabled={creatingProduct || !newProduct.name.trim()}>{creatingProduct ? <Loader2 className="spin" /> : <Save />}Guardar y seleccionar</button></div></div></div>}
+    {createProductLine && <div className="nested-modal" role="dialog" aria-modal="true" aria-label="Crear producto desde factura"><div className="confirm-card inline-product-card"><PackagePlus /><h2>Crear producto nuevo</h2><p>Se guardará con las mismas reglas de Productos y quedará seleccionado en esta línea. La factura no se cerrará ni se agregará inventario hasta confirmar el ingreso.</p><label className="field"><span>Nombre</span><input value={newProduct.name} onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })} required /></label><div className="two"><label className="field"><span>Marca</span><input value={newProduct.brand} onChange={(event) => setNewProduct({ ...newProduct, brand: event.target.value })} /></label><label className="field"><span>Presentación</span><input value={newProduct.presentation} onChange={(event) => setNewProduct({ ...newProduct, presentation: event.target.value })} /></label></div><label className="field"><span>Código de barras</span><div className="code-row"><input inputMode="numeric" value={newProduct.code} onChange={(event) => setNewProduct({ ...newProduct, code: event.target.value })} placeholder="UPC, EAN o GTIN" /><button type="button" className="scan-btn" onClick={() => onRequestScan(`inline:${createProductLine.id}`)}><Camera /><span>Escanear</span></button></div></label><div className="two"><label className="field"><span>Precio de compra USD</span><input type="number" min="0" step=".01" value={newProduct.purchasePriceUsd} onChange={(event) => setNewProduct({ ...newProduct, purchasePriceUsd: event.target.value })} required /></label><label className="field"><span>Peso lb</span><input type="number" min="0" step=".001" value={newProduct.weightLb} onChange={(event) => setNewProduct({ ...newProduct, weightLb: event.target.value })} required /></label></div>{inlinePricing && <div className="inline-pricing-preview"><span><small>Venta GAM</small><b>{new Intl.NumberFormat("es-CR", { style: "currency", currency: "CRC", maximumFractionDigits: 0 }).format(inlinePricing.gamPriceCrc)}</b></span><span><small>Venta Puerto</small><b>{new Intl.NumberFormat("es-CR", { style: "currency", currency: "CRC", maximumFractionDigits: 0 }).format(inlinePricing.puertoPriceCrc)}</b></span><small>Calculado con los parámetros actuales de NutriPlus.</small></div>}<div className="confirm-actions"><button className="btn secondary" onClick={() => setCreateProductLine(null)} disabled={creatingProduct}>Cancelar</button><button className="btn primary" onClick={() => void saveInlineProduct()} disabled={creatingProduct || !newProduct.name.trim() || !inlinePricing}>{creatingProduct ? <Loader2 className="spin" /> : <Save />}Guardar y seleccionar</button></div></div></div>}
   </div>;
 }

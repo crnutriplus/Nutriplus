@@ -1,4 +1,5 @@
 import { newOrderChildId } from "./orders";
+import { reconcileInventoryInvoicePayments } from "./inventory-invoice-finance";
 
 type Row = Record<string, unknown>;
 
@@ -278,6 +279,7 @@ function saleFromRow(row: Row) {
 
 export async function loadFinanceSnapshot(db: D1Database, range: { from: string; to: string }) {
   await reconcileDeliveredSales(db);
+  await reconcileInventoryInvoicePayments(db);
   const timestamps = rangeTimestamps(range);
   const [salesResult, lineResult, paymentResult, receivableResult, expenseResult, templateResult, budgetResult, invoiceResult, routeResult] = await Promise.all([
     db.prepare(`SELECT * FROM finance_sales WHERE status='RECOGNIZED' AND delivered_at>=? AND delivered_at<? ORDER BY delivered_at DESC,id DESC`).bind(timestamps.from, timestamps.toExclusive).all<Row>(),
@@ -325,7 +327,7 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
   const today = defaultRange().to;
   const dailySales = sales.filter((sale) => sale.deliveredDate === today).reduce((sum, sale) => sum + sale.totalIncome, 0);
   const dailyCashIn = paymentEntries.filter((item) => costaRicaDay(item.createdAt) === today).reduce((sum, item) => sum + item.signedAmount, 0);
-  const dailyExpenses = businessExpenses.filter((item) => item.date === today).reduce((sum, item) => sum + signedExpense(item), 0);
+  const dailyExpenses = businessExpenses.filter((item) => item.date === today && item.category !== "INVENTORY_PURCHASE").reduce((sum, item) => sum + signedExpense(item), 0);
   const receivables = receivableResult.results.map((row) => {
     const sale = saleFromRow(row);
     const paid = Number(row.paid_total || 0);
@@ -419,12 +421,12 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
     trace: { sales, expenses: businessExpenses, payments: paymentEntries },
     sales,
     expenses,
-    cash: { incoming: cashIn, outgoing: allCashOut, net: cashIn - allCashOut, methods, payments: paymentEntries, expenses: businessExpenses },
+    cash: { incoming: cashIn, outgoing: allCashOut, net: cashIn - allCashOut, methods, payments: paymentEntries, expenses: cashExpenses },
     receivables,
     payables: [],
     profitability: { products: productProfitability, orders: orderProfitability, routes: routeProfitability },
     charts: { daily: [...daily.values()].sort((left, right) => left.date.localeCompare(right.date)), expenseByCategory, topProducts: productProfitability.slice(0, 8) },
-    dailySummary: { date: today, deliveredSales: dailySales, collections: dailyCashIn, expenses: dailyExpenses, cashIn: dailyCashIn, cashOut: businessExpenses.filter((item) => item.date === today).reduce((sum, item) => sum + signedExpense(item), 0), netCash: dailyCashIn - businessExpenses.filter((item) => item.date === today).reduce((sum, item) => sum + signedExpense(item), 0) },
+    dailySummary: { date: today, deliveredSales: dailySales, collections: dailyCashIn, expenses: dailyExpenses, cashIn: dailyCashIn, cashOut: cashExpenses.filter((item) => item.date === today).reduce((sum, item) => sum + signedExpense(item), 0), netCash: dailyCashIn - cashExpenses.filter((item) => item.date === today).reduce((sum, item) => sum + signedExpense(item), 0) },
     recurringTemplates: templateResult.results.map((row) => ({ id: String(row.id), name: String(row.name), category: String(row.category), categoryLabel: FINANCE_CATEGORY_LABELS[String(row.category) as keyof typeof FINANCE_CATEGORY_LABELS] || String(row.category), amountCrc: Number(row.amount_crc), currency: String(row.currency), exchangeRateCrc: Number(row.exchange_rate_crc), paymentMethod: String(row.payment_method), frequency: String(row.frequency), nextDueDate: String(row.next_due_date), provider: row.provider ? String(row.provider) : null, notes: row.notes ? String(row.notes) : null, active: Boolean(row.active) })),
     budgets,
     invoices,

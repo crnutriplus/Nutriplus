@@ -19,7 +19,8 @@ const extraction = {
 DB.sqlite.prepare(`INSERT INTO inventory_documents (
   id,file_fingerprint,file_name,mime_types_json,provider,invoice_number,document_date,page_count,file_count,processing_mode,
   analysis_status,active_analysis_id,field_evidence_json,status,warnings_json
-) VALUES ('invoice-auto-paid','fp-auto-paid','invoice.pdf','["application/pdf"]','iherb','946971969','2026-08-29',1,1,'chatgpt_import','completed','analysis-auto-paid','{}','draft','[]')`).run();
+) VALUES ('invoice-auto-paid','fp-auto-paid','invoice.pdf','["application/pdf"]','iherb','946971969','2026-08-20',1,1,'chatgpt_import','completed','analysis-auto-paid','{}','processed','[]')`).run();
+DB.sqlite.prepare("UPDATE inventory_documents SET confirmed_at='2026-08-29T12:00:00.000Z',confirmed_by='owner' WHERE id='invoice-auto-paid'").run();
 DB.sqlite.prepare(`INSERT INTO invoice_ai_analyses (
   id,document_id,file_fingerprint,analysis_number,model,analysis_origin,api_calls,status,extraction_json
 ) VALUES ('analysis-auto-paid','invoice-auto-paid','fp-auto-paid',1,'ChatGPT Import','CHATGPT_IMPORT',0,'completed',?)`).run(JSON.stringify(extraction));
@@ -38,9 +39,24 @@ const expenses = DB.sqlite.prepare("SELECT * FROM finance_expenses WHERE source_
 assert.equal(expenses.length, 2);
 assert.equal(expenses.reduce((sum, row) => sum + Number(row.original_amount_minor), 0), 7000);
 assert.equal(expenses[0].payment_method, "CARD");
+assert.equal(expenses[0].expense_date, "2026-08-29");
 assert.match(expenses[0].notes, /7706/);
 assert.equal(expenses[1].source_type, "INVENTORY_INVOICE_NON_CASH");
 assert.ok(!expenses[0].notes.includes("American Express x7706") || !/\d{12,}/.test(expenses[0].notes));
+assert.equal(DB.sqlite.prepare("SELECT document_date FROM inventory_documents WHERE id='invoice-auto-paid'").get().document_date, "2026-08-20");
+
+DB.sqlite.prepare("UPDATE finance_expenses SET expense_date='2026-08-20' WHERE source_id LIKE 'invoice-auto-paid:payment:%'").run();
+const financeResponse = await worker.fetch(new Request("http://local.test/api/finance?from=2026-08-29&to=2026-08-29"), { DB, ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } }, { waitUntil() {}, passThroughOnException() {} });
+assert.equal(financeResponse.status, 200);
+const finance = await financeResponse.json();
+assert.equal(finance.expenses.length, 2, "both payment components remain traceable");
+assert.equal(finance.cash.expenses.length, 1, "Store Credit must not appear as a cash movement");
+assert.equal(finance.cash.expenses[0].sourceType, "INVENTORY_INVOICE_PAYMENT");
+assert.equal(finance.cash.expenses[0].provider, "iherb");
+assert.match(finance.cash.expenses[0].notes, /7706/);
+assert.equal(finance.cash.expenses[0].date, "2026-08-29", "v2.24 rows are reconciled to their original confirmation day");
+assert.equal(finance.dailySummary.expenses, 0, "inventory purchases are not operating expenses or COGS");
+assert.equal(finance.dailySummary.cashOut, finance.cash.expenses[0].amountCrc);
 
 DB.close();
 console.log("Invoice finance: automatic paid status, split methods, safe last4, personal exclusion and retry idempotency passed");

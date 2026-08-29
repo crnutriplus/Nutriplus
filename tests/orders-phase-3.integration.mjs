@@ -180,7 +180,8 @@ for (let pageNumber = 1; pageNumber <= routePdfDocument.numPages; pageNumber += 
 }
 await loadingRoutePdf.destroy();
 const renderedRouteText = routePdfText.join(" ").replace(/\s+/g, " ");
-assert.match(renderedRouteText, /N\. Cliente Teléfono Dirección Productos Totales E S T/);
+assert.match(renderedRouteText, /N\. Teléfono Dirección Productos Totales E S T/);
+assert.ok(!renderedRouteText.includes("Cliente"), "the delivery PDF must not include the customer column or names");
 assert.ok(!renderedRouteText.includes("NP Teléfono"), "NP must not be an independent column");
 assert.ok(renderedRouteText.includes("8765-8076"));
 for (const order of [cardOrder, cashOrder, sinpeOrder]) {
@@ -203,6 +204,7 @@ await Promise.all(Array.from({ length: 48 }, (_, index) => createOrder([{
 const multiPdf = await call("/api/orders/print?date=2026-09-11");
 assert.equal(multiPdf.response.status, 200, JSON.stringify(multiPdf.body));
 assert.equal(multiPdf.response.headers.get("content-type"), "application/pdf");
+if (process.env.SAVE_ORDER_PDF === "1") await writeFile(new URL("../tmp/pdfs/orders-route-multipage.pdf", import.meta.url), multiPdf.body);
 const pdf = await PDFDocument.load(multiPdf.body);
 assert.ok(pdf.getPageCount() >= 3, `expected at least 3 pages, received ${pdf.getPageCount()}`);
 

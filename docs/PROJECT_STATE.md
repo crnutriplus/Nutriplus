@@ -12,7 +12,7 @@
 
 ## Current development
 
-- NutriPlus v2.24 está publicada: pago automático idempotente de facturas CHATGPT_IMPORT, descuentos/costos exactos, exclusión personal, montos CRC decimales, alta en línea de productos, retorno contextual de Finanzas/Ventas y PDF operativo de Ruta en blanco y negro. No añadió migraciones ni modificó Notifications/Web Push.
+- v2.25 está preparada para la puerta final: producto inline completo con escáner/cálculo, recuperación segura de pending huérfano, compra pagada visible en Caja con fecha de confirmación y PDF de Ruta sin Cliente. No añade migraciones ni modifica Notifications/Web Push.
 
 ## Security
 

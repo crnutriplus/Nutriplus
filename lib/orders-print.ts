@@ -127,8 +127,8 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   const bold = await pdf.embedFont(boldBytes, { subset: true });
   const pageSize: [number, number] = [841.89, 595.28];
   const margin = 24;
-  const widths = [24, 90, 75, 130, 225, 118, 28, 28, 28];
-  const headers = ["N.", "Cliente", "Teléfono", "Dirección", "Productos", "Totales", "E", "S", "T"];
+  const widths = [24, 80, 140, 304, 114, 28, 28, 28];
+  const headers = ["N.", "Teléfono", "Dirección", "Productos", "Totales", "E", "S", "T"];
   const colors = {
     ink: rgb(0, 0, 0),
     muted: rgb(.32, .32, .32),
@@ -188,7 +188,6 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   model.rows.forEach((row) => {
     const values = [
       String(row.position),
-      row.customerName,
       `${row.phone}\n${row.orderNumber}`,
       row.address,
       row.products.join("\n"),
@@ -207,8 +206,8 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
     const lineSets = values.map((value, index) => value.split("\n").flatMap((line) => wrap(
       line,
       widths[index] - 9,
-      index === 4 ? 7.3 : 7.1,
-      index === 5 || index >= 6 ? bold : regular,
+      index === 3 ? 7.3 : 7.1,
+      index === 4 || index >= 5 ? bold : regular,
     )));
     const rowHeight = Math.max(23, Math.max(...lineSets.map((lines) => lines.length)) * 8.2 + 8);
     if (state.y - rowHeight < 38) state = addPage();
@@ -225,9 +224,9 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
       });
       lineSets[columnIndex].forEach((line, lineIndex) => {
         const size = 7.1;
-        const font = columnIndex === 5 || columnIndex >= 6 ? bold : regular;
+        const font = columnIndex === 4 || columnIndex >= 5 ? bold : regular;
         const width = font.widthOfTextAtSize(line, size);
-        const centered = columnIndex === 0 || columnIndex >= 6;
+        const centered = columnIndex === 0 || columnIndex >= 5;
         state.page.drawText(line, {
           x: centered ? x + (widths[columnIndex] - width) / 2 : x + 4,
           y: state.y - 12 - lineIndex * 8.2,

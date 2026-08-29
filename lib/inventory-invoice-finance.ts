@@ -21,6 +21,17 @@ function allocate(total: number, weights: number[]) {
   return result;
 }
 
+export function financialPostingDate(timestamp: string) {
+  const value = new Date(timestamp);
+  if (Number.isNaN(value.getTime())) return timestamp.slice(0, 10);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Costa_Rica",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
 export async function invoiceFinanceStatements(
   db: D1Database,
   document: Row,
@@ -47,7 +58,7 @@ export async function invoiceFinanceStatements(
   const allocations = allocate(businessMinor, rawWeights);
   const settings = await db.prepare("SELECT exchange_rate_crc FROM settings WHERE id=1").first<Row>();
   const exchangeRate = currency === "CRC" ? 1 : Math.max(1, Math.round(Number(settings?.exchange_rate_crc || 520)));
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(document.document_date || "")) ? String(document.document_date) : now.slice(0, 10);
+  const date = financialPostingDate(String(document.confirmed_at || now));
   const provider = String(document.provider || "Proveedor");
   return payments.flatMap((payment, index) => {
     const originalMinor = allocations[index];
@@ -67,6 +78,22 @@ export async function invoiceFinanceStatements(
       amountCrc, originalMinor, currency, exchangeRate, method, provider,
       `${String(payment.payment_method || "No especificado")}${last4}. Importe comercial; las líneas omitidas permanecen conciliadas pero excluidas.`,
       sourceType, sourceId, `invoice-payment:${sourceId}`, now,
-    )];
+    ), db.prepare(`UPDATE finance_expenses SET expense_date=?
+      WHERE source_id=? AND source_type IN ('INVENTORY_INVOICE_PAYMENT','INVENTORY_INVOICE_NON_CASH')
+        AND entry_type='EXPENSE' AND expense_date<>?`)
+      .bind(date, sourceId, date)];
   });
+}
+
+export async function reconcileInventoryInvoicePayments(db: D1Database) {
+  const documents = await db.prepare(`SELECT * FROM inventory_documents
+    WHERE processing_mode='chatgpt_import' AND confirmed_at IS NOT NULL AND active_analysis_id IS NOT NULL
+    ORDER BY confirmed_at DESC LIMIT 100`).all<Row>();
+  const statements: D1PreparedStatement[] = [];
+  for (const document of documents.results) {
+    const lines = await db.prepare("SELECT * FROM inventory_document_lines WHERE document_id=? ORDER BY line_index,id")
+      .bind(String(document.id)).all<Row>();
+    statements.push(...await invoiceFinanceStatements(db, document, lines.results, String(document.confirmed_at)));
+  }
+  if (statements.length) await db.batch(statements);
 }

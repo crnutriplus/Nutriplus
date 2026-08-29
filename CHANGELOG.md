@@ -7,6 +7,14 @@ NutriPlus mantiene dos identificadores independientes:
 
 `package.json` usa SemVer, por lo que representa la versión pública `2.23` como `2.23.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
 
+## 2.25 — 2026-08-29
+
+- Crear producto desde una factura exige y conserva precio de compra y peso, muestra los precios derivados con la calculadora y parámetros existentes, admite código manual o el escáner actual y autoselecciona sin mover inventario antes de confirmar.
+- El guard de ingreso pendiente se limita a su factura. Un `404` confirmado por el servidor limpia el bloqueo huérfano sin tocar inventario; una operación existente continúa protegida contra reintentos.
+- Las compras de inventario pagadas aparecen en Finanzas → Caja con proveedor, factura, moneda, método y últimos cuatro dígitos. Se contabilizan el día de confirmación en Costa Rica y conservan aparte la fecha original del documento.
+- Store Credit permanece trazable como componente no monetario, sin afectar Caja, gasto operativo ni COGS; los componentes financieros conservan idempotencia por factura y pago.
+- El PDF de Ruta elimina Cliente y redistribuye el espacio a Productos y Dirección, conservando teléfono/NP, numeración, totales, blanco y negro, ajuste dinámico y multipágina.
+
 ## 2.24 — 2026-08-29
 
 - Las facturas importadas desde ChatGPT conservan estado pagado, pagos divididos, método, moneda, fecha, procedencia y solo los últimos cuatro dígitos; al confirmar Inventario crean una única salida idempotente por medio en el ledger financiero existente.

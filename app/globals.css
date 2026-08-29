@@ -637,6 +637,9 @@ td small { margin-top: 3px; display: block; color: #8a938b; }
 .line-omit-btn { flex: 0 0 auto; }
 .inline-product-create { margin-top: 8px; align-self: flex-start; }
 .inline-product-card { width: min(560px, calc(100vw - 24px)); }
+.inline-pricing-preview { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--soft); }
+.inline-pricing-preview span { display: flex; flex-direction: column; gap: 2px; }
+.inline-pricing-preview > small { grid-column: 1 / -1; color: var(--muted); }
 .invoice-line-grid .wide { grid-column: span 2; }
 .barcode-field > div { display: flex; gap: 6px; }
 .barcode-field input { flex: 1; }

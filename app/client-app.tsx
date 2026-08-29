@@ -1990,6 +1990,7 @@ export function NutriPlusApp() {
       open={inventoryIntakeOpen}
       products={products}
       quotes={quotes}
+      settings={settings}
       quickText={quantityText}
       setQuickText={setQuantityText}
       onQuickSave={saveQuantities}
