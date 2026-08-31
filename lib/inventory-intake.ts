@@ -1,4 +1,5 @@
 import { validateBarcode } from "./barcodes";
+import { normalizePresentation } from "./product-presentation";
 import { normalizeName } from "./pricing";
 import type { ParsedInvoiceLine } from "./invoice-parser";
 
@@ -92,6 +93,40 @@ export type IntakeLineDto = {
     confirmedAt: string;
   }>;
 };
+
+export type CanonicalProductIdentityInput = {
+  id: number;
+  name: string;
+  code?: string | null;
+  brand?: string | null;
+  presentation?: string | null;
+  quantityAvailable?: number | null;
+  minimumStock?: number | null;
+  minimumStockEnabled?: boolean | null;
+};
+
+/**
+ * Projects the existing Products record into the invoice-review identity.
+ * The product table remains the source of truth for its primary barcode and
+ * short presentation; invoice wording stays preserved in originalDescription.
+ */
+export function canonicalProductIdentity(product: CanonicalProductIdentityInput) {
+  const code = validateBarcode(product.code);
+  return {
+    id: Number(product.id),
+    name: String(product.name),
+    brand: String(product.brand || ""),
+    presentation: normalizePresentation(product.presentation),
+    quantityAvailable: Number(product.quantityAvailable || 0),
+    minimumStock: Number(product.minimumStock || 0),
+    minimumStockEnabled: Boolean(product.minimumStockEnabled),
+    barcode: code.valid && code.normalized && code.canonical ? {
+      value: code.normalized,
+      canonical: code.canonical,
+      type: code.type || "",
+    } : null,
+  };
+}
 
 type ProductIdentityRow = Record<string, unknown> & {
   id: number;

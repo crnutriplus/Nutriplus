@@ -131,6 +131,7 @@ async function serviceWorkerHarness() {
   const context = {
     self,
     caches: { open: async () => cache, keys: async () => [], delete: async () => true },
+    crypto: { randomUUID: () => "navigation-test-id" },
     fetch: async () => new Response("asset", { status: 200 }),
     URL,
     Response,
@@ -194,7 +195,12 @@ test("Service Worker never intercepts API data and accepts only safe same-origin
   });
   await clickPromise;
   assert.deepEqual(harness.focused, ["existing-client"]);
-  assert.deepEqual(JSON.parse(JSON.stringify(harness.posted)), [{ id: "existing-client", message: { type: "NUTRIPLUS_NAVIGATE", destination: { type: "ROUTE", date: "2026-08-30", id: "route-1" } } }]);
+  const posted = JSON.parse(JSON.stringify(harness.posted));
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].id, "existing-client");
+  assert.deepEqual(posted[0].message.destination, { type: "ROUTE", date: "2026-08-30", id: "route-1" });
+  assert.equal(posted[0].message.type, "NUTRIPLUS_NAVIGATE");
+  assert.match(posted[0].message.navigationId, /^pushnav-\d+-navigation-test-id$/);
   assert.equal(harness.opened.length, 1, "a focused app must receive the destination instead of opening a duplicate window");
   assert.match(harness.source, /addEventListener\("push"/);
   assert.match(harness.source, /addEventListener\("notificationclick"/);

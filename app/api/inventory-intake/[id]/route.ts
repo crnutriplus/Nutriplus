@@ -2,6 +2,7 @@ import { ensureDatabase, getD1 } from "@/db";
 import { errorResponse } from "@/lib/api-helpers";
 import { validateBarcode } from "@/lib/barcodes";
 import { loadIntakeDocument } from "@/lib/inventory-document";
+import { normalizePresentation } from "@/lib/product-presentation";
 import { lineFromRow } from "@/lib/inventory-intake";
 import { documentStatusStatement, loadDocumentMovementRows, progressForLine } from "@/lib/inventory-line-progress";
 
@@ -31,6 +32,7 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
     const storedLines = await db.prepare("SELECT * FROM inventory_document_lines WHERE document_id=?")
       .bind(documentId).all<Record<string, unknown>>();
     const storedById = new Map(storedLines.results.map((line) => [String(line.id), line]));
+    const storedByLineKey = new Map(storedLines.results.map((line) => [String(line.line_key), line]));
     const movementRows = await loadDocumentMovementRows(db, [documentId]);
     const progressById = new Map(storedLines.results.map((line) => {
       const dto = lineFromRow(line);
@@ -38,6 +40,14 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
     }));
     const now = new Date().toISOString();
     const text = (value: unknown, max = 500) => typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, max) : "";
+    const storedForReference = (sourceId: string, sourceLineKey: string) => {
+      const byId = sourceId ? storedById.get(sourceId) : undefined;
+      const byLineKey = sourceLineKey ? storedByLineKey.get(sourceLineKey) : undefined;
+      if (byId && byLineKey && String(byId.id) !== String(byLineKey.id)) {
+        throw new Error("INVENTORY_LINE_REFERENCE_CONFLICT");
+      }
+      return byId || byLineKey;
+    };
     const statements: D1PreparedStatement[] = [];
     if (payload.metadataChanged !== false) {
       statements.push(db.prepare(`UPDATE inventory_documents SET provider=?,order_number=?,shipment_number=?,document_date=?,updated_at=? WHERE id=?`)
@@ -64,11 +74,21 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
     deletedLineIds.forEach((id) => statements.push(db.prepare(`DELETE FROM inventory_document_lines
       WHERE id=? AND document_id=? AND processed_operation_id IS NULL AND line_key LIKE 'manual-%'`).bind(id, documentId)));
     const lines = Array.isArray(payload.lines) ? payload.lines.slice(0, 500) : [];
+    const responseIds = new Set<string>();
+    const seenLineIds = new Set<string>();
+    const seenLineKeys = new Set<string>();
     lines.forEach((line, lineIndex) => {
       const storedLineIndex = Number(line.lineIndex);
       const orderedLineIndex = Number.isInteger(storedLineIndex) && storedLineIndex >= 0 && storedLineIndex < 10_000 ? storedLineIndex : lineIndex;
-      const id = text(line.id, 100) || `iline-${crypto.randomUUID()}`;
-      const stored = storedById.get(id);
+      const sourceId = text(line.id, 100);
+      const sourceLineKey = text(line.lineKey, 150);
+      const stored = storedForReference(sourceId, sourceLineKey);
+      const id = stored ? String(stored.id) : sourceId || `iline-${crypto.randomUUID()}`;
+      const lineKey = stored ? text(stored.line_key, 150) || sourceLineKey || `manual-${id}` : sourceLineKey || `manual-${id}`;
+      if (seenLineIds.has(id) || seenLineKeys.has(lineKey)) throw new Error("INVENTORY_LINE_REFERENCE_DUPLICATE");
+      seenLineIds.add(id);
+      seenLineKeys.add(lineKey);
+      responseIds.add(id);
       const progress = progressById.get(id);
       const name = text(line.name, 500) || "Producto pendiente de identificar";
       const received = line.receivedQuantity == null || line.receivedQuantity === "" ? null : Number(line.receivedQuantity);
@@ -78,11 +98,11 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
       const barcode = validateBarcode(line.barcode);
       const values = {
         id,
-        lineKey: text(line.lineKey, 150) || `manual-${id}`,
+        lineKey,
         original: text(line.originalDescription, 1000) || name,
         name,
         brand: text(line.brand, 200),
-        presentation: text(line.presentation, 250),
+        presentation: normalizePresentation(text(line.presentation, 250)),
         size: text(line.size, 200),
         flavor: text(line.flavor, 150),
         concentration: text(line.concentration, 100),
@@ -104,7 +124,7 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
         evidence: line.fieldEvidence && typeof line.fieldEvidence === "object" ? line.fieldEvidence : {},
         confirmed: line.barcodeConfirmed === true && barcode.valid ? 1 : 0,
         selected: line.selectedForIngress !== false && line.selected !== false ? 1 : 0,
-        reviewSavedAt: requestedReviewedLineIds.has(id) ? now : null,
+        reviewSavedAt: requestedReviewedLineIds.has(sourceId) || requestedReviewedLineIds.has(id) ? now : null,
         status: text(line.status, 50) || "requires_confirm_code",
         productId: Number(line.matchProductId) > 0 ? Number(line.matchProductId) : null,
         quoteId: Number(line.matchNonInventoryId) > 0 ? Number(line.matchNonInventoryId) : null,
@@ -183,12 +203,25 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
       statements.push(documentStatusStatement(db, documentId, now));
       await db.batch(statements);
     }
-    const responseIds = [...new Set(lines.map((line) => text(line.id, 100)).filter(Boolean))];
     const loaded = await loadIntakeDocument(db, documentId);
-    const updated = loaded?.lines.filter((line) => responseIds.includes(line.id)) || [];
+    const updated = loaded?.lines.filter((line) => responseIds.has(line.id)) || [];
     return Response.json({ saved: true, document: loaded?.document, lines: updated, reviewedLineIds: [...reviewedLineIds] });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
+    if (message === "INVENTORY_LINE_REFERENCE_CONFLICT") {
+      return Response.json({
+        error: "La factura reanudada mezcla referencias de dos líneas distintas. Recargala antes de guardar; no se modificó el inventario.",
+        title: "Factura desactualizada",
+        code: "INVENTORY_LINE_REFERENCE_CONFLICT",
+      }, { status: 409 });
+    }
+    if (message === "INVENTORY_LINE_REFERENCE_DUPLICATE") {
+      return Response.json({
+        error: "La misma línea aparece más de una vez en esta actualización. Recargala antes de guardar; no se modificó el inventario.",
+        title: "Línea repetida",
+        code: "INVENTORY_LINE_REFERENCE_DUPLICATE",
+      }, { status: 409 });
+    }
     if (message.startsWith("INVENTORY_ACTIVE_LINE_CANNOT_BE_OMITTED:")) {
       const name = message.slice("INVENTORY_ACTIVE_LINE_CANNOT_BE_OMITTED:".length);
       return Response.json({

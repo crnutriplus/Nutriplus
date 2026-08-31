@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { validateBarcode } from "@/lib/barcodes";
-import type { IntakeLineDto, IntakeLineStatus } from "@/lib/inventory-intake";
+import { canonicalProductIdentity, type IntakeLineDto, type IntakeLineStatus } from "@/lib/inventory-intake";
 import { normalizePresentation } from "@/lib/product-presentation";
 import { calculatePrices, normalizeName, searchProducts, type NonInventoryRecord, type PricingSettings, type ProductRecord } from "@/lib/pricing";
 
@@ -397,11 +397,55 @@ function pickerResults(line: IntakeLineDto, products: ProductRecord[], quotes: N
   }).slice(0, 40);
 }
 
+function canonicalInventorySelection(product: ProductRecord): Partial<IntakeLineDto> {
+  const canonical = canonicalProductIdentity(product);
+  return {
+    ...(canonical.barcode ? {
+      barcode: canonical.barcode.value,
+      canonicalBarcode: canonical.barcode.canonical,
+      barcodeType: canonical.barcode.type,
+      barcodeConfirmed: true,
+      barcodeMethod: "product_catalog",
+      barcodeSource: "Producto canónico de NutriPlus",
+      barcodeSourceUrl: "",
+      barcodeSourceTitle: product.name,
+      barcodeDifferences: [],
+      barcodeLookupStatus: "found_exact" as const,
+    } : {}),
+    name: canonical.name,
+    brand: canonical.brand,
+    presentation: canonical.presentation,
+    ...(canonical.presentation ? { size: canonical.presentation } : {}),
+    matchProductId: canonical.id,
+    matchNonInventoryId: null,
+    action: "existing",
+    match: {
+      source: "inventory",
+      id: canonical.id,
+      name: canonical.name,
+      code: canonical.barcode?.value || null,
+      quantityAvailable: canonical.quantityAvailable,
+      brand: canonical.brand || null,
+      presentation: canonical.presentation || null,
+      minimumStock: canonical.minimumStock,
+      minimumStockEnabled: canonical.minimumStockEnabled,
+      matchReason: "identity",
+    },
+  };
+}
+
 function classifyLine(line: IntakeLineDto, products: ProductRecord[], quotes: NonInventoryRecord[]): IntakeLineDto {
   if (line.action === "ignore" || line.status === "processed") return line;
   const barcode = validateBarcode(line.barcode);
   if (!barcode.valid || !barcode.normalized || !barcode.canonical) {
-    return { ...line, barcodeConfirmed: false, status: "requires_confirm_code", action: "pending", canonicalBarcode: "", barcodeType: "", match: null, matchProductId: null, matchNonInventoryId: null };
+    return {
+      ...line,
+      barcodeConfirmed: false,
+      status: "requires_confirm_code",
+      action: line.matchProductId ? "existing" : line.matchNonInventoryId ? "move" : "pending",
+      canonicalBarcode: "",
+      barcodeType: "",
+    };
   }
   const owners = equivalentOwners(barcode.normalized, products, quotes);
   let next: IntakeLineDto = { ...line, barcode: barcode.normalized, canonicalBarcode: barcode.canonical, barcodeType: barcode.type || "" };
@@ -630,10 +674,7 @@ export function InventoryIntakeModal(props: Props) {
       onProductsChanged(products.some((item) => item.id === product.id)
         ? products.map((item) => item.id === product.id ? product : item)
         : [...products, product]);
-      updateLine(createProductLine.id, {
-        matchProductId: product.id, matchNonInventoryId: null, action: "existing", status: "confirmed",
-        match: { source: "inventory", id: product.id, name: product.name, code: product.code, quantityAvailable: product.quantityAvailable },
-      }, false);
+      updateLine(createProductLine.id, canonicalInventorySelection(product));
       setCreateProductLine(null);
       setMatchPickerLineId(null);
       onNotify({ type: "success", text: result.deduplicated
@@ -1222,7 +1263,7 @@ export function InventoryIntakeModal(props: Props) {
     if (source === "inventory") {
       const product = products.find((item) => item.id === id);
       if (!product) return;
-      updateLine(line.id, { matchProductId: id, matchNonInventoryId: null, action: "existing", match: { source: "inventory", id, name: product.name, code: product.code, quantityAvailable: product.quantityAvailable, brand: product.brand || null, presentation: product.presentation || null, minimumStock: product.minimumStock, minimumStockEnabled: product.minimumStockEnabled, matchReason: "identity" } });
+      updateLine(line.id, canonicalInventorySelection(product));
     } else {
       const quote = quotes.find((item) => item.id === id);
       if (!quote) return;
@@ -1302,7 +1343,7 @@ export function InventoryIntakeModal(props: Props) {
       localStorage.setItem("nutriplus-pending-intake-operation", JSON.stringify(pending));
       setPendingVerification(pending);
       confirmationSent = true;
-      const result = await apiJson<{ operation: { id: string; status: string }; products: ProductRecord[] }>(await fetch(`/api/inventory-intake/${document.id}/confirm`, {
+      const result = await apiJson<{ operation: { id: string; status: string }; products?: ProductRecord[]; pendingVerification?: boolean }>(await fetch(`/api/inventory-intake/${document.id}/confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Mutation-Id": id },
         body: JSON.stringify({ operationId: id, lines: targetLines.map((line) => ({
@@ -1311,7 +1352,11 @@ export function InventoryIntakeModal(props: Props) {
           selected: true,
         })) }),
       }));
-      onProductsChanged(result.products);
+      if (result.operation.status !== "completed" || result.pendingVerification) {
+        onNotify({ type: "warning", text: "El servidor todavía está comprobando este ingreso. Esperá y usá “Comprobar estado”; la factura sigue guardada y NutriPlus no volverá a sumar las unidades.", sticky: true });
+        return;
+      }
+      onProductsChanged(result.products || []);
       await onRefresh();
       const confirmedIds = new Set(targetLines.map((line) => line.id));
       setLines((current) => current.map((line) => confirmedIds.has(line.id) ? lineAfterConfirmation(line, id) : line));
@@ -1333,6 +1378,17 @@ export function InventoryIntakeModal(props: Props) {
         onNotify({ type: "error", text: `${intakeErrorText(error, "No se pudo guardar la revisión.")} El ingreso no se inició y el inventario no cambió.`, sticky: true });
         return;
       }
+      if (error instanceof IntakeApiError && error.status >= 400) {
+        clearPendingOperation(pending);
+        await onRefresh().catch(() => undefined);
+        onNotify({
+          type: "error",
+          title: error.payload.title || "No se completó el ingreso",
+          text: `${intakeErrorText(error, "No se pudo confirmar el ingreso.")} Corregí lo indicado y podés intentarlo nuevamente. ESTADO DE LOS DATOS: el servidor respondió y no existe un ingreso pendiente con este identificador; el inventario no se volverá a sumar.`,
+          sticky: true,
+        });
+        return;
+      }
       try {
         const response = await fetch(`/api/inventory-intake/operations/${encodeURIComponent(id)}`);
         if (response.ok) {
@@ -1352,6 +1408,17 @@ export function InventoryIntakeModal(props: Props) {
             onNotify({ type: "success", text: "El ingreso fue completado y verificado después del problema de conexión.", sticky: true });
             return;
           }
+        }
+        if (response.status === 404) {
+          clearPendingOperation(pending);
+          await onRefresh().catch(() => undefined);
+          onNotify({
+            type: "error",
+            title: "El ingreso no se creó",
+            text: `${intakeErrorText(error, "No se pudo confirmar el ingreso.")} El servidor confirmó que la transacción falló antes de guardar el movimiento. Corregí lo indicado y podés intentarlo nuevamente. ESTADO DE LOS DATOS: el inventario no cambió y no queda un bloqueo pendiente.`,
+            sticky: true,
+          });
+          return;
         }
       } catch { /* La operación queda pendiente de comprobación manual. */ }
       onNotify({ type: "error", text: `${intakeErrorText(error, "No se pudo confirmar el ingreso.")} No lo repitás: usá “Comprobar estado” para verificar si se registró.`, sticky: true });

@@ -16,7 +16,8 @@ test("inline invoice product reuses pricing and the existing scanner without lea
 test("inline creation requires persisted pricing inputs and autoselects without inventory movement", () => {
   assert.match(intake, /purchasePriceUsd: newProduct\.purchasePriceUsd === "" \? null : Number/);
   assert.match(intake, /weightLb: newProduct\.weightLb === "" \? null : Number/);
-  assert.match(intake, /matchProductId: product\.id[\s\S]*action: "existing", status: "confirmed"/);
+  assert.match(intake, /updateLine\(createProductLine\.id, canonicalInventorySelection\(product\)\)/);
+  assert.match(intake, /matchProductId: canonical\.id[\s\S]*action: "existing"/);
   assert.match(intake, /quantityAvailable: 0/);
   assert.match(intake, /disabled=\{creatingProduct \|\| !newProduct\.name\.trim\(\) \|\| !inlinePricing \|\| minimumStockEnabled && \(!Number\.isInteger\(Number\(minimumStock\)\) \|\| Number\(minimumStock\) < 0\)\}/);
 });
@@ -24,6 +25,7 @@ test("inline creation requires persisted pricing inputs and autoselects without 
 test("pending verification is scoped to its invoice and a server-confirmed orphan is recoverable", () => {
   assert.match(intake, /pendingVerification\?\.documentId === document\?\.id \? pendingVerification : null/);
   assert.match(intake, /if \(response\.status === 404\) \{[\s\S]*clearPendingOperation\(target\)/);
+  assert.match(intake, /if \(response\.status === 404\) \{[\s\S]*clearPendingOperation\(pending\)/);
   assert.match(intake, /Boolean\(documentPendingVerification\)/);
   const productCreation = intake.indexOf("async function saveInlineProduct()");
   const productCreationEnd = intake.indexOf("const resetInvoiceReview", productCreation);

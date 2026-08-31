@@ -1,5 +1,6 @@
 import { resolveParsedLine, type IntakeLineDto } from "./inventory-intake";
 import type { ParsedInvoice } from "./invoice-parser";
+import { normalizePresentation } from "./product-presentation";
 
 type ReplaceLinesOptions = {
   preserveReviewed?: boolean;
@@ -45,6 +46,7 @@ export async function replaceDocumentLinesFromParsed(
 }
 
 export function insertLineStatement(db: D1Database, documentId: string, line: IntakeLineDto, now = new Date().toISOString(), lineIndex = 0) {
+  const presentation = normalizePresentation(line.presentation) || null;
   return db.prepare(`INSERT INTO inventory_document_lines (
     id,document_id,line_key,line_index,page_number,original_description,name,brand,presentation,size,flavor,concentration,
     billed_quantity,received_quantity,units_per_package,total_to_add,barcode,canonical_barcode,barcode_type,
@@ -54,7 +56,7 @@ export function insertLineStatement(db: D1Database, documentId: string, line: In
     created_at,updated_at
   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
     line.id, documentId, line.lineKey, lineIndex, line.pageNumber, line.originalDescription, line.name, line.brand || null,
-    line.presentation || null, line.size || null, line.flavor || null, line.concentration || null,
+    presentation, line.size || null, line.flavor || null, line.concentration || null,
     line.billedQuantity, line.receivedQuantity, line.unitsPerPackage, line.totalToAdd, line.barcode || null,
     line.canonicalBarcode || null, line.barcodeType || null, line.secondaryId || null, line.secondaryType || null,
     line.barcodeMethod || null, line.barcodeSource || null, line.barcodeSourceUrl || null, line.barcodeSourceTitle || null,

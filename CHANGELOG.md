@@ -7,6 +7,14 @@ NutriPlus mantiene dos identificadores independientes:
 
 `package.json` usa SemVer, por lo que representa la versión pública `2.23` como `2.23.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
 
+## 2.27 — 2026-08-31
+
+- Al seleccionar un producto existente desde Facturas/CHATGPT_IMPORT, la línea vuelve a hidratar la identidad canónica completa de Productos, incluido su código. Si el producto ya tiene un código válido, no vuelve a pedirlo ni crea otro producto.
+- Una factura reanudada resuelve su línea por el ID persistido o por su `lineKey` estable. Referencias cruzadas o repetidas se bloquean antes de escribir; un ingreso, retry, reversa y reingreso continúan siendo idempotentes y trazables.
+- Las presentaciones de Facturas, creación inline y Productos usan la misma normalización comercial: por ejemplo, `30 gomitas; de 3 años en adelante` pasa a `30 gomitas` y `30 ml (1 oz. líq.)` a `30 ml`.
+- Los deep links tipados de Web Push conservan su destino entre Service Worker, ventana existente o nueva e inicialización de React, con cola `READY/ACK` y sin abrir una pestaña duplicada.
+- No se añadió ninguna migración, tabla, endpoint ni interfaz de Clientes/CRM; tampoco se realizaron llamadas pagadas a OpenAI. La validación física de los nuevos toques de deep link en Android/PWA sigue pendiente del propietario.
+
 ## 2.26 — 2026-08-31
 
 - Facturas busca por múltiples palabras y ordena las sugerencias por código de barras, proveedor+SKU/equivalencia, señales de marca/presentación y finalmente tokens/fuzzy. Una selección explícita fija el `productId` canónico: conserva los datos originales de factura, carga la ficha interna y nunca crea ni acredita otro producto.

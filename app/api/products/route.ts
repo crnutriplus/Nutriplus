@@ -1,6 +1,7 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { errorResponse, parseProductInput } from "@/lib/api-helpers";
 import { runIdempotentMutation } from "@/lib/mutations";
+import { normalizePresentation } from "@/lib/product-presentation";
 import { normalizeName, productFromRow, searchTokens } from "@/lib/pricing";
 
 export async function GET(request: Request) {
@@ -53,7 +54,7 @@ export async function POST(request: Request) {
     const payload = (await request.json()) as Record<string, unknown>;
     const product = parseProductInput(payload, { allowPending: true });
     const brand = typeof payload.brand === "string" ? payload.brand.trim().slice(0, 200) || null : null;
-    const presentation = typeof payload.presentation === "string" ? payload.presentation.trim().slice(0, 250) || null : null;
+    const presentation = normalizePresentation(typeof payload.presentation === "string" ? payload.presentation.slice(0, 250) : "") || null;
     await ensureDatabase();
     const db = getD1();
     const result = await runIdempotentMutation(db, request, payload, async () => {

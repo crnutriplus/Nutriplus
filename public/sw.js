@@ -1,5 +1,7 @@
-const CACHE_NAME = "nutriplus-shell-v4";
+const CACHE_NAME = "nutriplus-shell-v5";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/nutriplus-icon-192.png", "/nutriplus-icon-512.png"];
+const PENDING_NAVIGATION_KEY = "/__nutriplus/pending-notification-navigation";
+const PENDING_NAVIGATION_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_DESTINATION = { type: "NOTIFICATIONS" };
 const SAFE_ID = /^[A-Za-z0-9:_-]{1,160}$/;
 const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
@@ -49,6 +51,47 @@ function destinationTarget(destination) {
   if (destination.type === "ROUTE") return `/?tab=orders&route=1&date=${encodeURIComponent(destination.date)}${destination.id ? `&routeId=${encodeURIComponent(destination.id)}` : ""}`;
   if (destination.type === "INVOICE") return `/?tab=products&invoice=${encodeURIComponent(destination.id)}`;
   return "/?notifications=1";
+}
+
+async function pendingNavigation() {
+  const cache = await caches.open(CACHE_NAME);
+  const response = await cache.match(PENDING_NAVIGATION_KEY);
+  if (!response) return null;
+  try {
+    const value = await response.json();
+    const destination = safeDestination(value.destination);
+    const navigationId = safeId(value.navigationId);
+    const createdAt = Number(value.createdAt || 0);
+    if (!navigationId || !createdAt || Date.now() - createdAt > PENDING_NAVIGATION_TTL_MS) {
+      await cache.delete(PENDING_NAVIGATION_KEY);
+      return null;
+    }
+    return { navigationId, destination, createdAt };
+  } catch {
+    await cache.delete(PENDING_NAVIGATION_KEY);
+    return null;
+  }
+}
+
+async function rememberNavigation(destination) {
+  const randomPart = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
+  const navigation = {
+    navigationId: `pushnav-${Date.now()}-${randomPart}`,
+    destination,
+    createdAt: Date.now(),
+  };
+  const cache = await caches.open(CACHE_NAME);
+  await cache.put(PENDING_NAVIGATION_KEY, new Response(JSON.stringify(navigation), {
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  }));
+  return navigation;
+}
+
+async function acknowledgeNavigation(navigationId) {
+  const navigation = await pendingNavigation();
+  if (!navigation || navigation.navigationId !== safeId(navigationId)) return;
+  const cache = await caches.open(CACHE_NAME);
+  await cache.delete(PENDING_NAVIGATION_KEY);
 }
 
 // Old durable pushes may still contain a target URL. Accept only the small
@@ -150,11 +193,12 @@ self.addEventListener("notificationclick", (event) => {
   const destination = safeDestination(event.notification.data?.destination);
   const target = destinationTarget(destination);
   event.waitUntil((async () => {
+    const navigation = await rememberNavigation(destination);
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     const existing = windows.find((client) => "focus" in client);
     if (existing) {
       await existing.focus();
-      if ("postMessage" in existing) existing.postMessage({ type: "NUTRIPLUS_NAVIGATE", destination });
+      if ("postMessage" in existing) existing.postMessage({ type: "NUTRIPLUS_NAVIGATE", destination, navigationId: navigation.navigationId });
       return existing;
     }
     return self.clients.openWindow(target);
@@ -163,4 +207,13 @@ self.addEventListener("notificationclick", (event) => {
 
 self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
+  if (event.data?.type === "NUTRIPLUS_CLIENT_READY" && event.source && "postMessage" in event.source) {
+    event.waitUntil((async () => {
+      const navigation = await pendingNavigation();
+      if (navigation) event.source.postMessage({ type: "NUTRIPLUS_NAVIGATE", destination: navigation.destination, navigationId: navigation.navigationId });
+    })());
+  }
+  if (event.data?.type === "NUTRIPLUS_NAVIGATION_ACK") {
+    event.waitUntil(acknowledgeNavigation(event.data.navigationId));
+  }
 });

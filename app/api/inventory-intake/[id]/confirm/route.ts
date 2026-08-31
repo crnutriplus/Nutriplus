@@ -1,8 +1,9 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { validateBarcode } from "@/lib/barcodes";
-import { descriptionSignature, lineFromRow, presentationSignature } from "@/lib/inventory-intake";
+import { canonicalProductIdentity, descriptionSignature, lineFromRow, presentationSignature } from "@/lib/inventory-intake";
 import { documentStatusStatement, loadDocumentMovementRows, progressForLine } from "@/lib/inventory-line-progress";
 import { invoiceFinanceStatements } from "@/lib/inventory-invoice-finance";
+import { normalizePresentation } from "@/lib/product-presentation";
 import { normalizeName, productFromRow } from "@/lib/pricing";
 import { requestUserLabel } from "@/lib/request-user";
 
@@ -204,6 +205,22 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const storedLines = await db.prepare("SELECT * FROM inventory_document_lines WHERE document_id=?").bind(documentId).all<Record<string, unknown>>();
     const movementRows = await loadDocumentMovementRows(db, [documentId]);
     const storedById = new Map(storedLines.results.map((line) => [String(line.id), line]));
+    const storedByLineKey = new Map(storedLines.results.map((line) => [String(line.line_key), line]));
+    const storedForSource = (source: Pick<ConfirmLine, "id" | "lineKey">) => {
+      const sourceId = cleanText(source.id, 100);
+      const sourceLineKey = cleanText(source.lineKey, 150);
+      const byId = sourceId ? storedById.get(sourceId) : undefined;
+      const byLineKey = sourceLineKey ? storedByLineKey.get(sourceLineKey) : undefined;
+      if (byId && byLineKey && String(byId.id) !== String(byLineKey.id)) {
+        throw new InventoryConfirmError(
+          "La factura reanudada contiene referencias cruzadas de dos líneas distintas. Volvé a cargarla antes de confirmar; el inventario no fue modificado.",
+          409,
+          "INVENTORY_LINE_REFERENCE_CONFLICT",
+          "Factura desactualizada",
+        );
+      }
+      return byId || byLineKey;
+    };
     const progressById = new Map(storedLines.results.map((line) => {
       const dto = lineFromRow(line);
       return [dto.id, progressForLine(dto, movementRows)] as const;
@@ -215,7 +232,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const quoteCodes = canonicalOwners(quotesResult.results);
     const errors: string[] = [];
     const alreadyProcessed = sourceLines.flatMap((source) => {
-      const id = cleanText(source.id, 100);
+      const stored = storedForSource(source);
+      const id = stored ? String(stored.id) : cleanText(source.id, 100);
       const progress = progressById.get(id);
       return progress && progress.originalQuantity > 0 && progress.availableQuantity === 0 ? [id] : [];
     });
@@ -228,10 +246,28 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const pendingCodeNames: string[] = [];
 
     const lines: CleanLine[] = sourceLines.map((source, index) => {
-      const id = cleanText(source.id, 100) || `iline-${crypto.randomUUID()}`;
-      const lineKey = cleanText(source.lineKey, 150) || `manual-${id}`;
-      const stored = storedById.get(id);
-      const name = cleanText(source.name, 500);
+      const sourceId = cleanText(source.id, 100);
+      const sourceLineKey = cleanText(source.lineKey, 150);
+      const stored = storedForSource(source);
+      const id = stored ? String(stored.id) : sourceId || `iline-${crypto.randomUUID()}`;
+      const lineKey = stored ? cleanText(stored.line_key, 150) || sourceLineKey || `manual-${id}` : sourceLineKey || `manual-${id}`;
+      const action = cleanText(source.action, 20) as CleanLine["action"];
+      const matchProductId = Number.isInteger(Number(source.matchProductId)) && Number(source.matchProductId) > 0 ? Number(source.matchProductId) : null;
+      const matchNonInventoryId = Number.isInteger(Number(source.matchNonInventoryId)) && Number(source.matchNonInventoryId) > 0 ? Number(source.matchNonInventoryId) : null;
+      const selectedProductRow = action === "existing" && matchProductId
+        ? productsResult.results.find((product) => Number(product.id) === matchProductId)
+        : null;
+      const selectedIdentity = selectedProductRow ? canonicalProductIdentity({
+        id: Number(selectedProductRow.id),
+        name: String(selectedProductRow.name),
+        code: selectedProductRow.code ? String(selectedProductRow.code) : null,
+        brand: selectedProductRow.brand ? String(selectedProductRow.brand) : null,
+        presentation: selectedProductRow.presentation ? String(selectedProductRow.presentation) : null,
+        quantityAvailable: Number(selectedProductRow.quantity_available || 0),
+        minimumStock: Number(selectedProductRow.minimum_stock || 0),
+        minimumStockEnabled: Number(selectedProductRow.minimum_stock_enabled || 0) === 1,
+      }) : null;
+      const name = selectedIdentity?.name || cleanText(source.name, 500);
       const originalDescription = cleanText(source.originalDescription, 1000) || name;
       if (!name) errors.push(`La línea ${index + 1} no tiene nombre de producto.`);
       const quantityLabel = `El producto “${name || `línea ${index + 1}`}”`;
@@ -271,14 +307,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       }
       const billedRaw = source.billedQuantity;
       const billedQuantity = billedRaw == null || billedRaw === "" ? null : cleanInteger(billedRaw, quantityLabel, 0, 100000);
-      const barcode = validateBarcode(source.barcode);
+      const barcode = validateBarcode(selectedIdentity?.barcode?.value || source.barcode);
       if (!barcode.valid || !barcode.normalized || !barcode.canonical) errors.push(`Línea ${index + 1}: ${barcode.error || "el código de barras no es válido"}`);
-      const barcodeConfirmed = source.barcodeConfirmed === true;
+      const barcodeConfirmed = Boolean(selectedIdentity?.barcode) || source.barcodeConfirmed === true;
       if (!barcodeConfirmed) {
         pendingCodeNames.push(name || `línea ${index + 1}`);
         errors.push(`El código de barras de la línea ${index + 1} todavía no está confirmado.`);
       }
-      const action = cleanText(source.action, 20) as CleanLine["action"];
       if (!["existing", "move", "create"].includes(action)) errors.push(`La línea ${index + 1} todavía no tiene una acción confirmada.`);
       const barcodeLevel = cleanText(source.barcodeLevel, 30) || (unitsPerPackage === 1 ? "unit" : "");
       if (unitsPerPackage > 1 && !["unit", "package", "distribution", "set"].includes(barcodeLevel)) errors.push(`La línea ${index + 1} necesita definir si el código es de unidad, paquete, caja o set.`);
@@ -287,9 +322,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         lineKey,
         lineIndex: stored ? Number(stored.line_index || 0) : storedLines.results.length + index,
         name,
-        brand: cleanText(source.brand, 200),
-        presentation: cleanText(source.presentation, 250),
-        size: cleanText(source.size, 200),
+        brand: selectedIdentity?.brand || cleanText(source.brand, 200),
+        presentation: selectedIdentity?.presentation || normalizePresentation(cleanText(source.presentation, 250)),
+        size: selectedIdentity?.presentation || cleanText(source.size, 200),
         flavor: cleanText(source.flavor, 150),
         concentration: cleanText(source.concentration, 100),
         originalDescription,
@@ -303,19 +338,28 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         barcodeType: barcode.type || "",
         secondaryId: cleanText(source.secondaryId, 200),
         secondaryType: cleanText(source.secondaryType, 40),
-        barcodeMethod: cleanText(source.barcodeMethod, 80) || "manual",
-        barcodeSource: cleanText(source.barcodeSource, 500) || "Confirmado por el usuario",
-        barcodeSourceUrl: cleanText(source.barcodeSourceUrl, 2000),
-        barcodeSourceTitle: cleanText(source.barcodeSourceTitle, 500),
+        barcodeMethod: selectedIdentity?.barcode ? "product_catalog" : cleanText(source.barcodeMethod, 80) || "manual",
+        barcodeSource: selectedIdentity?.barcode ? "Producto canónico de NutriPlus" : cleanText(source.barcodeSource, 500) || "Confirmado por el usuario",
+        barcodeSourceUrl: selectedIdentity?.barcode ? "" : cleanText(source.barcodeSourceUrl, 2000),
+        barcodeSourceTitle: selectedIdentity?.barcode ? selectedIdentity.name : cleanText(source.barcodeSourceTitle, 500),
         barcodeDifferences: Array.isArray(source.barcodeDifferences) ? source.barcodeDifferences.map((item) => cleanText(item, 500)).filter(Boolean).slice(0, 20) : [],
         barcodeLookupStatus: ["found_exact", "suggestion", "pending"].includes(cleanText(source.barcodeLookupStatus, 30)) ? cleanText(source.barcodeLookupStatus, 30) : "pending",
         fieldEvidence: source.fieldEvidence && typeof source.fieldEvidence === "object" && !Array.isArray(source.fieldEvidence) ? source.fieldEvidence as Record<string, unknown> : {},
         barcodeConfirmed,
         barcodeLevel,
         action,
-        matchProductId: Number.isInteger(Number(source.matchProductId)) && Number(source.matchProductId) > 0 ? Number(source.matchProductId) : null,
-        matchNonInventoryId: Number.isInteger(Number(source.matchNonInventoryId)) && Number(source.matchNonInventoryId) > 0 ? Number(source.matchNonInventoryId) : null,
+        matchProductId,
+        matchNonInventoryId,
       };
+    });
+    const seenLineIds = new Set<string>();
+    const seenLineKeys = new Set<string>();
+    lines.forEach((line, index) => {
+      if (seenLineIds.has(line.id) || seenLineKeys.has(line.lineKey)) {
+        errors.push(`La línea ${index + 1} está repetida en la confirmación. Recargá la factura antes de continuar.`);
+      }
+      seenLineIds.add(line.id);
+      seenLineKeys.add(line.lineKey);
     });
 
     const duplicateDocumentId = document.duplicate_of ? String(document.duplicate_of) : "";

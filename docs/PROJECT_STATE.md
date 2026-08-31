@@ -2,17 +2,18 @@
 
 ## Production
 
-- Version: v2.25
-- Checkpoint: 46
-- Commit: `e45a944983076d4d5230e1eb74a16c9cdf148d48`
-- Deployment: `appgdep_6a93656623d08191a39700b0f488086b`
+- Version: v2.26
+- Checkpoint: 47
+- Commit: `7da2c33760741d2760628bbbe5af25be1a1232f4`
+- Deployment: `appgdep_6a94fac6695c8191be04e64d45fbb7db`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0017_equal_microchip.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- v2.25 está publicada: producto inline completo con escáner/cálculo, recuperación segura de pending huérfano, compra pagada visible en Caja con fecha de confirmación y PDF de Ruta sin Cliente. No añade migraciones ni modifica Notifications/Web Push.
+- v2.27 está preparada para publicación como hotfix de Facturas/Inventario/Web Push: identidad canónica de producto y código, resolución de línea reanudada por ID o `lineKey`, persistencia idempotente sin duplicados, presentación comercial normalizada y deep links tipados con cola `READY/ACK`.
+- No incluye migraciones, `0018_messy_nemesis.sql`, tablas/endpoints/UI de Clientes o CRM. El trabajo de CRM no está presente en este checkout y no se reconstruye en esta release.
 
 ## Security
 
@@ -37,3 +38,4 @@
 - Orders v2.16 remains under real user validation.
 - Web Push receipt with the Android/PWA closed was physically validated by the user.
 - Android/PWA physical validation remains pending for the new exit-confirmation path.
+- Los nuevos toques de deep link tipados de v2.27 requieren validación física del propietario en Android/PWA después de publicar.

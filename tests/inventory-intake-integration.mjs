@@ -169,7 +169,7 @@ assert.equal(amazon.body.lines[0].matchProductId, baseProduct.id);
 const amazonLine = { ...amazon.body.lines[0], receivedQuantity: 5, totalToAdd: 5, unitsPerPackage: 1, barcodeLevel: "unit", barcodeConfirmed: true, selected: true };
 const unconfirmedAttempt = await call(`/api/inventory-intake/${amazon.body.document.id}/confirm`, {
   method: "POST",
-  body: JSON.stringify({ operationId: "ingress-amazon-unconfirmed", lines: [{ ...amazonLine, barcodeConfirmed: false }] }),
+  body: JSON.stringify({ operationId: "ingress-amazon-unconfirmed", lines: [{ ...amazonLine, action: "pending", matchProductId: null, barcodeConfirmed: false }] }),
 });
 assert.equal(unconfirmedAttempt.response.status, 409);
 assert.equal((await call("/api/products?code=036000291452")).body.product.quantityAvailable, 10);
@@ -313,6 +313,72 @@ assert.equal(createdPackage.quantityAvailable, 6);
 assert.equal(createdPackage.purchasePriceUsd, 23.45);
 assert.equal(createdPackage.weightLb, 0.678);
 assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_movements WHERE operation_id='ingress-package-0001'").first()).total), 1);
+
+// A resumed invoice may carry the browser's stale transient line id while its
+// persisted lineKey is stable. Both review-save and confirmation must resolve
+// to that single stored line, rather than insert a duplicate and roll back.
+const resumedProduct = (await call("/api/products", {
+  method: "POST",
+  body: JSON.stringify({
+    name: "NutriPlus Resume Guard 12 Capsules",
+    code: "036000291469",
+    purchasePriceUsd: 9.5,
+    weightLb: 0.2,
+    quantityAvailable: 0,
+    minimumStock: 1,
+    minimumStockEnabled: true,
+  }),
+})).body.product;
+const resumedInvoice = await analyze({
+  id: 56,
+  fileName: "resumed-stale-line.pdf",
+  text: `Amazon\nPedido realizado 12 de agosto de 2026\nASIN: RESUME-LINE-1\nUPC: 036000291469\n12 x NutriPlus Resume Guard 12 Capsules`,
+});
+assert.equal(resumedInvoice.response.status, 201);
+const persistedResumeLine = resumedInvoice.body.lines[0];
+const staleResumeLine = {
+  ...persistedResumeLine,
+  id: "iline-stale-resumed-session",
+  receivedQuantity: 12,
+  billedQuantity: 12,
+  totalToAdd: 12,
+  unitsPerPackage: 1,
+  barcodeLevel: "unit",
+  barcodeConfirmed: true,
+  selected: true,
+  selectedForIngress: true,
+  status: "confirmed",
+  action: "existing",
+  matchProductId: resumedProduct.id,
+  matchNonInventoryId: null,
+};
+const resumedSave = await call(`/api/inventory-intake/${resumedInvoice.body.document.id}`, {
+  method: "PUT",
+  body: JSON.stringify({ metadataChanged: false, lines: [staleResumeLine], reviewedLineIds: [staleResumeLine.id], deletedLineIds: [] }),
+});
+assert.equal(resumedSave.response.status, 200, JSON.stringify(resumedSave.body));
+assert.equal(resumedSave.body.lines.length, 1);
+assert.equal(resumedSave.body.lines[0].id, persistedResumeLine.id);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_document_lines WHERE document_id=?").bind(resumedInvoice.body.document.id).first()).total), 1);
+const resumedConfirm = await call(`/api/inventory-intake/${resumedInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "ingress-resumed-stale-001", lines: [staleResumeLine] }),
+});
+assert.equal(resumedConfirm.response.status, 200, JSON.stringify(resumedConfirm.body));
+assert.equal(resumedConfirm.body.operation.lineCount, 1);
+assert.equal((await call("/api/products?code=036000291469")).body.product.quantityAvailable, 12);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_document_lines WHERE document_id=?").bind(resumedInvoice.body.document.id).first()).total), 1);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_movements WHERE operation_id='ingress-resumed-stale-001'").first()).total), 1);
+const resumedRetry = await call(`/api/inventory-intake/${resumedInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "ingress-resumed-stale-001", lines: [staleResumeLine] }),
+});
+assert.equal(resumedRetry.response.status, 200, JSON.stringify(resumedRetry.body));
+assert.equal(resumedRetry.body.idempotent, true);
+assert.equal((await call("/api/products?code=036000291469")).body.product.quantityAvailable, 12);
+const resumedOperation = await call("/api/inventory-intake/operations/ingress-resumed-stale-001");
+assert.equal(resumedOperation.response.status, 200);
+assert.equal(resumedOperation.body.operation.status, "completed");
 
 const badDocument = await analyze({
   id: 6,

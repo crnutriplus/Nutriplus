@@ -942,6 +942,8 @@ export function NutriPlusApp() {
   const nextTemporaryProductId = useRef(-1);
   const nextTemporaryQuoteId = useRef(-1);
   const initialNotificationDestinationHandled = useRef(false);
+  const pendingNotificationNavigation = useRef<{ destination: NotificationDestination; navigationId?: string } | null>(null);
+  const lastNotificationDestination = useRef<{ path: string; handledAt: number } | null>(null);
   const navigation = useRef<NavigationController | null>(null);
   const tabRef = useRef<Tab>(tab);
   const financeViewRef = useRef<string | undefined>(undefined);
@@ -1383,9 +1385,31 @@ export function NutriPlusApp() {
   }, [editInProducts, inventoryIntakeOpen, navigateTab, notify, products]);
 
   useEffect(() => {
-    const onDestination = (event: Event) => navigateNotificationDestination((event as CustomEvent<{ destination?: NotificationDestination }>).detail?.destination);
+    let active = true;
+    const acknowledge = (navigationId?: string) => {
+      if (!navigationId) return;
+      const message = { type: "NUTRIPLUS_NAVIGATION_ACK", navigationId };
+      if (navigator.serviceWorker?.controller) navigator.serviceWorker.controller.postMessage(message);
+      else void navigator.serviceWorker?.ready.then((registration) => registration.active?.postMessage(message));
+    };
+    const deliver = (rawDestination: unknown, navigationId?: string) => {
+      const destination = parseNotificationDestination(rawDestination);
+      if (!destination) return;
+      if (loading) {
+        pendingNotificationNavigation.current = { destination, navigationId };
+        return;
+      }
+      const path = notificationDestinationPath(destination);
+      const previous = lastNotificationDestination.current;
+      if (!previous || previous.path !== path || Date.now() - previous.handledAt > 5_000) {
+        lastNotificationDestination.current = { path, handledAt: Date.now() };
+        navigateNotificationDestination(destination);
+      }
+      acknowledge(navigationId);
+    };
+    const onDestination = (event: Event) => deliver((event as CustomEvent<{ destination?: NotificationDestination }>).detail?.destination);
     const onServiceWorkerMessage = (event: MessageEvent) => {
-      if (event.data?.type === "NUTRIPLUS_NAVIGATE") navigateNotificationDestination(event.data.destination);
+      if (event.data?.type === "NUTRIPLUS_NAVIGATE") deliver(event.data.destination, event.data.navigationId);
     };
     window.addEventListener("nutriplus:navigate-destination", onDestination);
     navigator.serviceWorker?.addEventListener("message", onServiceWorkerMessage);
@@ -1395,10 +1419,17 @@ export function NutriPlusApp() {
       const initial = isNotificationTarget ? legacyNotificationDestination(`${window.location.pathname}${window.location.search}`) : null;
       if (initial) {
         initialNotificationDestinationHandled.current = true;
-        window.setTimeout(() => navigateNotificationDestination(initial), 0);
+        window.setTimeout(() => deliver(initial), 0);
       }
+      const queued = pendingNotificationNavigation.current;
+      pendingNotificationNavigation.current = null;
+      if (queued) window.setTimeout(() => deliver(queued.destination, queued.navigationId), 0);
+      const readyMessage = { type: "NUTRIPLUS_CLIENT_READY" };
+      if (navigator.serviceWorker?.controller) navigator.serviceWorker.controller.postMessage(readyMessage);
+      else void navigator.serviceWorker?.ready.then((registration) => { if (active) registration.active?.postMessage(readyMessage); });
     }
     return () => {
+      active = false;
       window.removeEventListener("nutriplus:navigate-destination", onDestination);
       navigator.serviceWorker?.removeEventListener("message", onServiceWorkerMessage);
     };
