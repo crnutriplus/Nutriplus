@@ -2,18 +2,17 @@
 
 ## Production
 
-- Version: v2.27
-- Checkpoint: 48
-- Commit: `ef89f1e6da529be31a0a89973c112c6a8a1b54fb`
-- Deployment: `appgdep_6a95f2e67ea081918d6e3db16d010cd9`
+- Version: v2.28
+- Checkpoint: 49
+- Commit: `4a4f5bad66e6d22828bfaa5c8deba453b72d2c2f`
+- Deployment: `appgdep_6a960f8e8cc48191910add3b61a6f5ee`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0017_equal_microchip.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- v2.28 está preparada como hotfix de Facturas/Inventario: un SKU de proveedor huérfano se conserva como evidencia original y no bloquea un producto canónico vigente seleccionado; un SKU con dueño vigente distinto sigue bloqueado sin reasignación. Las referencias reanudadas a productos eliminados solo se recuperan por código canónico único.
-- v2.27 está publicada como hotfix de Facturas/Inventario/Web Push: identidad canónica de producto y código, resolución de línea reanudada por ID o `lineKey`, persistencia idempotente sin duplicados, presentación comercial normalizada y deep links tipados con cola `READY/ACK`.
+- v2.28 está publicada como hotfix de Facturas/Inventario: un SKU de proveedor huérfano se conserva como evidencia original y no bloquea un producto canónico vigente seleccionado; un SKU con dueño vigente distinto sigue bloqueado sin reasignación. Las referencias reanudadas a productos eliminados solo se recuperan por código canónico único.
 - No incluye migraciones, `0018_messy_nemesis.sql`, tablas/endpoints/UI de Clientes o CRM. El trabajo de CRM no está presente en este checkout y no se reconstruye en esta release.
 
 ## Security
