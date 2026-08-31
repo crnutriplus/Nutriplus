@@ -20,6 +20,11 @@ export type IntakeMatch = {
   name: string;
   code: string | null;
   quantityAvailable: number | null;
+  brand?: string | null;
+  presentation?: string | null;
+  minimumStock?: number | null;
+  minimumStockEnabled?: boolean | null;
+  matchReason?: "barcode" | "supplier_sku" | "identity" | "details" | "tokens" | "fuzzy";
 };
 
 export type IntakeLineDto = {
@@ -93,6 +98,10 @@ type ProductIdentityRow = Record<string, unknown> & {
   name: string;
   code: string | null;
   quantity_available?: number;
+  brand?: string | null;
+  presentation?: string | null;
+  minimum_stock?: number;
+  minimum_stock_enabled?: number;
 };
 
 type AliasRow = Record<string, unknown> & {
@@ -141,13 +150,18 @@ export function descriptionsCompatible(storedDescription: string, currentDescrip
   return similarity(storedDescription, currentDescription) >= 0.3;
 }
 
-function intakeMatch(row: ProductIdentityRow, source: IntakeMatch["source"]): IntakeMatch {
+function intakeMatch(row: ProductIdentityRow, source: IntakeMatch["source"], matchReason?: IntakeMatch["matchReason"]): IntakeMatch {
   return {
     source,
     id: Number(row.id),
     name: String(row.name),
     code: row.code ? String(row.code) : null,
     quantityAvailable: source === "inventory" ? Number(row.quantity_available ?? 0) : null,
+    brand: row.brand ? String(row.brand) : null,
+    presentation: row.presentation ? String(row.presentation) : null,
+    minimumStock: source === "inventory" ? Number(row.minimum_stock ?? 0) : null,
+    minimumStockEnabled: source === "inventory" ? Number(row.minimum_stock_enabled ?? 0) === 1 : null,
+    ...(matchReason ? { matchReason } : {}),
   };
 }
 
@@ -161,15 +175,37 @@ function canonicalMap(rows: ProductIdentityRow[]) {
   return map;
 }
 
-function suggestionsFor(line: ParsedInvoiceLine, products: ProductIdentityRow[], quotes: ProductIdentityRow[]) {
+function detailScore(line: ParsedInvoiceLine, row: ProductIdentityRow) {
+  const lineTokens = new Set(words([line.name, line.brand, line.presentation, line.size, line.secondaryId].filter(Boolean).join(" ")));
+  const productTokens = new Set(words([String(row.name), String(row.brand || ""), String(row.presentation || ""), String(row.code || "")].join(" ")));
+  const overlap = [...lineTokens].filter((token) => productTokens.has(token)).length;
+  const tokenScore = lineTokens.size ? overlap / lineTokens.size : 0;
+  const brand = line.brand && row.brand && normalizeName(line.brand) === normalizeName(String(row.brand)) ? 0.45 : 0;
+  const presentation = line.presentation && row.presentation && presentationSignature(line.presentation) === presentationSignature(String(row.presentation)) ? 0.35 : 0;
+  return brand + presentation + tokenScore;
+}
+
+function suggestionsFor(line: ParsedInvoiceLine, products: ProductIdentityRow[], quotes: ProductIdentityRow[], aliases: AliasRow[], provider: string) {
   const candidates = [
-    ...products.map((row) => ({ row, source: "inventory" as const, score: similarity(line.name, String(row.name)) })),
-    ...quotes.map((row) => ({ row, source: "no_inventory" as const, score: similarity(line.name, String(row.name)) })),
+    ...products.map((row) => ({ row, source: "inventory" as const, score: detailScore(line, row), reason: "tokens" as const })),
+    ...quotes.map((row) => ({ row, source: "no_inventory" as const, score: detailScore(line, row), reason: "tokens" as const })),
   ];
-  return candidates.filter((candidate) => candidate.score >= 0.25)
+  const barcode = validateBarcode(line.barcode);
+  const aliasProductIds = new Set(aliases.filter((alias) => line.secondaryId
+    && alias.provider === provider && alias.secondary_type === line.secondaryType
+    && alias.secondary_id.toLowerCase() === line.secondaryId.toLowerCase()).map((alias) => Number(alias.product_id)));
+  const ranked = candidates.map((candidate) => {
+    const ownBarcode = validateBarcode(candidate.row.code);
+    if (barcode.valid && barcode.canonical && ownBarcode.canonical === barcode.canonical) return { ...candidate, score: 10_000, reason: "barcode" as const };
+    if (candidate.source === "inventory" && aliasProductIds.has(Number(candidate.row.id))) return { ...candidate, score: 9_000, reason: "supplier_sku" as const };
+    const details = detailScore(line, candidate.row);
+    const fuzzy = similarity(line.name, String(candidate.row.name));
+    return { ...candidate, score: details * 100 + fuzzy, reason: details >= 0.7 ? "details" as const : fuzzy >= 0.25 ? "fuzzy" as const : "tokens" as const };
+  });
+  return ranked.filter((candidate) => candidate.score >= 0.25)
     .sort((left, right) => right.score - left.score || String(left.row.name).localeCompare(String(right.row.name), "es"))
     .slice(0, 5)
-    .map((candidate) => intakeMatch(candidate.row, candidate.source));
+    .map((candidate) => intakeMatch(candidate.row, candidate.source, candidate.reason));
 }
 
 export function resolveParsedLine(args: {
@@ -205,17 +241,19 @@ export function resolveParsedLine(args: {
     status = "ignored";
     action = "ignore";
   } else if (secondary) {
-    const compatible = descriptionsCompatible(secondary.description_signature, line.name, secondary.presentation_signature || "", line.presentation);
-    if (!secondaryProduct || !compatible || (barcode.canonical && secondary.canonical_barcode !== barcode.canonical)) {
+    const barcodeOwner = barcode.canonical ? [...productMatches, ...quoteMatches] : [];
+    if (!secondaryProduct || (barcodeOwner.length === 1 && Number(barcodeOwner[0].id) !== Number(secondary.product_id)) || barcodeOwner.length > 1) {
       status = "conflict_identifiers";
-      warnings.push("El identificador del proveedor coincide con una equivalencia anterior, pero la presentación o el código cambió.");
+      warnings.push("El identificador del proveedor y el código de barras apuntan a productos distintos. Revisá cuál corresponde antes de ingresar inventario.");
     } else {
-      match = intakeMatch(secondaryProduct, "inventory");
+      match = intakeMatch(secondaryProduct, "inventory", "supplier_sku");
       status = "confirmed";
       action = "existing";
-      resolvedBarcode = secondary.barcode;
-      resolvedCanonical = secondary.canonical_barcode;
-      barcodeType = validateBarcode(secondary.barcode).type || barcodeType;
+      if (!barcode.canonical) {
+        resolvedBarcode = secondary.barcode;
+        resolvedCanonical = secondary.canonical_barcode;
+        barcodeType = validateBarcode(secondary.barcode).type || barcodeType;
+      }
       unitsPerPackage = Math.max(1, Number(secondary.units_per_package || unitsPerPackage));
       barcodeLevel = (secondary.barcode_level || "unit") as IntakeLineDto["barcodeLevel"];
     }
@@ -225,24 +263,14 @@ export function resolveParsedLine(args: {
       warnings.push("Este código equivalente está asignado a más de un registro.");
     } else if (productMatches.length === 1) {
       const product = productMatches[0];
-      if (!descriptionsCompatible(String(product.name), line.name, String(product.presentation || ""), line.presentation)) {
-        status = "conflict_identifiers";
-        warnings.push("El código coincide, pero el nombre o la presentación parecen diferentes.");
-      } else {
-        match = intakeMatch(product, "inventory");
-        status = "confirmed";
-        action = "existing";
-      }
+      match = intakeMatch(product, "inventory", "barcode");
+      status = "confirmed";
+      action = "existing";
     } else if (quoteMatches.length === 1) {
       const quote = quoteMatches[0];
-      if (!descriptionsCompatible(String(quote.name), line.name, "", line.presentation)) {
-        status = "conflict_identifiers";
-        warnings.push("El código coincide con No inventario, pero la presentación parece diferente.");
-      } else {
-        match = intakeMatch(quote, "no_inventory");
-        status = "non_inventory";
-        action = "move";
-      }
+      match = intakeMatch(quote, "no_inventory", "barcode");
+      status = "non_inventory";
+      action = "move";
     } else {
       const exactProduct = products.find((product) => normalizeName(String(product.name)) === normalizeName(line.name));
       const exactQuote = quotes.find((quote) => normalizeName(String(quote.name)) === normalizeName(line.name));
@@ -304,7 +332,7 @@ export function resolveParsedLine(args: {
     matchProductId: match?.source === "inventory" ? match.id : null,
     matchNonInventoryId: match?.source === "no_inventory" ? match.id : null,
     match,
-    suggestions: suggestionsFor(line, products, quotes),
+    suggestions: suggestionsFor(line, products, quotes, aliases, provider),
     warnings: [...new Set(warnings)],
     processedOperationId: "",
   };

@@ -59,6 +59,7 @@ import type { ProductDeletionJobRecord } from "@/lib/deletion-jobs";
 import { NUTRIPLUS_PUBLIC_VERSION } from "@/lib/public-version";
 import { runSpreadsheetWorker } from "@/lib/spreadsheet-import-client";
 import { installAppNavigation, type AppSection, type NavigationCapabilities, type NavigationController } from "@/lib/app-navigation";
+import { legacyNotificationDestination, notificationDestinationPath, parseNotificationDestination, type NotificationDestination } from "@/lib/notification-destinations";
 import type { SpreadsheetCellWarning, SpreadsheetParseResult } from "@/lib/spreadsheet-import-parser";
 import { spreadsheetImportErrorMessage, validateSpreadsheetFile } from "@/lib/spreadsheet-import-security";
 import {
@@ -940,7 +941,7 @@ export function NutriPlusApp() {
   const deletionRunners = useRef<Set<number>>(new Set());
   const nextTemporaryProductId = useRef(-1);
   const nextTemporaryQuoteId = useRef(-1);
-  const notificationProductHandled = useRef(false);
+  const initialNotificationDestinationHandled = useRef(false);
   const navigation = useRef<NavigationController | null>(null);
   const tabRef = useRef<Tab>(tab);
   const financeViewRef = useRef<string | undefined>(undefined);
@@ -972,10 +973,13 @@ export function NutriPlusApp() {
   }, []);
 
   const navigateTab = useCallback((next: Tab) => {
+    if (inventoryIntakeOpen && next !== "products") {
+      window.dispatchEvent(new Event("nutriplus:suspend-invoice"));
+    }
     const view = next === "finance" ? financeViewRef.current : next === "settings" ? settingsViewRef.current : undefined;
     if (navigation.current) navigation.current.navigate(next, view);
     else activateLocation(next);
-  }, [activateLocation]);
+  }, [activateLocation, inventoryIntakeOpen]);
 
   useEffect(() => {
     const modernWindow = window as unknown as { CloseWatcher?: NavigationCapabilities["CloseWatcher"]; navigation?: NavigationCapabilities["navigation"] };
@@ -1030,7 +1034,7 @@ export function NutriPlusApp() {
       if (bulkDeleteConfirm) { setBulkDeleteConfirm(false); return true; }
       if (deleteTarget) { setDeleteTarget(null); return true; }
       if (exportConfirm) { setExportConfirm(false); return true; }
-      if (inventoryIntakeOpen) { setInventoryIntakeOpen(false); return true; }
+      if (inventoryIntakeOpen) { window.dispatchEvent(new Event("nutriplus:suspend-invoice")); return true; }
       if (recentOpen) { setRecentOpen(false); return true; }
       if (noInventoryOpen) { setNoInventoryOpen(false); return true; }
       if (restockOpen) { setRestockOpen(false); return true; }
@@ -1338,20 +1342,67 @@ export function NutriPlusApp() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, [navigateTab]);
 
-  useEffect(() => {
-    if (loading || notificationProductHandled.current) return;
-    const productTimer = window.setTimeout(() => {
-      const requestedId = Number(new URLSearchParams(window.location.search).get("product"));
-      if (!Number.isInteger(requestedId) || requestedId < 1) {
-        notificationProductHandled.current = true;
-        return;
+  const navigateNotificationDestination = useCallback((rawDestination: unknown) => {
+    const destination = parseNotificationDestination(rawDestination);
+    if (!destination) return;
+    const replaceDestinationUrl = () => window.history.replaceState(window.history.state, "", notificationDestinationPath(destination));
+    if (destination.type === "PRODUCT") {
+      const product = products.find((item) => item.id === Number(destination.id));
+      if (product) editInProducts(product);
+      else {
+        navigateTab("products");
+        setProductEditorOpen(false);
+        notify({ type: "warning", text: "PROBLEMA: el producto de esta alerta ya no está disponible. CAUSA: fue eliminado o ya no pertenece al catálogo actual. QUÉ HACER: revisá Productos para ubicar un equivalente. ESTADO DE LOS DATOS: la alerta y el historial de inventario se conservan." });
       }
-      notificationProductHandled.current = true;
-      const requestedProduct = products.find((product) => product.id === requestedId);
-      if (requestedProduct) editInProducts(requestedProduct);
-    }, 0);
-    return () => window.clearTimeout(productTimer);
-  }, [editInProducts, loading, products]);
+      replaceDestinationUrl();
+      return;
+    }
+    if (destination.type === "PRODUCTS") {
+      navigateTab("products");
+      replaceDestinationUrl();
+      return;
+    }
+    if (destination.type === "ORDER" || destination.type === "ORDER_SUMMARY" || destination.type === "ROUTE") {
+      if (inventoryIntakeOpen) window.dispatchEvent(new Event("nutriplus:suspend-invoice"));
+      navigateTab("orders");
+      replaceDestinationUrl();
+      window.setTimeout(() => window.dispatchEvent(new CustomEvent("nutriplus:orders-destination", { detail: destination })), 0);
+      return;
+    }
+    if (destination.type === "INVOICE") {
+      if (inventoryIntakeOpen) window.dispatchEvent(new Event("nutriplus:suspend-invoice"));
+      navigateTab("products");
+      replaceDestinationUrl();
+      try { sessionStorage.setItem("nutriplus-open-invoice-request", destination.id); } catch { /* Storage is optional. */ }
+      setInventoryIntakeOpen(true);
+      window.setTimeout(() => window.dispatchEvent(new CustomEvent("nutriplus:open-invoice", { detail: { documentId: destination.id } })), 0);
+      return;
+    }
+    window.dispatchEvent(new Event("nutriplus:open-notifications"));
+    replaceDestinationUrl();
+  }, [editInProducts, inventoryIntakeOpen, navigateTab, notify, products]);
+
+  useEffect(() => {
+    const onDestination = (event: Event) => navigateNotificationDestination((event as CustomEvent<{ destination?: NotificationDestination }>).detail?.destination);
+    const onServiceWorkerMessage = (event: MessageEvent) => {
+      if (event.data?.type === "NUTRIPLUS_NAVIGATE") navigateNotificationDestination(event.data.destination);
+    };
+    window.addEventListener("nutriplus:navigate-destination", onDestination);
+    navigator.serviceWorker?.addEventListener("message", onServiceWorkerMessage);
+    if (!loading && !initialNotificationDestinationHandled.current) {
+      const params = new URLSearchParams(window.location.search);
+      const isNotificationTarget = params.has("product") || params.has("order") || params.has("invoice") || params.get("route") === "1" || params.get("notifications") === "1" || (params.get("tab") === "orders" && params.get("section") === "deliveries" && params.has("date"));
+      const initial = isNotificationTarget ? legacyNotificationDestination(`${window.location.pathname}${window.location.search}`) : null;
+      if (initial) {
+        initialNotificationDestinationHandled.current = true;
+        window.setTimeout(() => navigateNotificationDestination(initial), 0);
+      }
+    }
+    return () => {
+      window.removeEventListener("nutriplus:navigate-destination", onDestination);
+      navigator.serviceWorker?.removeEventListener("message", onServiceWorkerMessage);
+    };
+  }, [loading, navigateNotificationDestination]);
 
   const editNoInventory = useCallback((quote: NonInventoryRecord) => {
     setCalculatorForm(quoteToForm(quote));
@@ -2000,6 +2051,13 @@ export function NutriPlusApp() {
         const ids = new Set(updated.map((product) => product.id));
         return [...updated, ...current.filter((product) => !ids.has(product.id))];
       })}
+      onEditProduct={(productId) => {
+        const product = products.find((item) => item.id === productId);
+        if (!product) return;
+        window.dispatchEvent(new Event("nutriplus:suspend-invoice"));
+        editInProducts(product);
+        navigateTab("products");
+      }}
       onRefresh={async () => { await Promise.all([refreshProducts(), refreshQuotes()]); }}
       onRequestScan={(lineId) => { setIntakeScanTarget(lineId); setScannerIntent("intake"); }}
       scannedBarcode={intakeScannedBarcode}

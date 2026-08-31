@@ -1,15 +1,82 @@
-const CACHE_NAME = "nutriplus-shell-v3";
+const CACHE_NAME = "nutriplus-shell-v4";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/nutriplus-icon-192.png", "/nutriplus-icon-512.png"];
-const DEFAULT_TARGET = "/?notifications=1";
+const DEFAULT_DESTINATION = { type: "NOTIFICATIONS" };
+const SAFE_ID = /^[A-Za-z0-9:_-]{1,160}$/;
+const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
 
-function safeTarget(value) {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return DEFAULT_TARGET;
+function safeId(value) {
+  const text = typeof value === "string" ? value.trim() : String(value || "").trim();
+  return SAFE_ID.test(text) ? text : "";
+}
+
+function safeDate(value) {
+  return typeof value === "string" && DATE_KEY.test(value.trim()) ? value.trim() : "";
+}
+
+// Only the typed, internal destination schema may affect navigation. This is
+// intentionally separate from URL parsing so a push payload cannot become an
+// open redirect, javascript: URL, or arbitrary app route.
+function safeDestination(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return DEFAULT_DESTINATION;
+  if (value.type === "PRODUCT" && /^\d+$/.test(safeId(value.id)) && Number(value.id) > 0) return { type: "PRODUCT", id: String(Number(value.id)) };
+  if (value.type === "PRODUCTS") return { type: "PRODUCTS" };
+  if (value.type === "ORDER") {
+    const id = safeId(value.id);
+    if (id && ["deliveries", "special", "history"].includes(value.section)) return { type: "ORDER", id, section: value.section };
+  }
+  if (value.type === "ORDER_SUMMARY") {
+    const date = safeDate(value.date);
+    if (date) return { type: "ORDER_SUMMARY", date };
+  }
+  if (value.type === "ROUTE") {
+    const date = safeDate(value.date);
+    const id = safeId(value.id);
+    if (date) return { type: "ROUTE", date, ...(id ? { id } : {}) };
+  }
+  if (value.type === "INVOICE") {
+    const id = safeId(value.id);
+    if (id) return { type: "INVOICE", id };
+  }
+  if (value.type === "NOTIFICATIONS") return DEFAULT_DESTINATION;
+  return DEFAULT_DESTINATION;
+}
+
+function destinationTarget(destination) {
+  if (destination.type === "PRODUCT") return `/?tab=products&product=${encodeURIComponent(destination.id)}`;
+  if (destination.type === "PRODUCTS") return "/?tab=products";
+  if (destination.type === "ORDER") return `/?tab=orders&section=${destination.section}&order=${encodeURIComponent(destination.id)}`;
+  if (destination.type === "ORDER_SUMMARY") return `/?tab=orders&section=deliveries&date=${encodeURIComponent(destination.date)}`;
+  if (destination.type === "ROUTE") return `/?tab=orders&route=1&date=${encodeURIComponent(destination.date)}${destination.id ? `&routeId=${encodeURIComponent(destination.id)}` : ""}`;
+  if (destination.type === "INVOICE") return `/?tab=products&invoice=${encodeURIComponent(destination.id)}`;
+  return "/?notifications=1";
+}
+
+// Old durable pushes may still contain a target URL. Accept only the small
+// former NutriPlus query subset while they age out; never use the URL itself.
+function legacyDestination(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return DEFAULT_DESTINATION;
   try {
     const target = new URL(value, self.location.origin);
-    return target.origin === self.location.origin ? `${target.pathname}${target.search}${target.hash}` : DEFAULT_TARGET;
-  } catch {
-    return DEFAULT_TARGET;
-  }
+    if (target.origin !== self.location.origin || target.pathname !== "/") return DEFAULT_DESTINATION;
+    const tab = target.searchParams.get("tab");
+    if (tab === "products") {
+      const productId = target.searchParams.get("product") || "";
+      if (/^\d+$/.test(productId) && Number(productId) > 0) return { type: "PRODUCT", id: String(Number(productId)) };
+      const invoiceId = safeId(target.searchParams.get("invoice"));
+      return invoiceId ? { type: "INVOICE", id: invoiceId } : { type: "PRODUCTS" };
+    }
+    if (tab === "orders") {
+      const section = target.searchParams.get("section");
+      const orderId = safeId(target.searchParams.get("order"));
+      const date = safeDate(target.searchParams.get("date"));
+      const routeId = safeId(target.searchParams.get("routeId"));
+      if (target.searchParams.get("route") === "1" && date) return { type: "ROUTE", date, ...(routeId ? { id: routeId } : {}) };
+      if (section === "deliveries" && date) return { type: "ORDER_SUMMARY", date };
+      if (orderId && ["deliveries", "special", "history"].includes(section)) return { type: "ORDER", id: orderId, section };
+    }
+    if (target.searchParams.get("notifications") === "1") return DEFAULT_DESTINATION;
+  } catch { /* invalid legacy targets fall back to the alert center */ }
+  return DEFAULT_DESTINATION;
 }
 
 self.addEventListener("install", (event) => {
@@ -63,6 +130,7 @@ self.addEventListener("push", (event) => {
     const title = typeof payload.title === "string" && payload.title.trim() ? payload.title.trim().slice(0, 100) : "NutriPlus";
     const body = typeof payload.body === "string" ? payload.body.trim().slice(0, 300) : "Tenés una nueva alerta en NutriPlus.";
     const tag = typeof payload.tag === "string" ? payload.tag.slice(0, 180) : `nutriplus-${Date.now()}`;
+    const destination = payload.destination ? safeDestination(payload.destination) : legacyDestination(payload.url);
     await self.registration.showNotification(title, {
       body,
       icon: "/nutriplus-icon-192.png",
@@ -71,7 +139,7 @@ self.addEventListener("push", (event) => {
       renotify: false,
       data: {
         notificationId: typeof payload.notificationId === "string" ? payload.notificationId : null,
-        url: safeTarget(payload.url),
+        destination,
       },
     });
   })());
@@ -79,13 +147,15 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const target = safeTarget(event.notification.data?.url);
+  const destination = safeDestination(event.notification.data?.destination);
+  const target = destinationTarget(destination);
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     const existing = windows.find((client) => "focus" in client);
     if (existing) {
-      await existing.navigate(target);
-      return existing.focus();
+      await existing.focus();
+      if ("postMessage" in existing) existing.postMessage({ type: "NUTRIPLUS_NAVIGATE", destination });
+      return existing;
     }
     return self.clients.openWindow(target);
   })());

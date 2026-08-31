@@ -94,7 +94,7 @@ export async function attachInventoryMatches(db: D1Database, lines: IntakeLineDt
   const productIds = [...new Set(lines.map((line) => line.matchProductId).filter((id): id is number => Boolean(id)))];
   const quoteIds = [...new Set(lines.map((line) => line.matchNonInventoryId).filter((id): id is number => Boolean(id)))];
   const products = productIds.length
-    ? await db.prepare("SELECT id,name,code,quantity_available FROM products WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(productIds)).all<Record<string, unknown>>()
+    ? await db.prepare("SELECT id,name,code,brand,presentation,quantity_available,minimum_stock,minimum_stock_enabled FROM products WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(productIds)).all<Record<string, unknown>>()
     : { results: [] as Record<string, unknown>[] };
   const quotes = quoteIds.length
     ? await db.prepare("SELECT id,name,code FROM non_inventory_quotes WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(quoteIds)).all<Record<string, unknown>>()
@@ -110,6 +110,10 @@ export async function attachInventoryMatches(db: D1Database, lines: IntakeLineDt
         name: String(product.name),
         code: product.code ? String(product.code) : null,
         quantityAvailable: Number(product.quantity_available || 0),
+        brand: product.brand ? String(product.brand) : null,
+        presentation: product.presentation ? String(product.presentation) : null,
+        minimumStock: Number(product.minimum_stock || 0),
+        minimumStockEnabled: Number(product.minimum_stock_enabled || 0) === 1,
       } : quote ? {
         source: "no_inventory" as const,
         id: Number(quote.id),

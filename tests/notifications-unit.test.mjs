@@ -109,6 +109,9 @@ async function serviceWorkerHarness() {
   const listeners = new Map();
   const notifications = [];
   const opened = [];
+  const focused = [];
+  const posted = [];
+  let clients = [];
   const cache = {
     addAll: async () => undefined,
     match: async () => null,
@@ -121,7 +124,7 @@ async function serviceWorkerHarness() {
     registration: { async showNotification(title, options) { notifications.push({ title, options }); } },
     clients: {
       claim: async () => undefined,
-      matchAll: async () => [],
+      matchAll: async () => clients,
       async openWindow(target) { opened.push(target); return { target }; },
     },
   };
@@ -134,7 +137,16 @@ async function serviceWorkerHarness() {
     Date,
   };
   vm.runInNewContext(source, context, { filename: "sw.js" });
-  return { source, listeners, notifications, opened };
+  return {
+    source, listeners, notifications, opened, focused, posted,
+    setClients(next) {
+      clients = next.map((client) => ({
+        ...client,
+        async focus() { focused.push(client.id); return client; },
+        postMessage(message) { posted.push({ id: client.id, message }); },
+      }));
+    },
+  };
 }
 
 test("Service Worker never intercepts API data and accepts only safe same-origin notification targets", async () => {
@@ -159,18 +171,35 @@ test("Service Worker never intercepts API data and accepts only safe same-origin
     waitUntil(promise) { pushPromise = promise; },
   });
   await pushPromise;
-  assert.equal(harness.notifications[0].options.data.url, "/?notifications=1");
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.notifications[0].options.data.destination)), { type: "NOTIFICATIONS" });
+
+  harness.listeners.get("push")({
+    data: { json: () => ({ title: "Stock", body: "Producto", destination: { type: "PRODUCT", id: "42" } }) },
+    waitUntil(promise) { pushPromise = promise; },
+  });
+  await pushPromise;
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.notifications[1].options.data.destination)), { type: "PRODUCT", id: "42" });
 
   let clickPromise;
   harness.listeners.get("notificationclick")({
-    notification: { data: { url: "/?tab=orders&section=special&order=order-1" }, close() {} },
+    notification: { data: { destination: { type: "ORDER", id: "order-1", section: "special" } }, close() {} },
     waitUntil(promise) { clickPromise = promise; },
   });
   await clickPromise;
   assert.equal(harness.opened[0], "/?tab=orders&section=special&order=order-1");
+  harness.setClients([{ id: "existing-client" }]);
+  harness.listeners.get("notificationclick")({
+    notification: { data: { destination: { type: "ROUTE", date: "2026-08-30", id: "route-1" } }, close() {} },
+    waitUntil(promise) { clickPromise = promise; },
+  });
+  await clickPromise;
+  assert.deepEqual(harness.focused, ["existing-client"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.posted)), [{ id: "existing-client", message: { type: "NUTRIPLUS_NAVIGATE", destination: { type: "ROUTE", date: "2026-08-30", id: "route-1" } } }]);
+  assert.equal(harness.opened.length, 1, "a focused app must receive the destination instead of opening a duplicate window");
   assert.match(harness.source, /addEventListener\("push"/);
   assert.match(harness.source, /addEventListener\("notificationclick"/);
   assert.doesNotMatch(harness.source, /periodicSync|\/api\/products[^\n]*cache\.put/);
+  assert.doesNotMatch(harness.source, /visibilitychange|pageshow|pagehide|addEventListener\("focus"/);
 });
 
 test("permission UX is user-initiated, actionable, and the manifest remains installable", async () => {

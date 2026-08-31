@@ -125,10 +125,14 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   const [regularBytes, boldBytes] = await Promise.all([regularResponse.arrayBuffer(), boldResponse.arrayBuffer()]);
   const regular = await pdf.embedFont(regularBytes, { subset: true });
   const bold = await pdf.embedFont(boldBytes, { subset: true });
-  const pageSize: [number, number] = [841.89, 595.28];
-  const margin = 24;
-  const widths = [24, 80, 140, 304, 114, 28, 28, 28];
-  const headers = ["N.", "Teléfono", "Dirección", "Productos", "Totales", "E", "S", "T"];
+  // Oficio costarricense: 8.5 × 13 in, portrait.  Do not substitute Letter,
+  // A4 or US Legal (8.5 × 14) here: drivers use these physical dimensions.
+  const pageSize: [number, number] = [612, 936];
+  const margin = 22;
+  // Keep the operational fields compact so Productos receives the widest
+  // usable column. NP remains under Teléfono rather than becoming a column.
+  const widths = [20, 88, 130, 182, 94, 18, 18, 18];
+  const headers = ["N.º", "Teléfono · NP", "Dirección", "Productos", "Totales", "E", "S", "T"];
   const colors = {
     ink: rgb(0, 0, 0),
     muted: rgb(.32, .32, .32),
@@ -164,20 +168,25 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   function addPage() {
     const page = pdf.addPage(pageSize);
     const pageHeight = pageSize[1];
-    page.drawText("NUTRIPLUS - RUTA DE ENTREGAS", { x: margin, y: pageHeight - 24, size: 13, font: bold, color: colors.ink });
-    page.drawText(`FECHA  ${model.date}`, { x: margin, y: pageHeight - 45, size: 8.5, font: bold, color: colors.ink });
-    page.drawText(`TOTAL  ${crc(model.orderTotal)}`, { x: 285, y: pageHeight - 45, size: 8.5, font: bold, color: colors.ink });
-    page.drawText(`ENVÍO  ${crc(model.shippingTotal)}`, { x: 535, y: pageHeight - 45, size: 8.5, font: bold, color: colors.ink });
-    page.drawLine({ start: { x: margin, y: pageHeight - 55 }, end: { x: pageSize[0] - margin, y: pageHeight - 55 }, thickness: .8, color: colors.ink });
-    const y = pageHeight - 76;
+    const contentWidth = pageSize[0] - margin * 2;
+    page.drawText("NUTRIPLUS - RUTA DE ENTREGAS", { x: margin, y: pageHeight - 28, size: 13, font: bold, color: colors.ink });
+    page.drawText(`FECHA  ${model.date}`, { x: margin, y: pageHeight - 48, size: 8.4, font: bold, color: colors.ink });
+    page.drawText(`TOTAL  ${crc(model.orderTotal)}`, { x: 242, y: pageHeight - 48, size: 8.4, font: bold, color: colors.ink });
+    page.drawText(`ENVÍO  ${crc(model.shippingTotal)}`, { x: 432, y: pageHeight - 48, size: 8.4, font: bold, color: colors.ink });
+    page.drawLine({ start: { x: margin, y: pageHeight - 58 }, end: { x: pageSize[0] - margin, y: pageHeight - 58 }, thickness: .8, color: colors.ink });
+    const y = pageHeight - 80;
     let x = margin;
     headers.forEach((header, index) => {
-      page.drawRectangle({ x, y: y - 24, width: widths[index], height: 24, color: colors.white, borderColor: colors.ink, borderWidth: .7 });
-      const textWidth = bold.widthOfTextAtSize(header, 7.2);
-      page.drawText(header, { x: x + Math.max(3, (widths[index] - textWidth) / 2), y: y - 15, size: 7.2, font: bold, color: colors.ink });
+      page.drawRectangle({ x, y: y - 26, width: widths[index], height: 26, color: colors.white, borderColor: colors.ink, borderWidth: .7 });
+      const lines = wrap(header, widths[index] - 4, index === 1 ? 6.3 : 7, bold);
+      lines.forEach((line, lineIndex) => {
+        const size = index === 1 ? 6.3 : 7;
+        const textWidth = bold.widthOfTextAtSize(line, size);
+        page.drawText(line, { x: x + Math.max(2, (widths[index] - textWidth) / 2), y: y - 11 - lineIndex * 7.1, size, font: bold, color: colors.ink });
+      });
       x += widths[index];
     });
-    return { page, y: y - 24 };
+    return { page, y: y - 26, contentWidth };
   }
 
   let state = addPage();
@@ -205,12 +214,12 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
     ];
     const lineSets = values.map((value, index) => value.split("\n").flatMap((line) => wrap(
       line,
-      widths[index] - 9,
-      index === 3 ? 7.3 : 7.1,
+      widths[index] - 7,
+      index === 3 ? 7.5 : index === 1 ? 6.8 : 7,
       index === 4 || index >= 5 ? bold : regular,
     )));
-    const rowHeight = Math.max(23, Math.max(...lineSets.map((lines) => lines.length)) * 8.2 + 8);
-    if (state.y - rowHeight < 38) state = addPage();
+    const rowHeight = Math.max(28, Math.max(...lineSets.map((lines) => lines.length)) * 8.45 + 9);
+    if (state.y - rowHeight < 42) state = addPage();
     let x = margin;
     values.forEach((_value, columnIndex) => {
       state.page.drawRectangle({
@@ -223,13 +232,13 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
         borderWidth: .4,
       });
       lineSets[columnIndex].forEach((line, lineIndex) => {
-        const size = 7.1;
+        const size = columnIndex === 3 ? 7.5 : columnIndex === 1 ? 6.8 : 7;
         const font = columnIndex === 4 || columnIndex >= 5 ? bold : regular;
         const width = font.widthOfTextAtSize(line, size);
         const centered = columnIndex === 0 || columnIndex >= 5;
         state.page.drawText(line, {
           x: centered ? x + (widths[columnIndex] - width) / 2 : x + 4,
-          y: state.y - 12 - lineIndex * 8.2,
+          y: state.y - 12 - lineIndex * 8.45,
           size,
           font,
           color: colors.ink,
@@ -241,9 +250,9 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   });
 
   const sectionHeaderHeight = 29;
-  if (state.y - sectionHeaderHeight - 42 < 38) state = addPage();
+  if (state.y - sectionHeaderHeight - 42 < 42) state = addPage();
   state.y -= 13;
-  state.page.drawRectangle({ x: margin, y: state.y - sectionHeaderHeight, width: 746, height: sectionHeaderHeight, color: colors.white, borderColor: colors.ink, borderWidth: .8 });
+  state.page.drawRectangle({ x: margin, y: state.y - sectionHeaderHeight, width: state.contentWidth, height: sectionHeaderHeight, color: colors.white, borderColor: colors.ink, borderWidth: .8 });
   state.page.drawText("PRODUCTOS PARA CARGAR", { x: margin + 10, y: state.y - 18, size: 10, font: bold, color: colors.ink });
   state.y -= sectionHeaderHeight;
   if (!model.productsToLoad.length) {
@@ -252,14 +261,14 @@ export async function createOrdersPrintPdf(model: OrdersPrintModel) {
   }
   model.productsToLoad.forEach((product) => {
     const label = `${product.productName} × ${product.quantity}${product.manual ? " · MANUAL / NO INVENTARIO" : ""}`;
-    const lines = wrap(label, 730, 8.2);
+    const lines = wrap(label, state.contentWidth - 16, 8.2);
     const height = Math.max(22, lines.length * 9 + 7);
-    if (state.y - height < 38) {
+    if (state.y - height < 42) {
       state = addPage();
       state.page.drawText("PRODUCTOS PARA CARGAR - continuación", { x: margin, y: state.y - 18, size: 10, font: bold, color: colors.ink });
       state.y -= 30;
     }
-    state.page.drawRectangle({ x: margin, y: state.y - height, width: 746, height, color: colors.white, borderColor: colors.line, borderWidth: .4 });
+    state.page.drawRectangle({ x: margin, y: state.y - height, width: state.contentWidth, height, color: colors.white, borderColor: colors.line, borderWidth: .4 });
     lines.forEach((line, lineIndex) => state.page.drawText(line, { x: margin + 7, y: state.y - 14 - lineIndex * 9, size: 8.2, font: regular, color: colors.ink }));
     state.y -= height;
   });

@@ -79,7 +79,7 @@ El pedido, la entrega y una venta futura son entidades diferentes. `order_fulfil
 
 Una ruta tiene fecha operativa, etiqueta y estado. `route_orders` conserva una posición positiva y única por ruta; cada pedido admite como máximo una asignación activa. Su detalle deriva en tiempo real conteos, total bruto, envío y cobros netos por método. El cierre advierte pedidos pendientes y requiere confirmación explícita para cerrarlos sin esconderlos.
 
-La hoja PDF usa el orden persistido de ruta, repite encabezados al cambiar de página y muestra `FECHA`, `TOTAL`, `ENVIO`, teléfono, dirección, productos y el monto pendiente de cobro. La columna `E/S/T` se deriva únicamente de `expected_payment_method`. Al final consolida unidades de inventario por cargar e identifica aparte las líneas manuales; no expone el nombre del cliente ni el número NP.
+La hoja PDF usa oficio 8.5×13 vertical, el orden persistido de ruta y encabezados repetidos al cambiar de página. Muestra N.º, Teléfono·NP, Dirección, Productos, Totales y E/S/T, sin columna Cliente; `TOTAL` y `ENVÍO` permanecen separados y la columna `E/S/T` se deriva únicamente de `expected_payment_method`. Al final consolida unidades de inventario por cargar e identifica aparte las líneas manuales.
 
 ## API local
 

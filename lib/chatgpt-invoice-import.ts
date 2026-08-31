@@ -1,6 +1,7 @@
 import { unzipSync } from "fflate";
 import { validateBarcode } from "./barcodes.ts";
 import type { ParsedInvoice, ParsedInvoiceLine } from "./invoice-parser.ts";
+import { normalizePresentation } from "./product-presentation.ts";
 import { sha256Bytes, type PreparedInvoiceFile } from "./invoice-storage.ts";
 
 const MAX_ARCHIVE_BYTES = 25 * 1024 * 1024;
@@ -507,6 +508,7 @@ function parsedProduct(product: ValidatedProduct, provider: ParsedInvoice["provi
   const warnings: string[] = [];
   if (!product.barcode) warnings.push("El paquete no contiene un UPC, EAN o GTIN válido para esta línea.");
   if (product.reviewStatus !== "READY") warnings.push("ChatGPT marcó este producto para revisión manual.");
+  const presentation = normalizePresentation(product.presentation || product.size || [product.name, product.strength].filter(Boolean).join(" ")) || product.presentation;
   const description = [product.brand, product.name, product.presentation, product.strength, product.flavor].filter(Boolean).join(" · ");
   const evidenceSource = "chatgpt_import";
   return {
@@ -515,8 +517,8 @@ function parsedProduct(product: ValidatedProduct, provider: ParsedInvoice["provi
     originalDescription: description,
     name: product.name,
     brand: product.brand,
-    presentation: product.presentation,
-    size: product.size,
+    presentation,
+    size: presentation || product.size,
     flavor: product.flavor,
     concentration: product.strength,
     billedQuantity: product.quantity,
@@ -537,7 +539,7 @@ function parsedProduct(product: ValidatedProduct, provider: ParsedInvoice["provi
     fieldEvidence: {
       name: { value: product.name, confidence: 100, page: 1, source: evidenceSource },
       brand: { value: product.brand, confidence: 100, page: 1, source: evidenceSource },
-      presentation: { value: product.presentation, confidence: 100, page: 1, source: evidenceSource },
+      presentation: { value: presentation, confidence: 100, page: 1, source: evidenceSource },
       quantity: { value: String(product.quantity), confidence: 100, page: 1, source: evidenceSource },
       unit_price: { value: (product.unitPriceCents / 100).toFixed(2), confidence: 100, page: 1, source: evidenceSource },
       discount_total: { value: (product.discountTotalCents / 100).toFixed(2), confidence: 100, page: 1, source: evidenceSource },

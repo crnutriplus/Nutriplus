@@ -180,7 +180,8 @@ for (let pageNumber = 1; pageNumber <= routePdfDocument.numPages; pageNumber += 
 }
 await loadingRoutePdf.destroy();
 const renderedRouteText = routePdfText.join(" ").replace(/\s+/g, " ");
-assert.match(renderedRouteText, /N\. Teléfono Dirección Productos Totales E S T/);
+assert.match(renderedRouteText, /N\.º Teléfono · NP Dirección Productos Totales E S T/);
+assert.ok(routePdfText.every((page) => /NUTRIPLUS - RUTA DE ENTREGAS/.test(page) && /N\.º\s+Teléfono · NP/.test(page)), "each route PDF page repeats the operational heading");
 assert.ok(!renderedRouteText.includes("Cliente"), "the delivery PDF must not include the customer column or names");
 assert.ok(!renderedRouteText.includes("NP Teléfono"), "NP must not be an independent column");
 assert.ok(renderedRouteText.includes("8765-8076"));
@@ -207,6 +208,19 @@ assert.equal(multiPdf.response.headers.get("content-type"), "application/pdf");
 if (process.env.SAVE_ORDER_PDF === "1") await writeFile(new URL("../tmp/pdfs/orders-route-multipage.pdf", import.meta.url), multiPdf.body);
 const pdf = await PDFDocument.load(multiPdf.body);
 assert.ok(pdf.getPageCount() >= 3, `expected at least 3 pages, received ${pdf.getPageCount()}`);
+for (const page of pdf.getPages()) {
+  const { width, height } = page.getSize();
+  assert.ok(Math.abs(width - 612) < 0.1 && Math.abs(height - 936) < 0.1, `route PDF must use 8.5 × 13 in portrait, received ${width} × ${height}`);
+}
+const multiRouteLoading = getDocument({ data: multiPdf.body });
+const multiRouteDocument = await multiRouteLoading.promise;
+for (let pageNumber = 1; pageNumber <= multiRouteDocument.numPages; pageNumber += 1) {
+  const content = await (await multiRouteDocument.getPage(pageNumber)).getTextContent();
+  const text = content.items.map((item) => "str" in item ? item.str : "").join(" ").replace(/\s+/g, " ");
+  assert.match(text, /NUTRIPLUS - RUTA DE ENTREGAS/);
+  assert.match(text, /N\.º Teléfono · NP Dirección Productos Totales E S T/);
+}
+await multiRouteLoading.destroy();
 
 // Entrega parcial conserva pendientes, no mueve stock y permite completar después.
 let partial = await createOrder([

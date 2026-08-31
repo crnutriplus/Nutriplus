@@ -38,7 +38,7 @@ Relaciones lógicas:
 
 La huella de `inventory_documents` es única. La combinación documento/número de análisis también es única, al igual que la clave de línea dentro de cada documento.
 
-`CHATGPT_IMPORT` conserva en la extracción normalizada el costo bruto/neto por línea, descuentos explícitos o prorrateados y el desglose seguro de pagos. Al confirmar, esos datos alimentan el ledger `finance_expenses` existente con claves idempotentes por documento/medio; `expense_date` usa el día de confirmación en `America/Costa_Rica`, mientras `inventory_documents.document_date` conserva la fecha original. Las líneas personales permanecen conciliables pero se excluyen del gasto del negocio. Los créditos de tienda quedan como movimiento no monetario y no alteran caja. No se crea una tabla ni una fuente financiera paralela.
+`CHATGPT_IMPORT` conserva en la extracción normalizada el costo bruto/neto por línea, descuentos explícitos o prorrateados y el desglose seguro de pagos. Al confirmar, solo la cantidad activa recién ingresada de cada línea de negocio alimenta el ledger `finance_expenses` existente, con claves idempotentes por documento/línea/operación/medio. Una reversa agrega una contrapartida enlazada, sin editar la fila original; `expense_date` usa el día de confirmación en `America/Costa_Rica`, mientras `inventory_documents.document_date` conserva la fecha original. Las líneas personales permanecen conciliables pero se excluyen del gasto del negocio. Los créditos de tienda quedan como movimiento no monetario y no alteran caja. No se crea una tabla ni una fuente financiera paralela.
 
 ### Movimientos y auditoría de inventario
 
@@ -99,7 +99,7 @@ Cada fila de `order_fulfillments` representa una operación de entrega y sus lí
 
 Las transiciones de `products.quantity_available` se clasifican como `NORMAL`, `LOW_STOCK` u `OUT_OF_STOCK`. Solo los cruces crean eventos; bajar repetidamente dentro del mismo estado no genera spam. Salir de agotado registra `inventory.back_in_stock` y permite un cruce futuro válido. Evento, notificación y destino de entrega tienen índices únicos independientes.
 
-`notification_events` es la frontera durable. Web Push es un efecto posterior: no forma parte de la autoridad de inventario/pedidos y su fallo no revierte la mutación. Los resúmenes temporales usan fechas `YYYY-MM-DD` de `America/Costa_Rica`; Sites no aporta un scheduler, de modo que se generan por reconciliación al abrir/actualizar la app.
+`notification_events` es la frontera durable. Web Push es un efecto posterior: no forma parte de la autoridad de inventario/pedidos y su fallo no revierte la mutación. La navegación de una alerta se expresa como un destino interno tipado (producto, pedido, resumen, ruta, factura o Centro), no como una URL arbitraria. Los resúmenes temporales usan fechas `YYYY-MM-DD` de `America/Costa_Rica`; Sites no aporta un scheduler, de modo que se generan por reconciliación al abrir/actualizar la app.
 
 ### Importaciones, respaldos y eliminaciones
 

@@ -1,6 +1,7 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { errorResponse } from "@/lib/api-helpers";
 import { documentStatusStatement } from "@/lib/inventory-line-progress";
+import { invoiceFinanceReversalStatements } from "@/lib/inventory-invoice-finance";
 import { productFromRow } from "@/lib/pricing";
 import { requestUserLabel } from "@/lib/request-user";
 
@@ -106,6 +107,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           WHERE id=?`).bind(now, String(movement.document_line_id)));
       }
     });
+    statements.push(...await invoiceFinanceReversalStatements(db, originalId, reversalId, reason, now));
     if (original.document_id) statements.push(documentStatusStatement(db, String(original.document_id), now));
     statements.push(db.prepare("UPDATE inventory_operations SET status='completed',verification_status='verified',confirmed_at=? WHERE id=?").bind(now, reversalId));
     try { await db.batch(statements); }

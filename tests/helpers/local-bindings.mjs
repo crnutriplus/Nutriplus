@@ -113,6 +113,17 @@ export class LocalR2Bucket {
     };
   }
 
+  async head(key) {
+    const stored = this.objects.get(String(key));
+    if (!stored) return null;
+    return {
+      key: String(key),
+      size: stored.bytes.byteLength,
+      httpMetadata: stored.httpMetadata,
+      customMetadata: stored.customMetadata,
+    };
+  }
+
   async delete(key) {
     this.objects.delete(String(key));
   }

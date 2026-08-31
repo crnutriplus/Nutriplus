@@ -168,6 +168,7 @@ assert.equal(Number((await DB.prepare("SELECT quantity_available FROM products W
 assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM notification_events WHERE event_type='inventory.low_stock' AND entity_id=?").bind(String(stock.id)).first()).total), 1);
 assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM notifications WHERE event_type='inventory.low_stock' AND entity_id=?").bind(String(stock.id)).first()).total), 1, "internal alert must remain when external push fails");
 assert.equal((await DB.prepare("SELECT target_url FROM notifications WHERE event_type='inventory.low_stock' AND entity_id=?").bind(String(stock.id)).first()).target_url, `/?tab=products&product=${stock.id}`);
+assert.deepEqual(JSON.parse((await DB.prepare("SELECT metadata_json FROM notifications WHERE event_type='inventory.low_stock' AND entity_id=?").bind(String(stock.id)).first()).metadata_json).destination, { type: "PRODUCT", id: String(stock.id) });
 assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM notification_deliveries WHERE state='FAILED' AND response_status=503").first()).total), 1);
 assert.equal(pushRequests.length, 1);
 assert.equal(pushRequests[0].input, push.subscription.endpoint);
@@ -196,6 +197,7 @@ let listed = await call("/api/notifications?includeDismissed=1&limit=100");
 const lowItem = listed.body.notifications.find((item) => item.eventType === "inventory.low_stock");
 const outItem = listed.body.notifications.find((item) => item.eventType === "inventory.out_of_stock");
 assert.ok(lowItem && outItem);
+assert.deepEqual(lowItem.destination, { type: "PRODUCT", id: String(stock.id) });
 const read = await call(`/api/notifications/${lowItem.id}`, { method: "PATCH", body: JSON.stringify({ action: "READ" }) });
 assert.ok(read.body.notification.readAt);
 const dismissed = await call(`/api/notifications/${outItem.id}`, { method: "PATCH", body: JSON.stringify({ action: "DISMISS" }) });
@@ -238,6 +240,7 @@ const orderEvents = await DB.prepare("SELECT payload_json FROM notification_even
 assert.equal(orderEvents.results.length, 1, "tomorrow orders must be one daily summary");
 assert.equal(JSON.parse(orderEvents.results[0].payload_json).count, 2);
 assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM notifications WHERE event_type='order.tomorrow' AND entity_id=?").bind(tomorrow).first()).total), 1);
+assert.deepEqual(JSON.parse((await DB.prepare("SELECT metadata_json FROM notifications WHERE event_type='order.tomorrow' AND entity_id=?").bind(tomorrow).first()).metadata_json).destination, { type: "ORDER_SUMMARY", date: tomorrow });
 await createOrder(tomorrow);
 await call("/api/notifications/reconcile", { method: "POST" });
 const refreshedSummary = await DB.prepare("SELECT payload_json FROM notification_events WHERE event_type='order.tomorrow' AND entity_id=?").bind(tomorrow).first();
@@ -251,6 +254,7 @@ const special = await createOrder(null, { orderType: "SPECIAL_ORDER", estimatedA
 await call("/api/notifications/reconcile", { method: "POST" });
 await call("/api/notifications/reconcile", { method: "POST" });
 assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM notification_events WHERE event_type='special_order.arrival_soon' AND entity_id=?").bind(special.id).first()).total), 1);
+assert.deepEqual(JSON.parse((await DB.prepare("SELECT metadata_json FROM notifications WHERE event_type='special_order.arrival_soon' AND entity_id=?").bind(special.id).first()).metadata_json).destination, { type: "ORDER", id: special.id, section: "special" });
 const overdueDate = addDays(today, -2);
 await DB.prepare("UPDATE special_order_details SET estimated_arrival_date=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?").bind(overdueDate, special.id).run();
 await call("/api/notifications/reconcile", { method: "POST" });

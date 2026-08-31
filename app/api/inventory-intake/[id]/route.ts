@@ -116,13 +116,34 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
         throw new Error(`INVENTORY_ACTIVE_LINE_CANNOT_BE_OMITTED:${name}`);
       }
       if (values.reviewSavedAt) reviewedLineIds.add(id);
-      if (stored?.processed_operation_id) {
+      if (stored?.processed_operation_id && (progress?.activeQuantity || 0) > 0) {
         statements.push(db.prepare(`UPDATE inventory_document_lines SET
           selected_for_ingress=?,review_saved_at=COALESCE(review_saved_at,?),status=?,action=?,
           match_product_id=COALESCE(?,match_product_id),match_non_inventory_id=?,updated_at=?
           WHERE id=? AND document_id=?`).bind(
           values.selected, values.reviewSavedAt, values.status, values.action,
           values.productId, values.quoteId, now, values.id, documentId,
+        ));
+        return;
+      }
+      if (stored?.processed_operation_id) {
+        // A completed reversal returns the active quantity to zero. Keep the
+        // original operation id as audit evidence, but release the invoice
+        // line for a corrected, future ingress instead of leaving a stale lock.
+        statements.push(db.prepare(`UPDATE inventory_document_lines SET
+          line_index=?,original_description=?,name=?,brand=?,presentation=?,size=?,flavor=?,concentration=?,billed_quantity=?,
+          received_quantity=?,units_per_package=?,total_to_add=?,barcode=?,canonical_barcode=?,barcode_type=?,secondary_id=?,secondary_type=?,
+          barcode_method=?,barcode_source=?,barcode_source_url=?,barcode_source_title=?,barcode_differences_json=?,barcode_lookup_status=?,
+          field_evidence_json=?,barcode_confirmed=?,selected_for_ingress=?,review_saved_at=CASE WHEN ? IS NOT NULL THEN ? ELSE review_saved_at END,
+          status=?,match_product_id=?,match_non_inventory_id=?,action=?,barcode_level=?,warnings_json=?,updated_at=?
+          WHERE id=? AND document_id=?`).bind(
+          orderedLineIndex, values.original, values.name, values.brand || null, values.presentation || null, values.size || null,
+          values.flavor || null, values.concentration || null, values.billed, values.received, values.units, values.total,
+          values.barcode, values.canonical, values.type, values.secondaryId || null, values.secondaryType || null,
+          values.method || null, values.source || null, values.sourceUrl || null, values.sourceTitle || null,
+          JSON.stringify(values.differences), values.lookupStatus, JSON.stringify(values.evidence), values.confirmed, values.selected,
+          values.reviewSavedAt, values.reviewSavedAt, values.status === "processed" ? "confirmed" : values.status,
+          values.productId, values.quoteId, values.action, values.level || null, JSON.stringify(values.warnings), now, values.id, documentId,
         ));
         return;
       }

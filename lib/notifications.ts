@@ -1,4 +1,5 @@
 import { hasValidVapidConfiguration, prepareWebPushRequest, validatePushSubscription, type VapidConfiguration } from "./web-push";
+import { notificationDestinationFromMetadata, notificationDestinationPath, type NotificationDestination } from "./notification-destinations";
 
 type Row = Record<string, unknown>;
 
@@ -39,6 +40,7 @@ export type NotificationItem = {
   targetUrl: string | null;
   deliveryState: string;
   metadata: Record<string, unknown>;
+  destination: NotificationDestination;
   createdAt: string;
   readAt: string | null;
   dismissedAt: string | null;
@@ -49,6 +51,7 @@ type EventPresentation = {
   message: string;
   severity: "INFO" | "WARNING" | "CRITICAL";
   targetUrl: string;
+  destination: NotificationDestination;
   category: NotificationPreferenceKey;
   pushEligible: boolean;
   metadata: Record<string, unknown>;
@@ -167,6 +170,7 @@ export async function updateNotificationPreferences(db: D1Database, payload: Rec
 }
 
 function notificationFromRow(row: Row): NotificationItem {
+  const metadata = safeJson(row.metadata_json);
   return {
     id: String(row.id),
     eventType: String(row.event_type),
@@ -177,10 +181,19 @@ function notificationFromRow(row: Row): NotificationItem {
     entityId: rowText(row, "entity_id"),
     targetUrl: rowText(row, "target_url"),
     deliveryState: String(row.delivery_state),
-    metadata: safeJson(row.metadata_json),
+    metadata,
+    destination: notificationDestinationFromMetadata(metadata, rowText(row, "target_url")),
     createdAt: String(row.created_at),
     readAt: rowText(row, "read_at"),
     dismissedAt: rowText(row, "dismissed_at"),
+  };
+}
+
+function destinationFields(destination: NotificationDestination, metadata: Record<string, unknown>) {
+  return {
+    destination,
+    targetUrl: notificationDestinationPath(destination),
+    metadata: { ...metadata, destination },
   };
 }
 
@@ -396,33 +409,33 @@ function presentationFor(eventType: string, payload: Record<string, unknown>, en
   const productName = safeText(payload.productName, "Producto");
   const productId = Math.max(0, safeInteger(payload.productId));
   const quantity = Math.max(0, safeInteger(payload.quantity));
+  const orderId = safeText(payload.orderId, entityId || "", 160);
   const orderNumber = safeText(payload.orderNumber, entityId || "Encargo", 60);
+  const orderDestination = (section: "deliveries" | "special" | "history"): NotificationDestination => orderId ? { type: "ORDER", id: orderId, section } : { type: "NOTIFICATIONS" };
+  const summaryDestination = (date: string): NotificationDestination => date ? { type: "ORDER_SUMMARY", date } : { type: "NOTIFICATIONS" };
   if (eventType === "inventory.low_stock") return {
     title: "Inventario bajo",
     message: `Inventario bajo: ${productName}. Quedan ${quantity} ${quantity === 1 ? "unidad" : "unidades"}.`,
     severity: "WARNING",
-    targetUrl: productId ? `/?tab=products&product=${productId}` : "/?tab=products&stock=low",
     category: "lowStockEnabled",
     pushEligible: true,
-    metadata: { productId, quantity, minimumStock: Math.max(0, safeInteger(payload.minimumStock)) },
+    ...destinationFields(productId ? { type: "PRODUCT", id: String(productId) } : { type: "PRODUCTS" }, { productId, quantity, minimumStock: Math.max(0, safeInteger(payload.minimumStock)) }),
   };
   if (eventType === "inventory.out_of_stock") return {
     title: "Producto agotado",
     message: `Producto agotado: ${productName}.`,
     severity: "CRITICAL",
-    targetUrl: productId ? `/?tab=products&product=${productId}` : "/?tab=products&stock=low",
     category: "outOfStockEnabled",
     pushEligible: true,
-    metadata: { productId, quantity: 0 },
+    ...destinationFields(productId ? { type: "PRODUCT", id: String(productId) } : { type: "PRODUCTS" }, { productId, quantity: 0 }),
   };
   if (eventType === "inventory.back_in_stock") return {
     title: "Producto disponible",
     message: `${productName} volvió a tener inventario. Quedan ${quantity} ${quantity === 1 ? "unidad" : "unidades"}.`,
     severity: "INFO",
-    targetUrl: productId ? `/?tab=products&product=${productId}` : "/?tab=products",
     category: "lowStockEnabled",
     pushEligible: false,
-    metadata: { productId, quantity },
+    ...destinationFields(productId ? { type: "PRODUCT", id: String(productId) } : { type: "PRODUCTS" }, { productId, quantity }),
   };
   if (eventType === "order.tomorrow") {
     const count = Math.max(1, safeInteger(payload.count, 1));
@@ -431,10 +444,9 @@ function presentationFor(eventType: string, payload: Record<string, unknown>, en
       title: "Pedidos para mañana",
       message: `Tienes ${count} ${count === 1 ? "pedido programado" : "pedidos programados"} para mañana.`,
       severity: "WARNING",
-      targetUrl: `/?tab=orders&section=deliveries&date=${encodeURIComponent(date)}`,
       category: "ordersEnabled",
       pushEligible: true,
-      metadata: { count, date },
+      ...destinationFields(summaryDestination(date), { count, date }),
     };
   }
   if (eventType === "order.pending_today") {
@@ -444,10 +456,9 @@ function presentationFor(eventType: string, payload: Record<string, unknown>, en
       title: "Pedidos pendientes hoy",
       message: `Quedan ${count} ${count === 1 ? "pedido pendiente" : "pedidos pendientes"} de completar hoy.`,
       severity: "WARNING",
-      targetUrl: `/?tab=orders&section=deliveries&date=${encodeURIComponent(date)}`,
       category: "ordersEnabled",
       pushEligible: true,
-      metadata: { count, date },
+      ...destinationFields(summaryDestination(date), { count, date }),
     };
   }
   if (eventType === "special_order.arrival_soon") {
@@ -457,10 +468,9 @@ function presentationFor(eventType: string, payload: Record<string, unknown>, en
       title: "Encargo próximo",
       message: `Encargo ${orderNumber}: ${timing}.`,
       severity: "WARNING",
-      targetUrl: `/?tab=orders&section=special&order=${encodeURIComponent(entityId || "")}`,
       category: "specialOrdersEnabled",
       pushEligible: true,
-      metadata: { orderId: entityId, orderNumber, estimatedArrivalDate: validDateKey(payload.estimatedArrivalDate), daysRemaining: remaining },
+      ...destinationFields(orderDestination("special"), { orderId, orderNumber, estimatedArrivalDate: validDateKey(payload.estimatedArrivalDate), daysRemaining: remaining }),
     };
   }
   if (eventType === "special_order.overdue") {
@@ -469,21 +479,55 @@ function presentationFor(eventType: string, payload: Record<string, unknown>, en
       title: "Encargo atrasado",
       message: `Encargo ${orderNumber} lleva ${overdue} ${overdue === 1 ? "día" : "días"} de atraso respecto a la fecha estimada.`,
       severity: "CRITICAL",
-      targetUrl: `/?tab=orders&section=special&order=${encodeURIComponent(entityId || "")}`,
       category: "specialOrdersEnabled",
       pushEligible: true,
-      metadata: { orderId: entityId, orderNumber, estimatedArrivalDate: validDateKey(payload.estimatedArrivalDate), daysOverdue: overdue },
+      ...destinationFields(orderDestination("special"), { orderId, orderNumber, estimatedArrivalDate: validDateKey(payload.estimatedArrivalDate), daysOverdue: overdue }),
     };
   }
   if (eventType === "special_order.received") return {
     title: "Encargo recibido",
     message: `Encargo ${orderNumber}: recibido y pendiente de resolver antes de agregarlo a una ruta.`,
     severity: "INFO",
-    targetUrl: `/?tab=orders&section=special&order=${encodeURIComponent(entityId || "")}`,
     category: "specialOrdersEnabled",
     pushEligible: true,
-    metadata: { orderId: entityId, orderNumber },
+    ...destinationFields(orderDestination("special"), { orderId, orderNumber }),
   };
+  if (eventType === "order.payment_pending") {
+    const section = payload.orderType === "SPECIAL_ORDER" ? "special" : "deliveries";
+    return {
+      title: "Pago pendiente",
+      message: `Pedido ${orderNumber}: queda un saldo por revisar.`,
+      severity: "WARNING",
+      category: "ordersEnabled",
+      pushEligible: true,
+      ...destinationFields(orderDestination(section), { orderId, orderNumber }),
+    };
+  }
+  if (eventType === "route.pending_orders") {
+    const routeDate = validDateKey(payload.date) || validDateKey(entityId) || "";
+    const routeId = safeText(payload.routeId, "", 160);
+    const routeDestination: NotificationDestination = routeDate ? { type: "ROUTE", date: routeDate, ...(routeId ? { id: routeId } : {}) } : { type: "NOTIFICATIONS" };
+    return {
+      title: "Ruta con pedidos pendientes",
+      message: `La ruta${routeDate ? ` del ${routeDate}` : ""} tiene pedidos por revisar.`,
+      severity: "WARNING",
+      category: "ordersEnabled",
+      pushEligible: true,
+      ...destinationFields(routeDestination, { routeId: routeId || null, date: routeDate || null }),
+    };
+  }
+  if (eventType === "invoice.pending_review") {
+    const documentId = safeText(payload.documentId, entityId || "", 160);
+    const invoiceDestination: NotificationDestination = documentId ? { type: "INVOICE", id: documentId } : { type: "NOTIFICATIONS" };
+    return {
+      title: "Factura pendiente de revisión",
+      message: "Hay una factura pendiente de revisar antes de ingresar inventario.",
+      severity: "WARNING",
+      category: "ordersEnabled",
+      pushEligible: true,
+      ...destinationFields(invoiceDestination, { documentId: documentId || null }),
+    };
+  }
   return null;
 }
 
@@ -566,6 +610,7 @@ async function deliverNotification(
     if (Number(delivery.attempt_count ?? 0) >= 3) continue;
     let prepared: Awaited<ReturnType<typeof prepareWebPushRequest>>;
     try {
+      const destination = notificationDestinationFromMetadata(safeJson(notification.metadata_json), notification.target_url);
       prepared = await prepareWebPushRequest({
         endpoint: String(subscription.endpoint),
         p256dh: String(subscription.p256dh),
@@ -576,7 +621,7 @@ async function deliverNotification(
         title: notification.title,
         body: notification.message,
         severity: notification.severity,
-        url: notification.target_url || "/?notifications=1",
+        destination,
         tag: notification.dedupe_key,
         createdAt: notification.created_at,
       }, configuration);
@@ -674,7 +719,7 @@ async function retryOneDiagnosedDelivery(
   if (!configuration) return null;
   const candidate = await db.prepare(`SELECT
       d.id AS delivery_id,s.endpoint,s.p256dh,s.auth,
-      n.id AS notification_id,n.event_type,n.title,n.message,n.severity,n.target_url,n.dedupe_key,n.created_at
+      n.id AS notification_id,n.event_type,n.title,n.message,n.severity,n.target_url,n.metadata_json,n.dedupe_key,n.created_at
     FROM notification_deliveries d
     JOIN push_subscriptions s ON s.id=d.subscription_id AND s.disabled_at IS NULL
     JOIN notifications n ON n.id=d.notification_id
@@ -684,6 +729,7 @@ async function retryOneDiagnosedDelivery(
 
   let prepared: Awaited<ReturnType<typeof prepareWebPushRequest>>;
   try {
+    const destination = notificationDestinationFromMetadata(safeJson(candidate.metadata_json), candidate.target_url);
     prepared = await prepareWebPushRequest({
       endpoint: String(candidate.endpoint),
       p256dh: String(candidate.p256dh),
@@ -694,7 +740,7 @@ async function retryOneDiagnosedDelivery(
       title: candidate.title,
       body: candidate.message,
       severity: candidate.severity,
-      url: candidate.target_url || "/?notifications=1",
+      destination,
       tag: candidate.dedupe_key,
       createdAt: candidate.created_at,
     }, configuration);

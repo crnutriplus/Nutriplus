@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { notificationDestinationFromMetadata, type NotificationDestination } from "@/lib/notification-destinations";
 
 type NotificationItem = {
   id: string;
@@ -28,6 +29,7 @@ type NotificationItem = {
   targetUrl: string | null;
   deliveryState: string;
   metadata: Record<string, unknown>;
+  destination?: NotificationDestination;
   createdAt: string;
   readAt: string | null;
   dismissedAt: string | null;
@@ -306,7 +308,11 @@ export function NotificationCenter() {
     try {
       await api(`/api/notifications/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify({ action }) });
       await loadItems();
-      if (navigate && item.targetUrl) window.location.assign(item.targetUrl);
+      if (navigate) {
+        const destination = item.destination || notificationDestinationFromMetadata(item.metadata, item.targetUrl);
+        setOpen(false);
+        window.dispatchEvent(new CustomEvent("nutriplus:navigate-destination", { detail: { destination, source: "notification-center" } }));
+      }
     } catch (error) {
       const typed = error as Error & { problem?: Problem };
       setProblem(typed.problem || { title: "No se actualizó la alerta", cause: typed.message, action: "Intentá nuevamente.", dataState: "La alerta original se conserva." });

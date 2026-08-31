@@ -37,7 +37,8 @@ No repetir `npm ci` con dependencias instaladas y manifests sin cambios. Usarlo 
 - `tests/invoice-reader-unit.test.mjs`: normalización/lectura local de facturas;
 - `tests/invoice-ai-unit.test.mjs`: configuración, modelos y estimación de consumo;
 - `tests/chatgpt-invoice-import-unit.test.mjs`: parser y seguridad del ZIP;
-- `tests/notifications-unit.test.mjs`: cifrado Web Push/VAPID, validación de subscription, permiso iniciado por la persona, Service Worker, caché segura, `notificationclick` y manifest PWA;
+- `tests/inventory-matching-unit.test.mjs` y `tests/product-presentation-unit.test.mjs`: prioridad barcode/proveedor+SKU, nombre diferente y presentación comercial normalizada;
+- `tests/notification-destinations-unit.test.mjs` y `tests/notifications-unit.test.mjs`: destinos internos tipados, cifrado Web Push/VAPID, validación de subscription, permiso iniciado por la persona, Service Worker, caché segura, `notificationclick` y manifest PWA;
 - `tests/inventory-migration-0014.integration.mjs`: migración desde el índice de v2.11, reingreso tras reversa, límites por saldo y compatibilidad con ingreso rápido;
 - `tests/orders-migration-0015.integration.mjs`: migración aditiva desde el esquema productivo actual, conservación de inventario y restricciones/triggers de Pedidos;
 - `tests/notifications-migration-0016.integration.mjs`: migración desde v2.16, conservación exacta de tablas/filas/definiciones y nuevas restricciones/estados de alertas;
@@ -102,7 +103,7 @@ Resultado local final del 2026-08-21:
 
 ## Pruebas opcionales con archivos
 
-La integración autocontenida `tests/invoice-finance.integration.mjs` forma parte de `npm test`, `check:invoices` y `check:finance`. Verifica factura pagada automática, métodos divididos, últimos cuatro dígitos seguros, crédito de tienda no monetario, exclusión personal, fecha financiera de confirmación e idempotencia de reintentos sin depender de archivos externos. `tests/inventory-inline-unit.test.mjs` cubre el escáner reutilizado, cálculo con parámetros vigentes, autoselección y recuperación segura del guard de confirmación.
+La integración autocontenida `tests/invoice-finance.integration.mjs` forma parte de `npm test`, `check:invoices` y `check:finance`. Verifica reconocimiento parcial por línea, pagos divididos, últimos cuatro dígitos seguros, crédito de tienda no monetario, exclusión personal, reversas/reingreso, fecha financiera de confirmación, enlace privado HEAD/GET a la factura e idempotencia sin depender de archivos externos. `tests/inventory-inline-unit.test.mjs` cubre el escáner reutilizado, cálculo con parámetros vigentes, mínimo de stock, autoselección y recuperación segura del guard de confirmación.
 
 ### Paquete ChatGPT real
 

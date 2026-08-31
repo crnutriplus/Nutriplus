@@ -1,5 +1,5 @@
 import { newOrderChildId } from "./orders";
-import { reconcileInventoryInvoicePayments } from "./inventory-invoice-finance";
+import { isInvoiceNonCash, reconcileInventoryInvoicePayments } from "./inventory-invoice-finance";
 
 type Row = Record<string, unknown>;
 
@@ -291,7 +291,9 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
     db.prepare(`SELECT fs.*,COALESCE((SELECT SUM(CASE WHEN p.payment_type='PAYMENT' THEN p.amount ELSE -p.amount END)
       FROM order_payments p WHERE p.order_id=fs.order_id AND p.status='POSTED'),0) AS paid_total
       FROM finance_sales fs WHERE fs.status='RECOGNIZED' ORDER BY fs.delivered_at,fs.id`).all<Row>(),
-    db.prepare("SELECT * FROM finance_expenses WHERE expense_date BETWEEN ? AND ? ORDER BY expense_date DESC,created_at DESC,id DESC").bind(range.from, range.to).all<Row>(),
+    db.prepare(`SELECT e.*,original.source_id AS reversed_source_id
+      FROM finance_expenses e LEFT JOIN finance_expenses original ON original.id=e.reverses_expense_id
+      WHERE e.expense_date BETWEEN ? AND ? ORDER BY e.expense_date DESC,e.created_at DESC,e.id DESC`).bind(range.from, range.to).all<Row>(),
     db.prepare("SELECT * FROM finance_recurring_templates ORDER BY active DESC,next_due_date,id").all<Row>(),
     db.prepare("SELECT * FROM finance_budgets WHERE year_month BETWEEN substr(?,1,7) AND substr(?,1,7) ORDER BY year_month,category").bind(range.from, range.to).all<Row>(),
     db.prepare(`SELECT d.id,d.provider,d.invoice_number,d.order_number,d.document_date,d.confirmed_at,
@@ -299,12 +301,33 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
       WHERE d.confirmed_at IS NOT NULL ORDER BY d.confirmed_at DESC,d.id DESC LIMIT 100`).all<Row>(),
     db.prepare("SELECT id,route_date,label,status FROM delivery_routes ORDER BY route_date DESC,id DESC LIMIT 200").all<Row>(),
   ]);
+  const invoiceMetadata = new Map(invoiceResult.results.map((row) => {
+    let parsed: Row = {};
+    try { parsed = JSON.parse(String(row.extraction_json || "{}")) as Row; } catch { parsed = {}; }
+    const invoice = parsed.invoice && typeof parsed.invoice === "object" ? parsed.invoice as Row : {};
+    const payments = Array.isArray(parsed.payments) ? parsed.payments.filter((item): item is Row => Boolean(item && typeof item === "object")) : [];
+    return [String(row.id), {
+      documentId: String(row.id), provider: String(row.provider), invoiceNumber: row.invoice_number ? String(row.invoice_number) : null,
+      orderNumber: row.order_number ? String(row.order_number) : null, documentDate: row.document_date ? String(row.document_date) : null,
+      currency: invoice.currency ? String(invoice.currency) : null,
+      payments: payments.map((payment) => ({ method: text(payment.payment_method || payment.normalized_method, 100), last4: /^\d{4}$/.test(String(payment.last4 || "")) ? String(payment.last4) : null, amount: Number(payment.amount || 0), currency: text(payment.currency || invoice.currency, 3).toUpperCase() || null, cashAffecting: payment.cash_affecting !== false })),
+    }];
+  }));
+  const sourceDocumentId = (sourceId: string | null | undefined) => {
+    const id = String(sourceId || "").split(":")[0];
+    return invoiceMetadata.has(id) ? id : "";
+  };
   const sales = salesResult.results.map(saleFromRow);
-  const expenses = expenseResult.results.map(expenseFromRow);
+  const expenses = expenseResult.results.map((row) => {
+    const expense = expenseFromRow(row);
+    const documentId = sourceDocumentId(expense.sourceId) || sourceDocumentId(row.reversed_source_id ? String(row.reversed_source_id) : "");
+    const component = Number(String(expense.sourceId || row.reversed_source_id || "").match(/:payment:(\d+)$/)?.[1]);
+    return { ...expense, invoice: documentId ? { ...invoiceMetadata.get(documentId)!, payment: Number.isInteger(component) ? invoiceMetadata.get(documentId)!.payments[component] || null : null } : null };
+  });
   const businessExpenses = expenses.filter((item) => item.businessScope === "BUSINESS");
   const signedExpense = (item: ReturnType<typeof expenseFromRow>) => item.entryType === "REVERSAL" ? -item.amountCrc : item.amountCrc;
   const operatingExpenses = businessExpenses.filter((item) => item.category !== "INVENTORY_PURCHASE").reduce((sum, item) => sum + signedExpense(item), 0);
-  const cashExpenses = businessExpenses.filter((item) => item.sourceType !== "INVENTORY_INVOICE_NON_CASH");
+  const cashExpenses = businessExpenses.filter((item) => !isInvoiceNonCash(item.sourceType));
   const allCashOut = cashExpenses.reduce((sum, item) => sum + signedExpense(item), 0);
   const salesTotal = sales.reduce((sum, sale) => sum + sale.totalIncome, 0);
   const productSales = sales.reduce((sum, sale) => sum + sale.productNet, 0);
@@ -347,7 +370,7 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
     return existing;
   };
   sales.forEach((sale) => { day(sale.deliveredDate).sales += sale.totalIncome; });
-  businessExpenses.forEach((item) => { const amount = signedExpense(item); if (item.sourceType !== "INVENTORY_INVOICE_NON_CASH") day(item.date).cashOut += amount; if (item.category !== "INVENTORY_PURCHASE") day(item.date).expenses += amount; });
+  businessExpenses.forEach((item) => { const amount = signedExpense(item); if (!isInvoiceNonCash(item.sourceType)) day(item.date).cashOut += amount; if (item.category !== "INVENTORY_PURCHASE") day(item.date).expenses += amount; });
   paymentEntries.forEach((item) => { day(costaRicaDay(item.createdAt)).cashIn += item.signedAmount; });
   const productProfitability = Object.values(lineResult.results.reduce<Record<string, {
     productId: number | null; name: string; units: number; income: number; cogsKnown: number; missingCost: boolean;
@@ -399,8 +422,10 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
       orderNumber: row.order_number ? String(row.order_number) : null, documentDate: row.document_date ? String(row.document_date) : null,
       confirmedAt: String(row.confirmed_at), currency: invoice.currency ? String(invoice.currency) : null,
       suggestedAmount: invoice.total == null ? null : Number(invoice.total),
+      payments: invoiceMetadata.get(String(row.id))?.payments || [],
+      fileUrl: `/api/inventory-intake/${encodeURIComponent(String(row.id))}/file?index=0`,
       alreadyLinked: expenses.some((expense) => expense.entryType === "EXPENSE" && (expense.sourceType === "INVENTORY_INVOICE" && expense.sourceId === String(row.id)
-        || expense.sourceType.startsWith("INVENTORY_INVOICE_") && expense.sourceId?.startsWith(`${String(row.id)}:payment:`))),
+        || expense.sourceType.startsWith("INVENTORY_INVOICE_") && expense.sourceId?.startsWith(`${String(row.id)}:`))),
     };
   });
   return {

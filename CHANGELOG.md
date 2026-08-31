@@ -7,6 +7,16 @@ NutriPlus mantiene dos identificadores independientes:
 
 `package.json` usa SemVer, por lo que representa la versión pública `2.23` como `2.23.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
 
+## 2.26 — 2026-08-31
+
+- Facturas busca por múltiples palabras y ordena las sugerencias por código de barras, proveedor+SKU/equivalencia, señales de marca/presentación y finalmente tokens/fuzzy. Una selección explícita fija el `productId` canónico: conserva los datos originales de factura, carga la ficha interna y nunca crea ni acredita otro producto.
+- La presentación comercial se normaliza en un helper único (incluye onzas/libras a métrico), y el alta inline usa el mismo control opcional de stock mínimo de Productos.
+- El borrador de factura sigue disponible al cambiar de módulo; una reversa conserva la línea editable y permite reingreso trazable. CHATGPT_IMPORT reconoce gasto únicamente por cada línea de negocio confirmada; pagos divididos, crédito no monetario y reversas permanecen append-only e idempotentes.
+- Finanzas muestra referencia de factura, proveedor, fecha, método y últimos cuatro dígitos seguros, y abre el original privado con comprobación `HEAD`/descarga desde el R2 ya existente.
+- Las alertas usan destinos internos tipados; el Service Worker valida el destino, enfoca la aplicación ya abierta y le entrega la navegación sin crear otra ventana. No se agregaron avisos por foco/visibilidad ni se modificó el transporte Web Push.
+- La hoja PDF de Ruta usa tamaño oficio 8.5×13 vertical, blanco y negro, encabezados repetidos y columnas N.º, Teléfono·NP, Dirección, Productos, Totales y E/S/T, sin columna Cliente.
+- No se creó migración ni se hicieron llamadas pagadas a OpenAI.
+
 ## 2.25 — 2026-08-29
 
 - Crear producto desde una factura exige y conserva precio de compra y peso, muestra los precios derivados con la calculadora y parámetros existentes, admite código manual o el escáner actual y autoselecciona sin mover inventario antes de confirmar.

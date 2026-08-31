@@ -30,7 +30,8 @@ import {
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { validateBarcode } from "@/lib/barcodes";
 import type { IntakeLineDto, IntakeLineStatus } from "@/lib/inventory-intake";
-import { calculatePrices, normalizeName, type NonInventoryRecord, type PricingSettings, type ProductRecord } from "@/lib/pricing";
+import { normalizePresentation } from "@/lib/product-presentation";
+import { calculatePrices, normalizeName, searchProducts, type NonInventoryRecord, type PricingSettings, type ProductRecord } from "@/lib/pricing";
 
 type Notice = { type: "success" | "info" | "error" | "warning"; title?: string; text: string; sticky?: boolean; dismissOnPageTouch?: boolean; durationMs?: number };
 
@@ -213,6 +214,7 @@ type Props = {
   onClose: () => void;
   onNotify: (notice: Notice) => void;
   onProductsChanged: (products: ProductRecord[]) => void;
+  onEditProduct: (productId: number) => void;
   onRefresh: () => Promise<void>;
   onRequestScan: (lineId: string) => void;
   scannedBarcode: IntakeScanEvent;
@@ -257,6 +259,8 @@ function lineAfterConfirmation(line: IntakeLineDto, processedOperationId: string
 }
 
 const CONFIRMABLE = new Set<IntakeLineStatus>(["confirmed", "new_product", "non_inventory"]);
+const ACTIVE_INVOICE_DRAFT_KEY = "nutriplus-active-invoice-draft";
+const OPEN_INVOICE_REQUEST_KEY = "nutriplus-open-invoice-request";
 
 const EVIDENCE_LABELS: Record<string, string> = {
   provider: "Proveedor",
@@ -373,6 +377,26 @@ function equivalentOwners(code: string, products: ProductRecord[], quotes: NonIn
   };
 }
 
+function pickerResults(line: IntakeLineDto, products: ProductRecord[], quotes: NonInventoryRecord[], query: string) {
+  const normalized = normalizeName(query);
+  const tokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+  const candidates = [
+    ...products.map((product) => ({ source: "inventory" as const, product, search: [product.name, product.brand || "", product.presentation || "", product.code || ""].join(" ") })),
+    ...quotes.map((product) => ({ source: "no_inventory" as const, product, search: [product.name, product.code || ""].join(" ") })),
+  ].filter((candidate) => !tokens.length || tokens.every((token) => normalizeName(candidate.search).includes(token)));
+  const suggested = new Map(line.suggestions.map((item, index) => [`${item.source}:${item.id}`, index]));
+  const searchedProducts = new Map(searchProducts(products, query).map((product, index) => [product.id, index]));
+  return candidates.sort((left, right) => {
+    const leftKey = `${left.source}:${left.product.id}`;
+    const rightKey = `${right.source}:${right.product.id}`;
+    const leftSuggested = suggested.get(leftKey);
+    const rightSuggested = suggested.get(rightKey);
+    if (leftSuggested != null || rightSuggested != null) return (leftSuggested ?? 99) - (rightSuggested ?? 99);
+    if (left.source === "inventory" && right.source === "inventory") return (searchedProducts.get(left.product.id) ?? 99_999) - (searchedProducts.get(right.product.id) ?? 99_999);
+    return left.product.name.localeCompare(right.product.name, "es");
+  }).slice(0, 40);
+}
+
 function classifyLine(line: IntakeLineDto, products: ProductRecord[], quotes: NonInventoryRecord[]): IntakeLineDto {
   if (line.action === "ignore" || line.status === "processed") return line;
   const barcode = validateBarcode(line.barcode);
@@ -385,14 +409,14 @@ function classifyLine(line: IntakeLineDto, products: ProductRecord[], quotes: No
     next = { ...next, status: "conflict_identifiers", action: "pending", warnings: [...new Set([...next.warnings, "Este código equivalente aparece en más de un registro."])] };
   } else if (line.matchProductId) {
     const product = products.find((item) => item.id === line.matchProductId);
-    const current = validateBarcode(product?.code);
-    next = !product || current.valid && current.canonical !== barcode.canonical
+    const owner = owners.products[0] || owners.quotes[0];
+    next = !product || (owner && (!owners.products[0] || owner.id !== product.id))
       ? { ...next, status: "conflict_identifiers", action: "pending" }
-      : { ...next, status: "confirmed", action: "existing", match: { source: "inventory", id: product.id, name: product.name, code: product.code, quantityAvailable: product.quantityAvailable }, matchNonInventoryId: null };
+      : { ...next, status: "confirmed", action: "existing", match: { source: "inventory", id: product.id, name: product.name, code: product.code, quantityAvailable: product.quantityAvailable, brand: product.brand || null, presentation: product.presentation || null, minimumStock: product.minimumStock, minimumStockEnabled: product.minimumStockEnabled, matchReason: "identity" }, matchNonInventoryId: null };
   } else if (line.matchNonInventoryId) {
     const quote = quotes.find((item) => item.id === line.matchNonInventoryId);
-    const current = validateBarcode(quote?.code);
-    next = !quote || current.valid && current.canonical !== barcode.canonical
+    const owner = owners.products[0] || owners.quotes[0];
+    next = !quote || (owner && (!owners.quotes[0] || owner.id !== quote.id))
       ? { ...next, status: "conflict_identifiers", action: "pending" }
       : { ...next, status: "non_inventory", action: "move", match: { source: "no_inventory", id: quote.id, name: quote.name, code: quote.code, quantityAvailable: null }, matchProductId: null };
   } else if (owners.products.length === 1) {
@@ -460,7 +484,7 @@ function emptyManualLine(): IntakeLineDto {
 export function InventoryIntakeModal(props: Props) {
   const {
     open, products, quotes, settings, quickText, setQuickText, onQuickSave, onClose, onNotify,
-    onProductsChanged, onRefresh, onRequestScan, scannedBarcode, onConsumeScan, readBarcodeImage,
+    onProductsChanged, onEditProduct, onRefresh, onRequestScan, scannedBarcode, onConsumeScan, readBarcodeImage,
   } = props;
   const [tab, setTab] = useState<"invoice" | "quick" | "history">("invoice");
   const [document, setDocument] = useState<IntakeDocument | null>(null);
@@ -521,6 +545,11 @@ export function InventoryIntakeModal(props: Props) {
   const [createProductLine, setCreateProductLine] = useState<IntakeLineDto | null>(null);
   const [creatingProduct, setCreatingProduct] = useState(false);
   const [newProduct, setNewProduct] = useState({ name: "", brand: "", presentation: "", code: "", purchasePriceUsd: "", weightLb: "" });
+  const [minimumStockEnabled, setMinimumStockEnabled] = useState(false);
+  const [minimumStock, setMinimumStock] = useState("0");
+  const [matchPickerLineId, setMatchPickerLineId] = useState<string | null>(null);
+  const [matchQuery, setMatchQuery] = useState("");
+  const resumeAttempted = useRef(false);
   const inlinePricing = useMemo(() => {
     const purchase = Number(newProduct.purchasePriceUsd);
     const weight = Number(newProduct.weightLb);
@@ -555,7 +584,9 @@ export function InventoryIntakeModal(props: Props) {
     const net = Number(line.fieldEvidence?.net_line_cost?.value || 0);
     const quantity = Math.max(1, Number(line.billedQuantity || 1));
     setCreateProductLine(line);
-    setNewProduct({ name: line.name, brand: line.brand, presentation: line.presentation, code: line.barcode || "", purchasePriceUsd: net > 0 ? (net / quantity).toFixed(2) : "", weightLb: "" });
+    setNewProduct({ name: line.name, brand: line.brand, presentation: normalizePresentation(line.presentation || line.size || line.originalDescription) || line.presentation, code: line.barcode || "", purchasePriceUsd: net > 0 ? (net / quantity).toFixed(2) : "", weightLb: "" });
+    setMinimumStockEnabled(false);
+    setMinimumStock("0");
   }
 
   async function saveInlineProduct() {
@@ -593,7 +624,7 @@ export function InventoryIntakeModal(props: Props) {
         body: JSON.stringify({ mutationId, name: newProduct.name.trim(), brand: newProduct.brand.trim() || null, presentation: newProduct.presentation.trim() || null, code: normalizedCode,
           purchasePriceUsd: newProduct.purchasePriceUsd === "" ? null : Number(newProduct.purchasePriceUsd),
           weightLb: newProduct.weightLb === "" ? null : Number(newProduct.weightLb), quantityAvailable: 0,
-          minimumStock: 0, minimumStockEnabled: false }),
+          minimumStock: minimumStockEnabled ? Math.max(0, Number(minimumStock) || 0) : 0, minimumStockEnabled }),
       }));
       const product = result.product;
       onProductsChanged(products.some((item) => item.id === product.id)
@@ -604,6 +635,7 @@ export function InventoryIntakeModal(props: Props) {
         match: { source: "inventory", id: product.id, name: product.name, code: product.code, quantityAvailable: product.quantityAvailable },
       }, false);
       setCreateProductLine(null);
+      setMatchPickerLineId(null);
       onNotify({ type: "success", text: result.deduplicated
         ? "El producto ya existía y quedó seleccionado. La factura y su progreso se conservaron."
         : "Producto creado y seleccionado en esta misma línea. La factura continúa abierta y el inventario todavía no aumentó." });
@@ -613,6 +645,8 @@ export function InventoryIntakeModal(props: Props) {
   }
 
   const resetInvoiceReview = useCallback(() => {
+    try { sessionStorage.removeItem(ACTIVE_INVOICE_DRAFT_KEY); } catch { /* Storage is optional. */ }
+    resumeAttempted.current = false;
     setDocument(null);
     setInvoiceFiles([]);
     setSelectedFileIndex(0);
@@ -641,6 +675,10 @@ export function InventoryIntakeModal(props: Props) {
     setRemovingLineId(null);
     setCreateProductLine(null);
     setCreatingProduct(false);
+    setMinimumStockEnabled(false);
+    setMinimumStock("0");
+    setMatchPickerLineId(null);
+    setMatchQuery("");
   }, []);
 
   useEffect(() => {
@@ -661,6 +699,28 @@ export function InventoryIntakeModal(props: Props) {
       });
     return () => { active = false; };
   }, [onNotify, open]);
+
+  useEffect(() => {
+    if (!open || document || resumeAttempted.current) return;
+    let active = true;
+    let draftId = "";
+    try { draftId = sessionStorage.getItem(OPEN_INVOICE_REQUEST_KEY) || JSON.parse(sessionStorage.getItem(ACTIVE_INVOICE_DRAFT_KEY) || "{}").documentId || ""; } catch { /* No resumable invoice. */ }
+    if (!draftId || typeof draftId !== "string") return;
+    resumeAttempted.current = true;
+    void fetch(`/api/inventory-intake/${encodeURIComponent(draftId)}`)
+      .then((response) => apiJson<IntakeLoadResult>(response))
+      .then((result) => {
+        if (!active) return;
+        applyLoadedResult(result);
+        onNotify({ type: "info", text: "Recuperamos la factura en progreso. Sus líneas, asociaciones y cantidades siguen guardadas." });
+      })
+      .catch(() => {
+        try { sessionStorage.removeItem(ACTIVE_INVOICE_DRAFT_KEY); } catch { /* Storage is optional. */ }
+      });
+    return () => { active = false; };
+  // applyLoadedResult is intentionally declared below and stable for the mounted modal lifecycle.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [document, onNotify, open]);
 
   useEffect(() => {
     if (!scannedBarcode) return;
@@ -780,7 +840,31 @@ export function InventoryIntakeModal(props: Props) {
     setInvoiceMode(result.document.processingMode === "chatgpt_import"
       ? "chatgpt_import"
       : result.document.processingMode === "ai" && !result.manualFallback ? "ai" : "manual");
+    try { sessionStorage.setItem(ACTIVE_INVOICE_DRAFT_KEY, JSON.stringify({ documentId: result.document.id })); sessionStorage.removeItem(OPEN_INVOICE_REQUEST_KEY); } catch { /* Storage is optional. */ }
   }
+
+  useEffect(() => {
+    const openInvoice = (event: Event) => {
+      const documentId = (event as CustomEvent<{ documentId?: string }>).detail?.documentId?.trim() || "";
+      if (!open || !/^[A-Za-z0-9:_-]{1,160}$/.test(documentId)) return;
+      resumeAttempted.current = true;
+      try { sessionStorage.setItem(OPEN_INVOICE_REQUEST_KEY, documentId); } catch { /* Storage is optional. */ }
+      void fetch(`/api/inventory-intake/${encodeURIComponent(documentId)}`)
+        .then((response) => apiJson<IntakeLoadResult>(response))
+        .then((result) => {
+          applyLoadedResult(result);
+          onNotify({ type: "info", text: "Abrimos la factura solicitada desde la alerta. Sus líneas y el archivo original siguen asociados al documento." });
+        })
+        .catch(() => {
+          try { sessionStorage.removeItem(OPEN_INVOICE_REQUEST_KEY); } catch { /* Storage is optional. */ }
+          onNotify({ type: "warning", text: "PROBLEMA: la factura de esta alerta ya no está disponible. CAUSA: fue eliminada, revertida o no puede abrirse ahora. QUÉ HACER: revisá el Historial de Facturas. ESTADO DE LOS DATOS: la alerta y los movimientos existentes se conservan." });
+        });
+    };
+    window.addEventListener("nutriplus:open-invoice", openInvoice);
+    return () => window.removeEventListener("nutriplus:open-invoice", openInvoice);
+  // applyLoadedResult uses the current products/quotes of this mounted invoice review.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onNotify, open, products, quotes]);
 
   function addBlankManualLine() {
     const blank = emptyManualLine();
@@ -1012,6 +1096,18 @@ export function InventoryIntakeModal(props: Props) {
     }
   }
 
+  useEffect(() => {
+    const suspend = () => {
+      // Changing module is not an explicit close. Persist the current review
+      // and retain the document id so reopening Inventario resumes this exact
+      // invoice instead of asking for the ZIP/PDF again.
+      void saveDraft({ showNotice: false }).catch(() => undefined);
+      onClose();
+    };
+    window.addEventListener("nutriplus:suspend-invoice", suspend);
+    return () => window.removeEventListener("nutriplus:suspend-invoice", suspend);
+  });
+
   async function saveOneLine(lineId: string) {
     if (savingLineId || savingDraftRef.current) return;
     setSavingLineId(lineId);
@@ -1118,13 +1214,20 @@ export function InventoryIntakeModal(props: Props) {
 
   function chooseMatch(line: IntakeLineDto, value: string) {
     if (!value) {
-      updateLine(line.id, { matchProductId: null, matchNonInventoryId: null, match: null, action: "pending", status: "requires_select_product" }, false);
+      updateLine(line.id, { matchProductId: null, matchNonInventoryId: null, match: null, action: "pending", status: "requires_select_product" });
       return;
     }
     const [source, idValue] = value.split(":");
     const id = Number(idValue);
-    if (source === "inventory") updateLine(line.id, { matchProductId: id, matchNonInventoryId: null, action: "existing" });
-    else updateLine(line.id, { matchProductId: null, matchNonInventoryId: id, action: "move" });
+    if (source === "inventory") {
+      const product = products.find((item) => item.id === id);
+      if (!product) return;
+      updateLine(line.id, { matchProductId: id, matchNonInventoryId: null, action: "existing", match: { source: "inventory", id, name: product.name, code: product.code, quantityAvailable: product.quantityAvailable, brand: product.brand || null, presentation: product.presentation || null, minimumStock: product.minimumStock, minimumStockEnabled: product.minimumStockEnabled, matchReason: "identity" } });
+    } else {
+      const quote = quotes.find((item) => item.id === id);
+      if (!quote) return;
+      updateLine(line.id, { matchProductId: null, matchNonInventoryId: id, action: "move", match: { source: "no_inventory", id, name: quote.name, code: quote.code, quantityAvailable: null, matchReason: "identity" } });
+    }
   }
 
   function toggleLineSelection(line: IntakeLineDto) {
@@ -1562,24 +1665,26 @@ export function InventoryIntakeModal(props: Props) {
               const isSelected = selected.has(line.id);
               const isIgnored = line.status === "ignored" || line.action === "ignore";
               const isOriginalLine = line.isOriginalLine ?? !line.lineKey.startsWith("manual-");
-              const hasMovementHistory = Boolean(line.movementHistory?.length);
+              const hasActiveInventory = activeQuantity > 0;
+              const matchChoices = matchPickerLineId === line.id ? pickerResults(line, products, quotes, matchQuery) : [];
               const showLineDetails = isSelected || line.status === "processed" || isIgnored;
               return <article className={`invoice-line status-${line.status} ${showLineDetails ? "selected" : "excluded"}`} key={line.id}>
                 <div className="invoice-line-top"><label className="product-selector"><input type="checkbox" checked={isSelected} disabled={line.status === "processed" || isIgnored} onChange={() => toggleLineSelection(line)} /><span><Check /></span></label><div><div className="line-statuses"><span className={`status-pill ${line.status}`}>{isIgnored || line.status === "processed" ? STATUS_LABELS[line.status] : isSelected ? STATUS_LABELS[line.status] : "No seleccionado"}</span>{line.reviewSavedAt && <span className="review-saved-pill"><Save />Progreso guardado</span>}</div><small>Línea {index + 1}{line.pageNumber ? ` · página ${line.pageNumber}` : " · manual"}</small></div>{isOriginalLine ? <button className="btn ghost small line-omit-btn" onClick={() => void toggleLineOmission(line)} disabled={activeQuantity > 0 || removingLineId === line.id}>{removingLineId === line.id ? <Loader2 className="spin" /> : isIgnored ? <RotateCcw /> : <X />}{isIgnored ? "Reactivar" : activeQuantity > 0 ? "Ya ingresado" : "Omitir"}</button> : <button className="icon-btn danger" onClick={() => setRemoveLineTarget(line)} aria-label="Eliminar línea manual" disabled={line.status === "processed" || removingLineId === line.id}><X /></button>}</div>
                 <div className="invoice-line-grid">
-                  <label className="wide"><span>Producto de la factura</span><input value={line.name} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { name: event.target.value }, false)} /></label>
-                  <label><span>Marca</span><input value={line.brand} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { brand: event.target.value }, false)} /></label>
-                  <label><span>Presentación</span><input value={line.presentation} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { presentation: event.target.value }, false)} /></label>
-                  <label><span>Tamaño / contenido</span><input value={line.size} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { size: event.target.value }, false)} /></label>
-                  <label><span>{document.provider === "amazon" ? "ASIN" : document.provider === "iherb" ? "Código iHerb" : "Identificador proveedor"}</span><input value={line.secondaryId} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { secondaryId: event.target.value, secondaryType: document.provider === "amazon" ? "asin" : document.provider === "iherb" ? "iherb" : "other" }, false)} /></label>
-                  <label className="wide"><span>Producto de NutriPlus</span><select disabled={hasMovementHistory || isIgnored} value={line.matchProductId ? `inventory:${line.matchProductId}` : line.matchNonInventoryId ? `no_inventory:${line.matchNonInventoryId}` : ""} onChange={(event) => chooseMatch(line, event.target.value)}><option value="">Seleccionar producto existente</option><optgroup label="Inventario">{products.map((product) => <option value={`inventory:${product.id}`} key={`p-${product.id}`}>{product.name}{product.code ? ` · ${product.code}` : ""}</option>)}</optgroup><optgroup label="No inventario">{quotes.map((quote) => <option value={`no_inventory:${quote.id}`} key={`q-${quote.id}`}>{quote.name}{quote.code ? ` · ${quote.code}` : ""}</option>)}</optgroup></select>{!hasMovementHistory && !isIgnored && !line.matchProductId && <button type="button" className="btn secondary small inline-product-create" onClick={() => openCreateProduct(line)}><PackagePlus />Crear producto nuevo</button>}</label>
-                  <label><span>Cantidad facturada</span><input inputMode="numeric" value={line.billedQuantity ?? ""} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { billedQuantity: event.target.value === "" ? null : Number(event.target.value) }, false)} /></label>
-                  <label><span>Cantidad recibida</span><input inputMode="numeric" value={line.receivedQuantity ?? ""} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { receivedQuantity: event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0) })} /></label>
-                  <label><span>Unidades por paquete</span><input inputMode="numeric" value={line.unitsPerPackage} disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { unitsPerPackage: Math.max(1, Number(event.target.value) || 1), barcodeLevel: Number(event.target.value) > 1 ? line.barcodeLevel : "unit" })} /></label>
-                  {line.unitsPerPackage > 1 && <label><span>Nivel del código</span><select disabled={hasMovementHistory || isIgnored} value={line.barcodeLevel} onChange={(event) => updateLine(line.id, { barcodeLevel: event.target.value as IntakeLineDto["barcodeLevel"] })}><option value="">Confirmar nivel</option><option value="unit">Unidad individual</option><option value="package">Paquete completo</option><option value="distribution">Caja de distribución</option><option value="set">Set de productos</option></select></label>}
-                  <label className="wide barcode-field"><span>UPC / EAN / GTIN</span><div><input value={line.barcode} inputMode="numeric" disabled={hasMovementHistory || isIgnored} onChange={(event) => updateLine(line.id, { barcode: event.target.value, barcodeConfirmed: false })} placeholder="Código pendiente" /><button disabled={hasMovementHistory || isIgnored} className={`btn small ${line.barcodeConfirmed ? "primary" : "danger-outline"}`} onClick={() => toggleBarcodeConfirmation(line)}><Check />{line.barcodeConfirmed ? "Código confirmado" : "Confirmar código de barras"}</button></div></label>
+                  <div className="wide invoice-source-fields"><b>Datos originales de factura</b><small>Se conservan para trazabilidad y comparación; no reemplazan el producto interno seleccionado.</small></div>
+                  <label className="wide"><span>Producto de la factura</span><input value={line.name} disabled={hasActiveInventory || isIgnored} onChange={(event) => updateLine(line.id, { name: event.target.value }, false)} /></label>
+                  <label><span>Marca</span><input value={line.brand} disabled={hasActiveInventory || isIgnored} onChange={(event) => updateLine(line.id, { brand: event.target.value }, false)} /></label>
+                  <label><span>Presentación</span><input value={line.presentation} disabled={hasActiveInventory || isIgnored} onChange={(event) => updateLine(line.id, { presentation: normalizePresentation(event.target.value) || event.target.value }, false)} /></label>
+                  <label><span>Tamaño / contenido</span><input value={line.size} disabled={hasActiveInventory || isIgnored} onChange={(event) => updateLine(line.id, { size: event.target.value }, false)} /></label>
+                  <label><span>{document.provider === "amazon" ? "ASIN" : document.provider === "iherb" ? "Código iHerb" : "Identificador proveedor"}</span><input value={line.secondaryId} disabled={hasActiveInventory || isIgnored} onChange={(event) => updateLine(line.id, { secondaryId: event.target.value, secondaryType: document.provider === "amazon" ? "asin" : document.provider === "iherb" ? "iherb" : "other" }, false)} /></label>
+                  <div className="wide product-match-picker"><span>Producto de NutriPlus</span>{line.match && <div className="canonical-product-card"><b>Coincide con producto existente · {line.match.name}</b><small>{line.match.code ? `Código ${line.match.code}` : "Sin código canónico"}{line.match.brand ? ` · ${line.match.brand}` : ""}{line.match.presentation ? ` · ${line.match.presentation}` : ""}</small><small>Stock actual {line.match.quantityAvailable ?? 0}{line.match.minimumStockEnabled ? ` · mínimo ${line.match.minimumStock ?? 0}` : " · sin mínimo"}</small>{line.match.source === "inventory" && !hasActiveInventory && <button type="button" className="btn ghost small" onClick={() => onEditProduct(line.match!.id)}>Editar producto canónico</button>}</div>}<button type="button" className="btn secondary small" disabled={hasActiveInventory || isIgnored} onClick={() => { setMatchPickerLineId(matchPickerLineId === line.id ? null : line.id); setMatchQuery(""); }}><Search />{line.match ? "Cambiar producto existente" : "Seleccionar producto existente"}</button>{!hasActiveInventory && !isIgnored && !line.matchProductId && <button type="button" className="btn secondary small inline-product-create" onClick={() => openCreateProduct(line)}><PackagePlus />Crear producto nuevo</button>}{matchPickerLineId === line.id && <div className="product-match-results"><input autoFocus value={matchQuery} onChange={(event) => setMatchQuery(event.target.value)} placeholder="Buscar nombre, marca, presentación o código" /><div>{matchChoices.map((choice) => <button type="button" key={`${choice.source}:${choice.product.id}`} onClick={() => { chooseMatch(line, `${choice.source}:${choice.product.id}`); setMatchPickerLineId(null); setMatchQuery(""); }}><b>{choice.product.name}</b><small>{choice.product.code ? `Código ${choice.product.code}` : "Sin código"}{"brand" in choice.product && choice.product.brand ? ` · ${choice.product.brand}` : ""}{"presentation" in choice.product && choice.product.presentation ? ` · ${choice.product.presentation}` : ""}</small></button>)}{!matchChoices.length && <p>No encontramos productos con esas palabras. Revisá marca, presentación o código; la factura no cambió.</p>}</div></div>}</div>
+                  <label><span>Cantidad facturada</span><input inputMode="numeric" value={line.billedQuantity ?? ""} disabled={hasActiveInventory || isIgnored} onChange={(event) => updateLine(line.id, { billedQuantity: event.target.value === "" ? null : Number(event.target.value) }, false)} /></label>
+                  <label><span>Cantidad recibida</span><input inputMode="numeric" value={line.receivedQuantity ?? ""} disabled={hasActiveInventory || isIgnored} onChange={(event) => updateLine(line.id, { receivedQuantity: event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0) })} /></label>
+                  <label><span>Unidades por paquete</span><input inputMode="numeric" value={line.unitsPerPackage} disabled={hasActiveInventory || isIgnored} onChange={(event) => updateLine(line.id, { unitsPerPackage: Math.max(1, Number(event.target.value) || 1), barcodeLevel: Number(event.target.value) > 1 ? line.barcodeLevel : "unit" })} /></label>
+                  {line.unitsPerPackage > 1 && <label><span>Nivel del código</span><select disabled={hasActiveInventory || isIgnored} value={line.barcodeLevel} onChange={(event) => updateLine(line.id, { barcodeLevel: event.target.value as IntakeLineDto["barcodeLevel"] })}><option value="">Confirmar nivel</option><option value="unit">Unidad individual</option><option value="package">Paquete completo</option><option value="distribution">Caja de distribución</option><option value="set">Set de productos</option></select></label>}
+                  <label className="wide barcode-field"><span>UPC / EAN / GTIN</span><div><input value={line.barcode} inputMode="numeric" disabled={hasActiveInventory || isIgnored} onChange={(event) => updateLine(line.id, { barcode: event.target.value, barcodeConfirmed: false })} placeholder="Código pendiente" /><button disabled={hasActiveInventory || isIgnored} className={`btn small ${line.barcodeConfirmed ? "primary" : "danger-outline"}`} onClick={() => toggleBarcodeConfirmation(line)}><Check />{line.barcodeConfirmed ? "Código confirmado" : "Confirmar código de barras"}</button></div></label>
                 </div>
-                {!isIgnored && !hasMovementHistory && (!line.barcodeConfirmed || ["requires_confirm_code", "conflict_identifiers"].includes(line.status)) && <div className="code-pending-box"><p><b>El código de barras está pendiente de confirmación.</b> Seleccioná una opción para continuar.</p><div><button className="btn secondary small" onClick={() => onRequestScan(line.id)}><Camera />Escanear código</button><label className="btn secondary small"><ImageUp />Subir imagen<input className="native-file-input" type="file" accept="image/*" onChange={(event) => { const input = event.currentTarget; const file = input.files?.[0]; if (file) void readLineImage(line.id, file).finally(() => { input.value = ""; }); }} /></label><button className="btn secondary small" onClick={() => void pasteLineCode(line.id)}><ClipboardPaste />Pegar código</button><button className="btn secondary small" onClick={() => setManualCodeLine(manualCodeLine === line.id ? null : line.id)}><Barcode />Escribir código</button><button className="btn ghost small" onClick={() => void lookupCode(line)} disabled={lookupLineId === line.id}>{lookupLineId === line.id ? <Loader2 className="spin" /> : <Search />}Buscar código</button></div>{manualCodeLine === line.id && <div className="manual-code-row"><input value={line.barcode} inputMode="numeric" onChange={(event) => updateLine(line.id, { barcode: event.target.value, barcodeConfirmed: false })} placeholder="Escribí 8, 12, 13 o 14 dígitos" /><button className="btn primary small" onClick={() => toggleBarcodeConfirmation(line)}>Revisar</button></div>}</div>}
+                {!isIgnored && !hasActiveInventory && (!line.barcodeConfirmed || ["requires_confirm_code", "conflict_identifiers"].includes(line.status)) && <div className="code-pending-box"><p><b>El código de barras está pendiente de confirmación.</b> Seleccioná una opción para continuar.</p><div><button className="btn secondary small" onClick={() => onRequestScan(line.id)}><Camera />Escanear código</button><label className="btn secondary small"><ImageUp />Subir imagen<input className="native-file-input" type="file" accept="image/*" onChange={(event) => { const input = event.currentTarget; const file = input.files?.[0]; if (file) void readLineImage(line.id, file).finally(() => { input.value = ""; }); }} /></label><button className="btn secondary small" onClick={() => void pasteLineCode(line.id)}><ClipboardPaste />Pegar código</button><button className="btn secondary small" onClick={() => setManualCodeLine(manualCodeLine === line.id ? null : line.id)}><Barcode />Escribir código</button><button className="btn ghost small" onClick={() => void lookupCode(line)} disabled={lookupLineId === line.id}>{lookupLineId === line.id ? <Loader2 className="spin" /> : <Search />}Buscar código</button></div>{manualCodeLine === line.id && <div className="manual-code-row"><input value={line.barcode} inputMode="numeric" onChange={(event) => updateLine(line.id, { barcode: event.target.value, barcodeConfirmed: false })} placeholder="Escribí 8, 12, 13 o 14 dígitos" /><button className="btn primary small" onClick={() => toggleBarcodeConfirmation(line)}>Revisar</button></div>}</div>}
                 {lookupMessages[line.id] && <div className={`lookup-results ${lineCandidates.length ? "has-results" : ""}`}><p>{lookupMessages[line.id]}</p>{lineCandidates.map((candidate) => <button key={`${candidate.code}-${candidate.source}`} onClick={() => setPendingBarcode({ lineId: line.id, code: candidate.code, method: "external_source", source: candidate.source, sourceUrl: candidate.sourceUrl, sourceTitle: candidate.title, differences: candidate.differences })}><span><b>{candidate.code} · {candidate.type}</b><small>{candidate.title}{candidate.presentation ? ` · ${candidate.presentation}` : ""}</small>{candidate.differences.map((difference) => <em key={difference}>{difference}</em>)}</span><strong>{candidate.confidence}%<small>Confirmar</small></strong></button>)}</div>}
                 {(line.barcodeSource || line.barcodeSourceUrl) && <div className={`barcode-source-card ${line.barcodeDifferences.length ? "warning" : ""}`}><FileSearch /><div><small>Fuente del código de barras</small>{line.barcodeSourceUrl ? <a href={line.barcodeSourceUrl} target="_blank" rel="noreferrer">{line.barcodeSourceTitle || line.barcodeSource || "Abrir fuente consultada"}</a> : <b>{line.barcodeSourceTitle || line.barcodeSource}</b>}{line.barcodeDifferences.map((difference) => <em key={difference}>{difference}</em>)}</div><span>{line.barcodeLookupStatus === "found_exact" ? "Coincidencia exacta" : line.barcodeLookupStatus === "suggestion" ? "Revisar diferencias" : "Pendiente"}</span></div>}
                 {evidenceEntries(line.fieldEvidence).length > 0 && <div className="evidence-strip line-evidence"><span><FileSearch />Evidencia de extracción</span><div>{evidenceEntries(line.fieldEvidence).map(([field, item]) => <small key={field}><b>{EVIDENCE_LABELS[field] || field}</b>{item.page ? `p. ${item.page}` : "sin página"} · {item.confidence ?? 0}%</small>)}</div></div>}
@@ -1644,6 +1749,6 @@ export function InventoryIntakeModal(props: Props) {
     {reanalyzeConfirmOpen && document && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card reanalyze-card"><div className="download-symbol"><Sparkles /></div><span className="eyebrow">Acción administrativa</span><h2>{reanalyzeTarget === "sol" ? "¿Reanalizar con Sol?" : "¿Analizar nuevamente con IA?"}</h2><p>{reanalyzeTarget === "sol" ? <>Se enviará otra vez la factura completa a OpenAI usando <b>gpt-5.6-sol</b>. Esta segunda llamada <b>genera un nuevo consumo</b> y se guardará separada del análisis de Terra.</> : <>Esto enviará otra vez todos los archivos de esta factura a OpenAI usando el modelo principal configurado y <b>generará un nuevo consumo</b>. No se usa el análisis en caché.</>} Los productos ya confirmados y el progreso guardado se conservan.</p>{analysis && <div className="reanalyze-cost"><span>Último análisis</span><b>{costLabel(analysis.estimatedCostUsd)}</b><small>Referencia estimada; el nuevo costo puede variar según páginas y búsquedas.</small></div>}<div className="confirm-actions"><button className="btn secondary" onClick={() => setReanalyzeConfirmOpen(false)} disabled={reanalyzing}>No, conservar análisis</button><button className="btn primary" onClick={() => void reanalyzeInvoice()} disabled={reanalyzing || !aiConfig?.aiAvailable}>{reanalyzing ? <Loader2 className="spin" /> : <Sparkles />}{reanalyzeTarget === "sol" ? "Sí, reanalizar con Sol" : "Sí, generar nuevo consumo"}</button></div></div></div>}
     {pendingBarcode && <div className="nested-modal" role="alertdialog" aria-modal="true"><div className="confirm-card barcode-confirm"><div className="download-symbol"><Barcode /></div><h2>Confirmar código detectado</h2><p>Verificá el número y la presentación antes de guardarlo. No se utilizará hasta que lo confirmés.</p><strong>{pendingBarcode.code}</strong><small>{validateBarcode(pendingBarcode.code).type}</small>{pendingBarcode.sourceUrl && <a className="pending-source-link" href={pendingBarcode.sourceUrl} target="_blank" rel="noreferrer">{pendingBarcode.sourceTitle || pendingBarcode.source}</a>}{pendingBarcode.differences?.map((difference) => <div className="alert warning" key={difference}><AlertCircle />{difference}</div>)}<div className="confirm-actions"><button className="btn secondary" onClick={() => setPendingBarcode(null)}>Cancelar</button><button className="btn primary" onClick={confirmPendingBarcode}><Check />Confirmar código</button></div></div></div>}
     {reverseTarget && <div className="nested-modal" role="dialog" aria-modal="true"><div className="confirm-card reverse-card"><div className="delete-symbol"><RotateCcw /></div><h2>Revertir ingreso</h2><p>Se creará un movimiento contrario sin borrar el historial original. Si ya se vendieron unidades y no hay suficiente inventario, la operación se bloqueará.</p><label className="field"><span>Razón de la reversión</span><textarea value={reverseReason} onChange={(event) => setReverseReason(event.target.value)} placeholder="Ej. cantidad ingresada incorrectamente" /></label><div className="confirm-actions"><button className="btn secondary" onClick={() => setReverseTarget(null)} disabled={reversing}>Cancelar</button><button className="btn danger-solid" onClick={() => void reverseOperation()} disabled={reversing || reverseReason.trim().length < 3}>{reversing ? <Loader2 className="spin" /> : <RotateCcw />}Crear reversión</button></div></div></div>}
-    {createProductLine && <div className="nested-modal" role="dialog" aria-modal="true" aria-label="Crear producto desde factura"><div className="confirm-card inline-product-card"><PackagePlus /><h2>Crear producto nuevo</h2><p>Se guardará con las mismas reglas de Productos y quedará seleccionado en esta línea. La factura no se cerrará ni se agregará inventario hasta confirmar el ingreso.</p><label className="field"><span>Nombre</span><input value={newProduct.name} onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })} required /></label><div className="two"><label className="field"><span>Marca</span><input value={newProduct.brand} onChange={(event) => setNewProduct({ ...newProduct, brand: event.target.value })} /></label><label className="field"><span>Presentación</span><input value={newProduct.presentation} onChange={(event) => setNewProduct({ ...newProduct, presentation: event.target.value })} /></label></div><label className="field"><span>Código de barras</span><div className="code-row"><input inputMode="numeric" value={newProduct.code} onChange={(event) => setNewProduct({ ...newProduct, code: event.target.value })} placeholder="UPC, EAN o GTIN" /><button type="button" className="scan-btn" onClick={() => onRequestScan(`inline:${createProductLine.id}`)}><Camera /><span>Escanear</span></button></div></label><div className="two"><label className="field"><span>Precio de compra USD</span><input type="number" min="0" step=".01" value={newProduct.purchasePriceUsd} onChange={(event) => setNewProduct({ ...newProduct, purchasePriceUsd: event.target.value })} required /></label><label className="field"><span>Peso lb</span><input type="number" min="0" step=".001" value={newProduct.weightLb} onChange={(event) => setNewProduct({ ...newProduct, weightLb: event.target.value })} required /></label></div>{inlinePricing && <div className="inline-pricing-preview"><span><small>Venta GAM</small><b>{new Intl.NumberFormat("es-CR", { style: "currency", currency: "CRC", maximumFractionDigits: 0 }).format(inlinePricing.gamPriceCrc)}</b></span><span><small>Venta Puerto</small><b>{new Intl.NumberFormat("es-CR", { style: "currency", currency: "CRC", maximumFractionDigits: 0 }).format(inlinePricing.puertoPriceCrc)}</b></span><small>Calculado con los parámetros actuales de NutriPlus.</small></div>}<div className="confirm-actions"><button className="btn secondary" onClick={() => setCreateProductLine(null)} disabled={creatingProduct}>Cancelar</button><button className="btn primary" onClick={() => void saveInlineProduct()} disabled={creatingProduct || !newProduct.name.trim() || !inlinePricing}>{creatingProduct ? <Loader2 className="spin" /> : <Save />}Guardar y seleccionar</button></div></div></div>}
+    {createProductLine && <div className="nested-modal" role="dialog" aria-modal="true" aria-label="Crear producto desde factura"><div className="confirm-card inline-product-card"><PackagePlus /><h2>Crear producto nuevo</h2><p>Se guardará con las mismas reglas de Productos y quedará seleccionado en esta línea. La factura no se cerrará ni se agregará inventario hasta confirmar el ingreso.</p><label className="field"><span>Nombre</span><input value={newProduct.name} onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })} required /></label><div className="two"><label className="field"><span>Marca</span><input value={newProduct.brand} onChange={(event) => setNewProduct({ ...newProduct, brand: event.target.value })} /></label><label className="field"><span>Presentación</span><input value={newProduct.presentation} onChange={(event) => setNewProduct({ ...newProduct, presentation: normalizePresentation(event.target.value) || event.target.value })} /></label></div><label className="field"><span>Código de barras</span><div className="code-row"><input inputMode="numeric" value={newProduct.code} onChange={(event) => setNewProduct({ ...newProduct, code: event.target.value })} placeholder="UPC, EAN o GTIN" /><button type="button" className="scan-btn" onClick={() => onRequestScan(`inline:${createProductLine.id}`)}><Camera /><span>Escanear</span></button></div></label><div className="two"><label className="field"><span>Precio de compra USD</span><input type="number" min="0" step=".01" value={newProduct.purchasePriceUsd} onChange={(event) => setNewProduct({ ...newProduct, purchasePriceUsd: event.target.value })} required /></label><label className="field"><span>Peso lb</span><input type="number" min="0" step=".001" value={newProduct.weightLb} onChange={(event) => setNewProduct({ ...newProduct, weightLb: event.target.value })} required /></label></div><label className="check-line"><input type="checkbox" checked={minimumStockEnabled} onChange={(event) => setMinimumStockEnabled(event.target.checked)} /><span><b>Controlar stock mínimo</b><small>Usa la misma alerta y regla de Productos.</small></span></label>{minimumStockEnabled && <label className="field"><span>Stock mínimo</span><input type="number" min="0" step="1" inputMode="numeric" value={minimumStock} onChange={(event) => setMinimumStock(event.target.value)} /></label>}{inlinePricing && <div className="inline-pricing-preview"><span><small>Venta GAM</small><b>{new Intl.NumberFormat("es-CR", { style: "currency", currency: "CRC", maximumFractionDigits: 0 }).format(inlinePricing.gamPriceCrc)}</b></span><span><small>Venta Puerto</small><b>{new Intl.NumberFormat("es-CR", { style: "currency", currency: "CRC", maximumFractionDigits: 0 }).format(inlinePricing.puertoPriceCrc)}</b></span><small>Calculado con los parámetros actuales de NutriPlus.</small></div>}<div className="confirm-actions"><button className="btn secondary" onClick={() => setCreateProductLine(null)} disabled={creatingProduct}>Cancelar</button><button className="btn primary" onClick={() => void saveInlineProduct()} disabled={creatingProduct || !newProduct.name.trim() || !inlinePricing || minimumStockEnabled && (!Number.isInteger(Number(minimumStock)) || Number(minimumStock) < 0)}>{creatingProduct ? <Loader2 className="spin" /> : <Save />}Guardar y seleccionar</button></div></div></div>}
   </div>;
 }

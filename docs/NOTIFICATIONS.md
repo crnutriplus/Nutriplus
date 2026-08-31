@@ -2,7 +2,7 @@
 
 ## Estado y clasificación de factibilidad
 
-La base se publicó como NutriPlus v2.17 con la migración `0016` y VAPID configurado en secretos server-side de Sites. v2.18 corrige el transporte Web Push; la prueba física Android con la aplicación cerrada sigue pendiente del propietario.
+La base se publicó como NutriPlus v2.17 con la migración `0016` y VAPID configurado en secretos server-side de Sites. v2.18 corrige el transporte Web Push y la recepción física Android con la aplicación cerrada fue confirmada posteriormente por el propietario. v2.26 no cambia VAPID, subscriptions ni el transporte: convierte los destinos de alertas a una estructura interna validada.
 
 La matriz productiva aisló la incompatibilidad: el request Web Push completo con `redirect: "manual"` fue aceptado por FCM (HTTP 201), mientras el request idéntico con `redirect: "error"` lanzó `TypeError` antes de responder. v2.18 usa redirección manual; no sigue respuestas 3xx ni reenvía la autorización VAPID. No se presenta una notificación local como si fuera push.
 
@@ -14,8 +14,8 @@ La matriz productiva aisló la incompatibilidad: el request Web Push completo co
 | D. Notification API | Se solicita permiso únicamente después de tocar **Activar notificaciones**. | No aparece el prompt durante la carga. |
 | E. Persistencia de `PushSubscription` | D1 guarda endpoint y claves públicas de cada dispositivo, con endpoint único y desactivación. | Admite varios dispositivos y reintentos sin duplicar registros. |
 | F. VAPID seguro | Sites aloja el par VAPID y el Worker lee tres variables; solo expone la pública. | La clave privada no está en Git, frontend, manifest ni respuestas. La validación productiva está activa. |
-| G. Entrega backend | La matriz confirma método, cuerpo binario, TTL, `aes128gcm`, Urgency y VAPID; el request completo con redirección manual obtiene HTTP 201. | Recepción física y `notificationclick` todavía requieren validación Android del propietario. |
-| H. `push` / `notificationclick` | Ambos handlers existen y tienen pruebas locales. | La notificación muestra texto seguro y abre/focaliza una ruta interna validada. |
+| G. Entrega backend | La matriz confirma método, cuerpo binario, TTL, `aes128gcm`, Urgency y VAPID; el request completo con redirección manual obtiene HTTP 201. | La recepción física cerrada fue confirmada antes de v2.26; el toque de los nuevos destinos tipados requiere validación física posterior. |
+| H. `push` / `notificationclick` | Ambos handlers existen y tienen pruebas locales. | La notificación muestra texto seguro y entrega un destino interno validado; no se afirma todavía el toque Android de v2.26. |
 | I. Instalación Android | Manifest, HTTPS, `start_url`, `scope`, iconos exactos 192/512 y modo standalone están preparados. | Compatible de forma prevista con Chrome moderno; no se afirma prueba real todavía. |
 | J. Manifest | `name` y `short_name` son NutriPlus, `id/start_url/scope` son `/`. | La página normal continúa funcionando sin instalar la PWA. |
 | K. Hosting/caché/SPA | El Service Worker está en raíz, navegación es network-first y `/api/*` queda fuera de caché. | No se sirven inventario, pedidos o facturas viejos desde caché. |
@@ -102,7 +102,8 @@ La identidad interna multiusuario todavía no es confiable. Mientras el Site per
 - estáticos: cache-on-demand;
 - `/api/*`, mutaciones y datos críticos: nunca interceptados ni cacheados;
 - `push`: muestra una notificación con límite de título/cuerpo y tag de deduplicación;
-- `notificationclick`: acepta solo rutas relativas same-origin, enfoca una ventana existente o abre NutriPlus.
+- `notificationclick`: valida un destino interno tipado; enfoca una ventana existente y envía `NUTRIPLUS_NAVIGATE`, o abre la URL canónica cuando no hay cliente. Las URLs heredadas se reducen a un subconjunto interno seguro y no se aceptan destinos arbitrarios.
+- El Service Worker no crea notificaciones por `visibilitychange`, `focus`, `pageshow` o `pagehide`. Una notificación de Chrome/WebAPK ajena a `push` sigue siendo controlada por el navegador, no por este código.
 
 NutriPlus no se convierte en offline-first. El caché no es autoridad para inventario, Pedidos, Facturas ni pagos.
 

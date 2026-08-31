@@ -92,6 +92,59 @@ const baseProduct = (await call("/api/products", {
   }),
 })).body.product;
 
+// A manual choice is authoritative even when the invoice description has no
+// useful textual resemblance to the canonical product.  The line keeps its
+// invoice wording while inventory must move only on the selected product id.
+const manuallySelectedProduct = (await call("/api/products", {
+  method: "POST",
+  body: JSON.stringify({
+    name: "Omega 3 gomitas Nordic Naturals 30 gomitas",
+    code: "1234567890128",
+    purchasePriceUsd: 15,
+    weightLb: 0.3,
+    quantityAvailable: 4,
+    minimumStock: 2,
+    minimumStockEnabled: true,
+  }),
+})).body.product;
+const manualSelectionInvoice = await analyze({
+  id: 91,
+  fileName: "manual-selection.pdf",
+  text: `Amazon\nPedido realizado 30 de agosto de 2026\nASIN: SELECT-MANUAL-1\nUPC: 1234567890135\n2 x Gomitas masticables con DHA para niños`,
+});
+assert.equal(manualSelectionInvoice.response.status, 201);
+const invoiceSourceName = manualSelectionInvoice.body.lines[0].name;
+const manualSelectionLine = {
+  ...manualSelectionInvoice.body.lines[0],
+  receivedQuantity: 2,
+  totalToAdd: 2,
+  unitsPerPackage: 1,
+  barcodeLevel: "unit",
+  barcodeConfirmed: true,
+  selected: true,
+  selectedForIngress: true,
+  action: "existing",
+  status: "confirmed",
+  matchProductId: manuallySelectedProduct.id,
+  matchNonInventoryId: null,
+};
+const savedManualSelection = await call(`/api/inventory-intake/${manualSelectionInvoice.body.document.id}`, {
+  method: "PUT",
+  body: JSON.stringify({ metadataChanged: false, lines: [manualSelectionLine], deletedLineIds: [], reviewedLineIds: [manualSelectionLine.id] }),
+});
+assert.equal(savedManualSelection.response.status, 200, JSON.stringify(savedManualSelection.body));
+assert.equal(savedManualSelection.body.lines[0].matchProductId, manuallySelectedProduct.id);
+assert.equal(savedManualSelection.body.lines[0].name, invoiceSourceName, "invoice source data stays separate from canonical identity");
+assert.equal(savedManualSelection.body.lines[0].match.name, manuallySelectedProduct.name);
+const countBeforeManualSelection = Number((await DB.prepare("SELECT COUNT(*) AS total FROM products").first()).total);
+const confirmedManualSelection = await call(`/api/inventory-intake/${manualSelectionInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "ingress-manual-selection-001", lines: [manualSelectionLine] }),
+});
+assert.equal(confirmedManualSelection.response.status, 200, JSON.stringify(confirmedManualSelection.body));
+assert.equal((await call("/api/products?code=1234567890128")).body.product.quantityAvailable, 6);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM products").first()).total), countBeforeManualSelection, "manual selection never creates a second ChatGPT-named product");
+
 const amazon = await analyze({
   id: 1,
   fileName: "amazon-invoice.pdf",

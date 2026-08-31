@@ -864,6 +864,34 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
     finally { setRoutePanelLoading(false); }
   }, [showError]);
 
+  useEffect(() => {
+    const onNotificationDestination = (event: Event) => {
+      const destination = (event as CustomEvent<{ type?: string; id?: string; date?: string; section?: OrdersSection }>).detail;
+      if (!destination?.type) return;
+      if (destination.type === "ORDER" && destination.id) {
+        if (["deliveries", "special", "history"].includes(destination.section || "")) setSection(destination.section!);
+        void loadDetail(destination.id).then((order) => {
+          if (!order) setNotice({ tone: "warning", title: "Pedido no disponible", message: "PROBLEMA: el pedido de esta alerta ya no está disponible. CAUSA: fue eliminado, cancelado o ya no puede abrirse. QUÉ HACER: revisá Pedidos o Historial. ESTADO DE LOS DATOS: la alerta y la trazabilidad existente se conservan." });
+        });
+        return;
+      }
+      if (destination.type === "ORDER_SUMMARY" && /^\d{4}-\d{2}-\d{2}$/.test(destination.date || "")) {
+        setSection("deliveries");
+        setSelectedDate(destination.date!);
+        return;
+      }
+      if (destination.type === "ROUTE" && /^\d{4}-\d{2}-\d{2}$/.test(destination.date || "")) {
+        setSection("deliveries");
+        setSelectedDate(destination.date!);
+        setRouteDate(destination.date!);
+        setRoutePanelOpen(true);
+        void loadRouteDate(destination.date!);
+      }
+    };
+    window.addEventListener("nutriplus:orders-destination", onNotificationDestination);
+    return () => window.removeEventListener("nutriplus:orders-destination", onNotificationDestination);
+  }, [loadDetail, loadRouteDate]);
+
   const openRoutePanel = useCallback(async () => {
     setRouteDate(selectedDate);
     setRoutePanelOpen(true);

@@ -1,4 +1,5 @@
 import { validateBarcode } from "./barcodes.ts";
+import { normalizePresentation } from "./product-presentation.ts";
 
 export type InvoiceProvider = "amazon" | "iherb" | "other";
 
@@ -152,7 +153,7 @@ function taggedBarcode(source: string) {
 }
 
 function detailsFromDescription(description: string) {
-  const presentation = description.match(/\b(?:\d+\s*(?:x|×)\s*)?\d+(?:[.,]\d+)?\s*(?:fl\s*oz|oz|ml|l|mg|mcg|µg|g|kg|capsules?|c[aá]psulas?|tablets?|tabletas?|softgels?|gomitas?|gummies|servings?|porciones?|count|ct|unidades?|pieces?|pcs)\b(?:\s*(?:pack|paquete))?/i)?.[0] || "";
+  const presentation = normalizePresentation(description);
   const concentration = description.match(/\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|g|IU|UI|%)\b/i)?.[0] || "";
   const flavor = description.match(/\b(?:flavor|sabor)\s*[:\-]?\s*([^,;|]{2,40})/i)?.[1]?.trim() || "";
   const pack = description.match(/\b(?:pack|paquete|set|caja)\s*(?:of|de)?\s*(\d+)\b|\b(\d+)\s*[- ]?(?:pack|paquete)\b/i);

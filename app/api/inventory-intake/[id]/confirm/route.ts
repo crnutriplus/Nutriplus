@@ -1,6 +1,6 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { validateBarcode } from "@/lib/barcodes";
-import { descriptionSignature, descriptionsCompatible, lineFromRow, presentationSignature } from "@/lib/inventory-intake";
+import { descriptionSignature, lineFromRow, presentationSignature } from "@/lib/inventory-intake";
 import { documentStatusStatement, loadDocumentMovementRows, progressForLine } from "@/lib/inventory-line-progress";
 import { invoiceFinanceStatements } from "@/lib/inventory-invoice-finance";
 import { normalizeName, productFromRow } from "@/lib/pricing";
@@ -341,17 +341,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       if (line.action === "existing") {
         if (!selectedProduct) errors.push(`No se encontró el producto seleccionado en la línea ${index + 1}.`);
         else {
-          const currentBarcode = validateBarcode(selectedProduct.code);
-          if (currentBarcode.valid && currentBarcode.canonical !== line.canonicalBarcode) errors.push(`El producto seleccionado en la línea ${index + 1} tiene otro código de barras.`);
           if (productOwners.length && !productOwners.some((product) => Number(product.id) === line.matchProductId)) errors.push(`El código de la línea ${index + 1} pertenece a otro producto.`);
-          if (!descriptionsCompatible(String(selectedProduct.name), line.name, String(selectedProduct.presentation || ""), line.presentation)) errors.push(`El nombre o la presentación de la línea ${index + 1} no coincide con el producto seleccionado.`);
+          if (quoteOwners.length) errors.push(`El código de la línea ${index + 1} pertenece a un registro de No inventario.`);
         }
       } else if (line.action === "move") {
         if (!selectedQuote) errors.push(`No se encontró el producto de No inventario de la línea ${index + 1}.`);
         else {
-          const currentBarcode = validateBarcode(selectedQuote.code);
-          if (currentBarcode.valid && currentBarcode.canonical !== line.canonicalBarcode) errors.push(`El registro de No inventario de la línea ${index + 1} tiene otro código.`);
-          if (!descriptionsCompatible(String(selectedQuote.name), line.name, "", line.presentation)) errors.push(`La presentación de la línea ${index + 1} no coincide con No inventario.`);
+          if (productOwners.length || quoteOwners.some((quote) => Number(quote.id) !== line.matchNonInventoryId)) errors.push(`El código de la línea ${index + 1} pertenece a otro registro.`);
         }
       } else if (line.action === "create") {
         if (productOwners.length || quoteOwners.length) errors.push(`La línea ${index + 1} no puede crear un producto porque el código ya existe.`);
@@ -362,13 +358,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         const alias = aliasesResult.results.find((candidate) => String(candidate.provider) === String(document.provider)
           && String(candidate.secondary_type) === line.secondaryType
           && String(candidate.secondary_id).toLowerCase() === line.secondaryId.toLowerCase());
-        const progress = progressById.get(line.id);
-        const sameHistoricalProduct = Boolean(alias && progress?.ingressQuantity
-          && Number(alias.product_id) === line.matchProductId
-          && String(alias.canonical_barcode) === line.canonicalBarcode);
-        if (alias && !sameHistoricalProduct && (String(alias.canonical_barcode) !== line.canonicalBarcode
-          || !descriptionsCompatible(String(alias.description_signature), line.name, String(alias.presentation_signature || ""), line.presentation))) {
-          errors.push(`El identificador secundario de la línea ${index + 1} corresponde a otra presentación o código.`);
+        const selectedIdentity = line.action === "move" ? line.matchNonInventoryId : line.matchProductId;
+        if (alias && Number(alias.product_id) !== selectedIdentity) {
+          errors.push(`El identificador de proveedor de la línea ${index + 1} ya pertenece a otro producto.`);
         }
       }
     });
@@ -503,7 +495,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       }
     });
 
-    statements.push(...await invoiceFinanceStatements(db, document, storedLines.results, now));
+    statements.push(...await invoiceFinanceStatements(db, document, lines as unknown as Record<string, unknown>[], now, operationId));
 
     statements.push(documentStatusStatement(db, documentId, now));
     statements.push(db.prepare("UPDATE inventory_documents SET confirmed_at=COALESCE(confirmed_at,?),confirmed_by=COALESCE(confirmed_by,?) WHERE id=?")
