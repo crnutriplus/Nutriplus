@@ -182,6 +182,24 @@ function canonicalOwners(rows: Record<string, unknown>[]) {
   return result;
 }
 
+function originalSupplierIdentifierEvidence(
+  evidence: Record<string, unknown>,
+  provider: unknown,
+  secondaryType: string,
+  secondaryId: string,
+) {
+  if (!secondaryId) return evidence;
+  return {
+    ...evidence,
+    original_supplier_identifier: {
+      value: secondaryId,
+      confidence: 100,
+      page: 0,
+      source: `${String(provider || "other")}:${secondaryType || "other"}:invoice_original`,
+    },
+  };
+}
+
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   let operationId = "";
   try {
@@ -252,11 +270,19 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       const id = stored ? String(stored.id) : sourceId || `iline-${crypto.randomUUID()}`;
       const lineKey = stored ? cleanText(stored.line_key, 150) || sourceLineKey || `manual-${id}` : sourceLineKey || `manual-${id}`;
       const action = cleanText(source.action, 20) as CleanLine["action"];
-      const matchProductId = Number.isInteger(Number(source.matchProductId)) && Number(source.matchProductId) > 0 ? Number(source.matchProductId) : null;
+      let matchProductId = Number.isInteger(Number(source.matchProductId)) && Number(source.matchProductId) > 0 ? Number(source.matchProductId) : null;
       const matchNonInventoryId = Number.isInteger(Number(source.matchNonInventoryId)) && Number(source.matchNonInventoryId) > 0 ? Number(source.matchNonInventoryId) : null;
-      const selectedProductRow = action === "existing" && matchProductId
+      let selectedProductRow = action === "existing" && matchProductId
         ? productsResult.results.find((product) => Number(product.id) === matchProductId)
         : null;
+      const sourceBarcode = validateBarcode(source.barcode);
+      if (action === "existing" && !selectedProductRow && sourceBarcode.valid && sourceBarcode.canonical) {
+        const exactCodeOwners = productCodes.get(sourceBarcode.canonical) || [];
+        if (exactCodeOwners.length === 1) {
+          selectedProductRow = exactCodeOwners[0];
+          matchProductId = Number(selectedProductRow.id);
+        }
+      }
       const selectedIdentity = selectedProductRow ? canonicalProductIdentity({
         id: Number(selectedProductRow.id),
         name: String(selectedProductRow.name),
@@ -354,6 +380,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     });
     const seenLineIds = new Set<string>();
     const seenLineKeys = new Set<string>();
+    const supplierIdentifiersKeptAsEvidence = new Set<string>();
     lines.forEach((line, index) => {
       if (seenLineIds.has(line.id) || seenLineKeys.has(line.lineKey)) {
         errors.push(`La línea ${index + 1} está repetida en la confirmación. Recargá la factura antes de continuar.`);
@@ -403,8 +430,19 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           && String(candidate.secondary_type) === line.secondaryType
           && String(candidate.secondary_id).toLowerCase() === line.secondaryId.toLowerCase());
         const selectedIdentity = line.action === "move" ? line.matchNonInventoryId : line.matchProductId;
-        if (alias && Number(alias.product_id) !== selectedIdentity) {
-          errors.push(`El identificador de proveedor de la línea ${index + 1} ya pertenece a otro producto.`);
+        const selectedName = selectedProduct ? String(selectedProduct.name) : selectedQuote ? String(selectedQuote.name) : "el registro seleccionado";
+        if (alias) {
+          const aliasProduct = productsResult.results.find((product) => Number(product.id) === Number(alias.product_id));
+          if (!aliasProduct) {
+            if (line.action === "existing" && selectedProduct) {
+              supplierIdentifiersKeptAsEvidence.add(line.id);
+              line.fieldEvidence = originalSupplierIdentifierEvidence(line.fieldEvidence, document.provider, line.secondaryType, line.secondaryId);
+            } else {
+              errors.push(`El identificador de proveedor “${line.secondaryId}” de la línea ${index + 1} conserva una asociación histórica sin producto vigente. Seleccioná un producto existente antes de ingresar; el inventario no fue modificado.`);
+            }
+          } else if (Number(alias.product_id) !== selectedIdentity) {
+            errors.push(`El identificador de proveedor “${line.secondaryId}” de la línea ${index + 1} pertenece a “${String(aliasProduct.name)}”, pero seleccionaste “${selectedName}”. Seleccioná explícitamente el producto correcto; no se reasignó ni fusionó ningún producto.`);
+          }
         }
       }
     });
@@ -522,7 +560,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         WHERE id=? AND document_id=?`).bind(
         operationId, line.id, line.id, productLookupValue, now, line.id, documentId,
       ));
-      if (line.secondaryId) {
+      if (line.secondaryId && !supplierIdentifiersKeptAsEvidence.has(line.id)) {
         statements.push(db.prepare(`INSERT INTO supplier_product_aliases (
           provider,secondary_type,secondary_id,barcode,canonical_barcode,product_id,description_signature,
           presentation_signature,units_per_package,barcode_level,source,confirmed_at,confirmed_by,updated_at

@@ -44,6 +44,32 @@ async function analyze({ id, fileName, text }) {
   });
 }
 
+function selectedCanonicalLine(line, product, quantity) {
+  return {
+    ...line,
+    receivedQuantity: quantity,
+    billedQuantity: quantity,
+    totalToAdd: quantity,
+    unitsPerPackage: 1,
+    barcode: product.code,
+    canonicalBarcode: "",
+    barcodeType: "UPC-A",
+    barcodeMethod: "product_catalog",
+    barcodeSource: "Producto canónico de NutriPlus",
+    barcodeSourceUrl: "",
+    barcodeSourceTitle: product.name,
+    barcodeLookupStatus: "found_exact",
+    barcodeConfirmed: true,
+    barcodeLevel: "unit",
+    selected: true,
+    selectedForIngress: true,
+    action: "existing",
+    status: "confirmed",
+    matchProductId: product.id,
+    matchNonInventoryId: null,
+  };
+}
+
 await call("/api/settings");
 
 const recoveredPdf = new TextEncoder().encode("%PDF-1.4\n% NutriPlus legacy upload recovery\n%%EOF");
@@ -144,6 +170,151 @@ const confirmedManualSelection = await call(`/api/inventory-intake/${manualSelec
 assert.equal(confirmedManualSelection.response.status, 200, JSON.stringify(confirmedManualSelection.body));
 assert.equal((await call("/api/products?code=1234567890128")).body.product.quantityAvailable, 6);
 assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM products").first()).total), countBeforeManualSelection, "manual selection never creates a second ChatGPT-named product");
+
+// A supplier SKU owned by the selected product is valid, even when the invoice
+// itself does not carry an UPC/EAN/GTIN. The canonical product code is enough.
+const calmifyProduct = (await call("/api/products", {
+  method: "POST",
+  body: JSON.stringify({
+    name: "JoySpring Calmify",
+    brand: "JoySpring",
+    presentation: "30 ml (1 oz. líq.)",
+    code: "850008889936",
+    purchasePriceUsd: 24.99,
+    weightLb: 0.2,
+    quantityAvailable: 0,
+    minimumStock: 1,
+    minimumStockEnabled: true,
+  }),
+})).body.product;
+assert.equal(calmifyProduct.presentation, "30 ml");
+const sameSkuInvoice = await analyze({
+  id: 92,
+  fileName: "iherb-same-sku.pdf",
+  text: `iHerb\nNúmero de compra: 946154100\nProduct Code: JYS-10001\n1 x JoySpring Calmify, Magnesio líquido · 30 ml`,
+});
+const sameSkuLine = selectedCanonicalLine(sameSkuInvoice.body.lines[0], calmifyProduct, 1);
+const sameSkuConfirm = await call(`/api/inventory-intake/${sameSkuInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "ingress-iherb-same-sku-001", lines: [sameSkuLine] }),
+});
+assert.equal(sameSkuConfirm.response.status, 200, JSON.stringify(sameSkuConfirm.body));
+const sameSkuAlias = await DB.prepare("SELECT * FROM supplier_product_aliases WHERE provider='iherb' AND secondary_id='JYS-10001'").first();
+assert.equal(Number(sameSkuAlias.product_id), calmifyProduct.id);
+const sameSkuSecondInvoice = await analyze({
+  id: 93,
+  fileName: "iherb-same-sku-repeat.pdf",
+  text: `iHerb\nNúmero de compra: 946154101\nProduct Code: JYS-10001\n1 x JoySpring Calmify, Magnesio líquido · 30 ml`,
+});
+const sameSkuSecondConfirm = await call(`/api/inventory-intake/${sameSkuSecondInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "ingress-iherb-same-sku-002", lines: [selectedCanonicalLine(sameSkuSecondInvoice.body.lines[0], calmifyProduct, 1)] }),
+});
+assert.equal(sameSkuSecondConfirm.response.status, 200, JSON.stringify(sameSkuSecondConfirm.body));
+assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, 2);
+
+// A live supplier alias remains protected: a different explicitly selected
+// product sees both names and cannot steal or merge the alias.
+const wrongSkuOwnerInvoice = await analyze({
+  id: 94,
+  fileName: "iherb-wrong-product.pdf",
+  text: `iHerb\nNúmero de compra: 946154102\nProduct Code: JYS-10001\n1 x JoySpring Calmify, Magnesio líquido · 30 ml`,
+});
+const wrongSkuOwnerConfirm = await call(`/api/inventory-intake/${wrongSkuOwnerInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "ingress-iherb-sku-conflict-001", lines: [selectedCanonicalLine(wrongSkuOwnerInvoice.body.lines[0], baseProduct, 1)] }),
+});
+assert.equal(wrongSkuOwnerConfirm.response.status, 409);
+assert.match(wrongSkuOwnerConfirm.body.errors.join(" "), /JYS-10001/);
+assert.match(wrongSkuOwnerConfirm.body.errors.join(" "), new RegExp(calmifyProduct.name));
+assert.match(wrongSkuOwnerConfirm.body.errors.join(" "), new RegExp(baseProduct.name));
+assert.equal(Number((await DB.prepare("SELECT product_id FROM supplier_product_aliases WHERE provider='iherb' AND secondary_id='JYS-10001'").first()).product_id), calmifyProduct.id);
+assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, 2);
+
+// This reproduces JYS-88993: its historical owner was reversed and removed,
+// so it is evidence only. A manually selected current product remains
+// authoritative without reassigning the old alias, then retains full
+// ingress/retry/status/reversal/reprocess guarantees.
+const historicalCalmify = (await call("/api/products", {
+  method: "POST",
+  body: JSON.stringify({
+    name: "Calmify, Magnesio líquido histórico",
+    brand: "JoySpring",
+    presentation: "30 ml",
+    code: "078742040370",
+    purchasePriceUsd: 24.99,
+    weightLb: 0.2,
+    quantityAvailable: 0,
+    minimumStock: 0,
+    minimumStockEnabled: false,
+  }),
+})).body.product;
+const historicalInvoice = await analyze({
+  id: 95,
+  fileName: "iherb-jys-historical.pdf",
+  text: `iHerb\nNúmero de compra: 946154103\nProduct Code: JYS-88993\nUPC: 078742040370\n1 x JoySpring Calmify, Magnesio líquido · 30 ml`,
+});
+const historicalLine = selectedCanonicalLine(historicalInvoice.body.lines[0], historicalCalmify, 1);
+const historicalConfirm = await call(`/api/inventory-intake/${historicalInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "ingress-iherb-jys-historical-001", lines: [historicalLine] }),
+});
+assert.equal(historicalConfirm.response.status, 200, JSON.stringify(historicalConfirm.body));
+const historicalReversal = await call("/api/inventory-intake/operations/ingress-iherb-jys-historical-001/reverse", {
+  method: "POST",
+  body: JSON.stringify({ operationId: "reversal-iherb-jys-historical-001", reason: "Preparar SKU histórico sin producto vigente" }),
+});
+assert.equal(historicalReversal.response.status, 200, JSON.stringify(historicalReversal.body));
+const staleJysAlias = await DB.prepare("SELECT * FROM supplier_product_aliases WHERE provider='iherb' AND secondary_id='JYS-88993'").first();
+assert.equal(Number(staleJysAlias.product_id), historicalCalmify.id);
+await DB.prepare("DELETE FROM products WHERE id=?").bind(historicalCalmify.id).run();
+assert.equal(await DB.prepare("SELECT id FROM products WHERE id=?").bind(historicalCalmify.id).first(), null);
+
+const jysInvoice = await analyze({
+  id: 96,
+  fileName: "iherb-jys-88993.pdf",
+  text: `iHerb\nNúmero de compra: 946154186\nProduct Code: JYS-88993\n4 x JoySpring Calmify, Magnesio líquido · 30 ml (1 oz. líq.)`,
+});
+assert.equal(jysInvoice.body.lines[0].secondaryId, "JYS-88993");
+const jysLine = selectedCanonicalLine(jysInvoice.body.lines[0], calmifyProduct, 4);
+const calmifyBeforeJys = (await call("/api/products?code=850008889936")).body.product.quantityAvailable;
+const jysConfirm = await call(`/api/inventory-intake/${jysInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "ingress-iherb-jys-88993-001", lines: [jysLine] }),
+});
+assert.equal(jysConfirm.response.status, 200, JSON.stringify(jysConfirm.body));
+assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, calmifyBeforeJys + 4);
+const jysRetry = await call(`/api/inventory-intake/${jysInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "ingress-iherb-jys-88993-001", lines: [jysLine] }),
+});
+assert.equal(jysRetry.response.status, 200, JSON.stringify(jysRetry.body));
+assert.equal(jysRetry.body.idempotent, true);
+assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, calmifyBeforeJys + 4);
+const jysStatus = await call("/api/inventory-intake/operations/ingress-iherb-jys-88993-001");
+assert.equal(jysStatus.response.status, 200);
+assert.equal(jysStatus.body.operation.status, "completed");
+const savedJysLine = await DB.prepare("SELECT * FROM inventory_document_lines WHERE id=?").bind(jysInvoice.body.lines[0].id).first();
+assert.equal(Number(savedJysLine.match_product_id), calmifyProduct.id);
+assert.equal(JSON.parse(savedJysLine.field_evidence_json).original_supplier_identifier.value, "JYS-88993");
+assert.equal(Number((await DB.prepare("SELECT product_id FROM supplier_product_aliases WHERE provider='iherb' AND secondary_id='JYS-88993'").first()).product_id), historicalCalmify.id, "orphaned supplier SKU must not be reassigned");
+assert.equal((await call("/api/products?code=850008889936")).body.product.code, "850008889936", "supplier SKU never overwrites the canonical product code");
+const jysReverse = await call("/api/inventory-intake/operations/ingress-iherb-jys-88993-001/reverse", {
+  method: "POST",
+  body: JSON.stringify({ operationId: "reversal-iherb-jys-88993-001", reason: "Verificar reversa exacta" }),
+});
+assert.equal(jysReverse.response.status, 200, JSON.stringify(jysReverse.body));
+assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, calmifyBeforeJys);
+const jysAfterReverse = await call(`/api/inventory-intake/${jysInvoice.body.document.id}`);
+assert.equal(jysAfterReverse.response.status, 200);
+assert.equal(jysAfterReverse.body.lines[0].availableQuantity, 4);
+const jysReprocess = await call(`/api/inventory-intake/${jysInvoice.body.document.id}/confirm`, {
+  method: "POST",
+  body: JSON.stringify({ operationId: "ingress-iherb-jys-88993-002", lines: [{ ...jysAfterReverse.body.lines[0], requestedQuantity: 4, selected: true }] }),
+});
+assert.equal(jysReprocess.response.status, 200, JSON.stringify(jysReprocess.body));
+assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, calmifyBeforeJys + 4);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_movements WHERE document_line_id=?").bind(jysInvoice.body.lines[0].id).first()).total), 3);
 
 const amazon = await analyze({
   id: 1,

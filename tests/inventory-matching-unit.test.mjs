@@ -77,3 +77,34 @@ test("an exact barcode is canonical even when the invoice name is unrelated", ()
   assert.equal(resolved.suggestions[0]?.id, 7);
   assert.equal(resolved.suggestions[0]?.matchReason, "barcode");
 });
+
+test("an orphaned supplier SKU remains invoice evidence and cannot block an exact canonical product", () => {
+  const resolved = resolveParsedLine({
+    id: "line-orphaned-sku",
+    line: parsedLine({
+      name: "JoySpring Calmify",
+      originalDescription: "JoySpring · Calmify, Magnesio líquido · 30 ml",
+      secondaryId: "JYS-88993",
+      secondaryType: "other",
+      barcode: "850008889936",
+    }),
+    provider: "iherb",
+    products: [{
+      id: 49,
+      name: "JoySpring Calmify",
+      code: "850008889936",
+      brand: "JoySpring",
+      presentation: "30 ml",
+      quantity_available: 0,
+      minimum_stock: 1,
+      minimum_stock_enabled: 1,
+    }],
+    quotes: [],
+    aliases: [{ provider: "iherb", secondary_type: "other", secondary_id: "JYS-88993", barcode: "078742040370", canonical_barcode: "00078742040370", product_id: 1171, description_signature: "calmify liquido magnesio", presentation_signature: "1 oz|30 ml", units_per_package: 1, barcode_level: "unit" }],
+  });
+  assert.equal(resolved.status, "confirmed");
+  assert.equal(resolved.action, "existing");
+  assert.equal(resolved.matchProductId, 49);
+  assert.equal(resolved.match?.matchReason, "barcode");
+  assert.match(resolved.warnings.join(" "), /asociación histórica/i);
+});

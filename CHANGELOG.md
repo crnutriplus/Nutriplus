@@ -7,6 +7,13 @@ NutriPlus mantiene dos identificadores independientes:
 
 `package.json` usa SemVer, por lo que representa la versión pública `2.23` como `2.23.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
 
+## 2.28 — 2026-08-31
+
+- Un identificador de proveedor cuyo producto histórico ya no existe deja de bloquear una línea con producto canónico válido: se conserva como evidencia original de factura y nunca reasigna ni sobrescribe la identidad activa.
+- Si el SKU pertenece al mismo producto seleccionado, el ingreso continúa normalmente. Si pertenece a otro producto vigente, NutriPlus bloquea la operación mostrando el producto seleccionado y el propietario, sin fusionar ni modificar equivalencias.
+- Las facturas reanudadas pueden recuperar una referencia de producto eliminada únicamente cuando el código canónico identifica de forma única un producto vigente. Ingreso, reintento, comprobación, reversa y reproceso permanecen idempotentes.
+- No se añadió migración, tabla, endpoint ni interfaz de Clientes/CRM; `0018_messy_nemesis.sql` no forma parte de esta versión y no se realizaron llamadas pagadas a OpenAI.
+
 ## 2.27 — 2026-08-31
 
 - Al seleccionar un producto existente desde Facturas/CHATGPT_IMPORT, la línea vuelve a hidratar la identidad canónica completa de Productos, incluido su código. Si el producto ya tiene un código válido, no vuelve a pedirlo ni crea otro producto.

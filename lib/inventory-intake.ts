@@ -263,6 +263,9 @@ export function resolveParsedLine(args: {
     ? aliases.find((alias) => alias.provider === provider && alias.secondary_type === line.secondaryType && alias.secondary_id.toLowerCase() === line.secondaryId.toLowerCase())
     : undefined;
   const secondaryProduct = secondary ? products.find((product) => Number(product.id) === Number(secondary.product_id)) : undefined;
+  if (secondary && !secondaryProduct) {
+    warnings.push("El identificador del proveedor se conserva como evidencia de la factura, pero su asociación histórica ya no tiene un producto vigente. La identidad activa se resolverá por el código canónico o una selección explícita.");
+  }
   let status: IntakeLineStatus = "requires_confirm_code";
   let action: IntakeLineDto["action"] = "pending";
   let match: IntakeMatch | null = null;
@@ -275,9 +278,9 @@ export function resolveParsedLine(args: {
   if (["canceled", "refund", "return"].includes(line.specialType)) {
     status = "ignored";
     action = "ignore";
-  } else if (secondary) {
+  } else if (secondary && secondaryProduct) {
     const barcodeOwner = barcode.canonical ? [...productMatches, ...quoteMatches] : [];
-    if (!secondaryProduct || (barcodeOwner.length === 1 && Number(barcodeOwner[0].id) !== Number(secondary.product_id)) || barcodeOwner.length > 1) {
+    if ((barcodeOwner.length === 1 && Number(barcodeOwner[0].id) !== Number(secondary.product_id)) || barcodeOwner.length > 1) {
       status = "conflict_identifiers";
       warnings.push("El identificador del proveedor y el código de barras apuntan a productos distintos. Revisá cuál corresponde antes de ingresar inventario.");
     } else {
@@ -350,8 +353,8 @@ export function resolveParsedLine(args: {
     barcodeType,
     secondaryId: line.secondaryId,
     secondaryType: line.secondaryType,
-    barcodeMethod: line.barcodeMethod || (line.barcode ? line.barcodeSourceUrl ? "web_search" : "invoice" : secondary ? "saved_equivalence" : ""),
-    barcodeSource: line.barcodeSource || (line.barcode ? line.barcodeSourceTitle || (line.barcodeSourceUrl ? "Búsqueda web" : "Factura") : secondary?.source ? String(secondary.source) : ""),
+    barcodeMethod: line.barcodeMethod || (line.barcode ? line.barcodeSourceUrl ? "web_search" : "invoice" : secondaryProduct ? "saved_equivalence" : ""),
+    barcodeSource: line.barcodeSource || (line.barcode ? line.barcodeSourceTitle || (line.barcodeSourceUrl ? "Búsqueda web" : "Factura") : secondaryProduct?.source ? String(secondaryProduct.source) : ""),
     barcodeSourceUrl: line.barcodeSourceUrl,
     barcodeSourceTitle: line.barcodeSourceTitle,
     barcodeDifferences: line.barcodeDifferences,

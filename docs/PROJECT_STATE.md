@@ -12,6 +12,7 @@
 
 ## Current development
 
+- v2.28 está preparada como hotfix de Facturas/Inventario: un SKU de proveedor huérfano se conserva como evidencia original y no bloquea un producto canónico vigente seleccionado; un SKU con dueño vigente distinto sigue bloqueado sin reasignación. Las referencias reanudadas a productos eliminados solo se recuperan por código canónico único.
 - v2.27 está publicada como hotfix de Facturas/Inventario/Web Push: identidad canónica de producto y código, resolución de línea reanudada por ID o `lineKey`, persistencia idempotente sin duplicados, presentación comercial normalizada y deep links tipados con cola `READY/ACK`.
 - No incluye migraciones, `0018_messy_nemesis.sql`, tablas/endpoints/UI de Clientes o CRM. El trabajo de CRM no está presente en este checkout y no se reconstruye en esta release.
 
