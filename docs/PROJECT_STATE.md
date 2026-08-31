@@ -2,17 +2,17 @@
 
 ## Production
 
-- Version: v2.26
-- Checkpoint: 47
-- Commit: `7da2c33760741d2760628bbbe5af25be1a1232f4`
-- Deployment: `appgdep_6a94fac6695c8191be04e64d45fbb7db`
+- Version: v2.27
+- Checkpoint: 48
+- Commit: `ef89f1e6da529be31a0a89973c112c6a8a1b54fb`
+- Deployment: `appgdep_6a95f2e67ea081918d6e3db16d010cd9`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0017_equal_microchip.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- v2.27 está preparada para publicación como hotfix de Facturas/Inventario/Web Push: identidad canónica de producto y código, resolución de línea reanudada por ID o `lineKey`, persistencia idempotente sin duplicados, presentación comercial normalizada y deep links tipados con cola `READY/ACK`.
+- v2.27 está publicada como hotfix de Facturas/Inventario/Web Push: identidad canónica de producto y código, resolución de línea reanudada por ID o `lineKey`, persistencia idempotente sin duplicados, presentación comercial normalizada y deep links tipados con cola `READY/ACK`.
 - No incluye migraciones, `0018_messy_nemesis.sql`, tablas/endpoints/UI de Clientes o CRM. El trabajo de CRM no está presente en este checkout y no se reconstruye en esta release.
 
 ## Security
