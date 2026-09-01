@@ -7,6 +7,13 @@ NutriPlus mantiene dos identificadores independientes:
 
 `package.json` usa SemVer, por lo que representa la versión pública `2.23` como `2.23.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
 
+## 2.29 — 2026-09-01
+
+- El reconocimiento financiero de una línea de factura ahora compara el prefijo estructurado de `source_id` literalmente con `instr(...)=1`, en lugar de `LIKE`. Esto evita el error `SQLITE_ERROR` reproducido en D1 con el prefijo de Calmify y evita que `%` o `_` de un identificador se interpreten como comodines.
+- Ingreso parcial, componentes de pago, reversa, reproceso, consulta de estado y reintento continúan usando el mismo ledger append-only e idempotente; un gasto revertido no cuenta como reconocido.
+- Se retiró el endpoint temporal de diagnóstico de Finanzas antes de la publicación.
+- No se añadió ninguna migración, tabla, endpoint ni interfaz de Clientes/CRM; `0018_messy_nemesis.sql` no forma parte de esta versión y no se realizaron llamadas pagadas a OpenAI.
+
 ## 2.28 — 2026-08-31
 
 - Un identificador de proveedor cuyo producto histórico ya no existe deja de bloquear una línea con producto canónico válido: se conserva como evidencia original de factura y nunca reasigna ni sobrescribe la identidad activa.

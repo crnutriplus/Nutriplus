@@ -49,8 +49,8 @@ function line(id, net, options = {}) {
   };
 }
 
-async function post(operationId, sourceLine) {
-  await DB.batch(await invoiceFinanceStatements(DB, document, [sourceLine], "2026-08-29T12:00:00.000Z", operationId));
+async function post(operationId, sourceLine, sourceDocument = document) {
+  await DB.batch(await invoiceFinanceStatements(DB, sourceDocument, [sourceLine], "2026-08-29T12:00:00.000Z", operationId));
 }
 
 const lineA = line("business-a", 20);
@@ -118,5 +118,44 @@ const invoiceFile = await worker.fetch(new Request("http://local.test/api/invent
 assert.equal(invoiceFile.status, 200);
 assert.deepEqual(Buffer.from(await invoiceFile.arrayBuffer()), Buffer.from(invoiceBytes));
 
+// source_id is structured, not a search pattern. A literal prefix must keep
+// '%' and '_' literal, so a similar line in the same invoice cannot change
+// partial recognition or block a valid reprocess.
+const literalDocument = { ...document, id: "invoice%_literal" };
+const literalLine = line("line%_literal", 20, { originalTotal: 2, totalToAdd: 1 });
+const confusableLine = line("lineZZliteral", 30);
+const literalPrefix = `${literalDocument.id}:${literalLine.id}:`;
+const literalActiveMinor = () => Number(DB.sqlite.prepare(`SELECT COALESCE(SUM(e.original_amount_minor),0) AS total
+  FROM finance_expenses e
+  WHERE e.entry_type='EXPENSE' AND e.source_type IN (?,?) AND instr(e.source_id, ?) = 1
+    AND NOT EXISTS (SELECT 1 FROM finance_expenses r WHERE r.reverses_expense_id=e.id)`)
+  .get("INVENTORY_INVOICE_LINE_PAYMENT", "INVENTORY_INVOICE_LINE_NON_CASH", literalPrefix).total);
+
+assert.equal(literalActiveMinor(), 0, "a line with no posting must recognize zero");
+await post("ingress-literal-prefix-1", literalLine, literalDocument);
+await post("ingress-literal-prefix-confusable", confusableLine, literalDocument);
+await post("ingress-literal-prefix-2", { ...literalLine, totalToAdd: 2 }, literalDocument);
+assert.equal(literalActiveMinor(), 2000, "the matching line is recognized twice only up to its exact USD 20.00 total");
+assert.equal(Number(DB.sqlite.prepare(`SELECT COALESCE(SUM(original_amount_minor),0) AS total FROM finance_expenses
+  WHERE entry_type='EXPENSE' AND instr(source_id, ?) = 1`).get(`${literalDocument.id}:${confusableLine.id}:`).total), 3000,
+"another line in the same invoice must not count toward the literal line");
+
+const otherDocument = { ...document, id: "other%_invoice" };
+await post("ingress-literal-prefix-other-document", line(literalLine.id, 40), otherDocument);
+assert.equal(literalActiveMinor(), 2000, "the same line id in another document must not count");
+
+const literalReversals = await invoiceFinanceReversalStatements(
+  DB, "ingress-literal-prefix-2", "reverse-literal-prefix-2", "Prueba de reversa literal", "2026-08-29T14:00:00.000Z",
+);
+assert.equal(literalReversals.length, 2, "each payment component has one reversal");
+await DB.batch(literalReversals);
+assert.equal(literalActiveMinor(), 1000, "a reversed posting must not count as recognized");
+await post("ingress-literal-prefix-3", { ...literalLine, totalToAdd: 2 }, literalDocument);
+assert.equal(literalActiveMinor(), 2000, "reprocessing restores only the missing recognized amount");
+await post("ingress-literal-prefix-3", { ...literalLine, totalToAdd: 2 }, literalDocument);
+assert.equal(Number(DB.sqlite.prepare(`SELECT COUNT(*) AS total FROM finance_expenses
+  WHERE entry_type='EXPENSE' AND instr(source_id, ?) = 1`).get(literalPrefix).total), 6,
+"retry remains idempotent across partial posting, reversal and reprocess");
+
 DB.close();
-console.log("Invoice finance: partial recognition, invoice file link, personal exclusion, reversals, reprocessing, split payments and idempotency passed");
+console.log("Invoice finance: literal source prefixes, partial recognition, invoice file link, personal exclusion, reversals, reprocessing, split payments and idempotency passed");

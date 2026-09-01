@@ -625,7 +625,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       lines as unknown as Record<string, unknown>[],
       now,
       operationId,
-      (financePhase) => { phase = `finance_statement_build:${financePhase}`; },
     ));
 
     statements.push(documentStatusStatement(db, documentId, now));

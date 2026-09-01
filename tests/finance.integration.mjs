@@ -26,6 +26,8 @@ async function call(path, init = {}) {
 }
 
 let sequence = 0;
+const FINANCE_TEST_FROM = "2026-01-01";
+const FINANCE_TEST_TO = "2099-12-31";
 function op(label) {
   sequence += 1;
   return `finance-${label}-${String(sequence).padStart(6, "0")}`;
@@ -69,7 +71,7 @@ async function action(order, path, body = {}, operation = op(path.replaceAll("/"
 }
 
 async function snapshot() {
-  const result = await call("/api/finance?from=2026-08-01&to=2026-08-31");
+  const result = await call(`/api/finance?from=${FINANCE_TEST_FROM}&to=${FINANCE_TEST_TO}`);
   assert.equal(result.response.status, 200, JSON.stringify(result.body));
   return result.body;
 }
@@ -242,13 +244,13 @@ assert.equal(finance.cash.outgoing, 101700);
 assert.deepEqual(finance.payables, []);
 
 // Exportaciones contienen datos reales y las secciones mínimas de Finanzas v1.
-const excelExport = await call("/api/finance/export?from=2026-08-01&to=2026-08-31&format=excel");
+const excelExport = await call(`/api/finance/export?from=${FINANCE_TEST_FROM}&to=${FINANCE_TEST_TO}&format=excel`);
 assert.equal(excelExport.response.status, 200);
 const workbook = new ExcelJS.Workbook();
 await workbook.xlsx.load(excelExport.body);
 assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["Resumen", "Ventas", "Gastos", "Caja", "Rentabilidad", "Cuentas por cobrar"]);
 assert.ok(workbook.getWorksheet("Ventas").getSheetValues().flat().some((value) => value === paidOrder.orderNumber));
-const pdfExport = await call("/api/finance/export?from=2026-08-01&to=2026-08-31&format=pdf");
+const pdfExport = await call(`/api/finance/export?from=${FINANCE_TEST_FROM}&to=${FINANCE_TEST_TO}&format=pdf`);
 assert.equal(pdfExport.response.status, 200);
 assert.equal(pdfExport.response.headers.get("content-type"), "application/pdf");
 if (process.env.SAVE_FINANCE_PDF === "1") {

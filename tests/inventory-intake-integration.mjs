@@ -273,24 +273,24 @@ assert.equal(await DB.prepare("SELECT id FROM products WHERE id=?").bind(histori
 const jysInvoice = await analyze({
   id: 96,
   fileName: "iherb-jys-88993.pdf",
-  text: `iHerb\nNúmero de compra: 946154186\nProduct Code: JYS-88993\n4 x JoySpring Calmify, Magnesio líquido · 30 ml (1 oz. líq.)`,
+  text: `iHerb\nNúmero de compra: 946154186\nProduct Code: JYS-88993\n3 x JoySpring Calmify, Magnesio líquido · 30 ml (1 oz. líq.)`,
 });
 assert.equal(jysInvoice.body.lines[0].secondaryId, "JYS-88993");
-const jysLine = selectedCanonicalLine(jysInvoice.body.lines[0], calmifyProduct, 4);
+const jysLine = selectedCanonicalLine(jysInvoice.body.lines[0], calmifyProduct, 3);
 const calmifyBeforeJys = (await call("/api/products?code=850008889936")).body.product.quantityAvailable;
 const jysConfirm = await call(`/api/inventory-intake/${jysInvoice.body.document.id}/confirm`, {
   method: "POST",
   body: JSON.stringify({ operationId: "ingress-iherb-jys-88993-001", lines: [jysLine] }),
 });
 assert.equal(jysConfirm.response.status, 200, JSON.stringify(jysConfirm.body));
-assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, calmifyBeforeJys + 4);
+assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, calmifyBeforeJys + 3);
 const jysRetry = await call(`/api/inventory-intake/${jysInvoice.body.document.id}/confirm`, {
   method: "POST",
   body: JSON.stringify({ operationId: "ingress-iherb-jys-88993-001", lines: [jysLine] }),
 });
 assert.equal(jysRetry.response.status, 200, JSON.stringify(jysRetry.body));
 assert.equal(jysRetry.body.idempotent, true);
-assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, calmifyBeforeJys + 4);
+assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, calmifyBeforeJys + 3);
 const jysStatus = await call("/api/inventory-intake/operations/ingress-iherb-jys-88993-001");
 assert.equal(jysStatus.response.status, 200);
 assert.equal(jysStatus.body.operation.status, "completed");
@@ -307,13 +307,13 @@ assert.equal(jysReverse.response.status, 200, JSON.stringify(jysReverse.body));
 assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, calmifyBeforeJys);
 const jysAfterReverse = await call(`/api/inventory-intake/${jysInvoice.body.document.id}`);
 assert.equal(jysAfterReverse.response.status, 200);
-assert.equal(jysAfterReverse.body.lines[0].availableQuantity, 4);
+assert.equal(jysAfterReverse.body.lines[0].availableQuantity, 3);
 const jysReprocess = await call(`/api/inventory-intake/${jysInvoice.body.document.id}/confirm`, {
   method: "POST",
-  body: JSON.stringify({ operationId: "ingress-iherb-jys-88993-002", lines: [{ ...jysAfterReverse.body.lines[0], requestedQuantity: 4, selected: true }] }),
+  body: JSON.stringify({ operationId: "ingress-iherb-jys-88993-002", lines: [{ ...jysAfterReverse.body.lines[0], requestedQuantity: 3, selected: true }] }),
 });
 assert.equal(jysReprocess.response.status, 200, JSON.stringify(jysReprocess.body));
-assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, calmifyBeforeJys + 4);
+assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, calmifyBeforeJys + 3);
 assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_movements WHERE document_line_id=?").bind(jysInvoice.body.lines[0].id).first()).total), 3);
 
 const amazon = await analyze({
