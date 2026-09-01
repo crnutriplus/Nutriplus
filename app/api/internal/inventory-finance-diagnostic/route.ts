@@ -1,28 +1,9 @@
-import { ensureDatabase, getD1 } from "@/db";
+import { getD1 } from "@/db";
 
 type Row = Record<string, unknown>;
+type Probe = { status: "PASS"; value: string | number } | { status: "FAIL"; error: string };
 
-const DOCUMENT_NUMBER = "946154186";
-const LINE_KEY = "chatgpt-import-2";
-const PRODUCT_ID = 1174;
-const SOURCE_TYPES = ["INVENTORY_INVOICE_LINE_PAYMENT", "INVENTORY_INVOICE_LINE_NON_CASH"] as const;
-
-const CURRENT_QUERY = `SELECT COALESCE(SUM(e.original_amount_minor),0) AS total
-  FROM finance_expenses e
-  WHERE e.entry_type='EXPENSE'
-    AND e.source_type IN (?,?)
-    AND e.source_id LIKE ?
-    AND NOT EXISTS (
-      SELECT 1 FROM finance_expenses r WHERE r.reverses_expense_id=e.id
-    )`;
-
-const LEFT_JOIN_QUERY = `SELECT COALESCE(SUM(e.original_amount_minor),0) AS total
-  FROM finance_expenses e
-  LEFT JOIN finance_expenses r ON r.reverses_expense_id=e.id
-  WHERE e.entry_type='EXPENSE'
-    AND e.source_type IN (?,?)
-    AND e.source_id LIKE ?
-    AND r.id IS NULL`;
+const DOCUMENT_PREFIX = "doc-deb6fd67-%";
 
 function errorCode(error: unknown) {
   // Keep D1 messages and SQL out of the response, even on the private site.
@@ -37,50 +18,78 @@ function errorCode(error: unknown) {
   return "UNCLASSIFIED_D1_ERROR";
 }
 
-async function checkedTotal(db: D1Database, sql: string, bindings: string[]) {
+function normalizedValue(value: unknown, exposeLiteral = false): string | number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : "NON_FINITE";
+  if (exposeLiteral && typeof value === "string") return value;
+  if (value == null) return "NULL";
+  return typeof value === "string" && value.length === 0 ? "EMPTY" : "NON_NULL";
+}
+
+async function probe(db: D1Database, sql: string, bindings: unknown[] = [], exposeLiteral = false): Promise<Probe> {
   try {
-    const row = await db.prepare(sql).bind(...bindings).first<Row>();
-    return { status: "PASS" as const, total: Number(row?.total || 0) };
+    // Each probe creates and executes a new statement. Empty bindings intentionally skip .bind().
+    const statement = bindings.length ? db.prepare(sql).bind(...bindings) : db.prepare(sql);
+    const row = await statement.first<Row>();
+    return { status: "PASS", value: normalizedValue(row?.value, exposeLiteral) };
+  } catch (error) {
+    return { status: "FAIL", error: errorCode(error) };
+  }
+}
+
+async function firstExistingSourceId(db: D1Database) {
+  try {
+    const row = await db.prepare("SELECT source_id FROM finance_expenses WHERE source_id IS NOT NULL LIMIT 1").first<Row>();
+    const sourceId = typeof row?.source_id === "string" && row.source_id.length ? row.source_id : null;
+    return { status: "PASS" as const, sourceId };
   } catch (error) {
     return { status: "FAIL" as const, error: errorCode(error) };
   }
 }
 
 /**
- * Temporary owner-only production probe for one fixed invoice line.
- * It accepts no input and only executes SELECT statements.
+ * Temporary owner-only production probe. It accepts no input and runs only fixed SELECT statements.
+ * It intentionally avoids ensureDatabase() because that normal-app initializer may issue compatibility DDL.
  */
 export async function GET() {
-  await ensureDatabase();
   const db = getD1();
-  const target = await db.prepare(`SELECT d.id AS document_id,l.id AS line_id
-    FROM inventory_documents d
-    JOIN inventory_document_lines l ON l.document_id=d.id
-    WHERE d.order_number=? AND l.line_key=? AND l.match_product_id=?
-    LIMIT 1`).bind(DOCUMENT_NUMBER, LINE_KEY, PRODUCT_ID).first<Row>();
 
-  if (!target) {
-    return Response.json({ status: "TARGET_NOT_FOUND" }, { status: 404 });
-  }
+  const results = {
+    runtime: await probe(db, "SELECT 1 AS value"),
+    binding: await probe(db, "SELECT ? AS value", ["ok"], true),
+    settingsCount: await probe(db, "SELECT COUNT(*) AS value FROM settings"),
+    financeExpensesCount: await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses"),
+    columns: {
+      id: await probe(db, "SELECT id AS value FROM finance_expenses LIMIT 1"),
+      originalAmountMinor: await probe(db, "SELECT original_amount_minor AS value FROM finance_expenses LIMIT 1"),
+      entryType: await probe(db, "SELECT entry_type AS value FROM finance_expenses LIMIT 1"),
+      sourceType: await probe(db, "SELECT source_type AS value FROM finance_expenses LIMIT 1"),
+      sourceId: await probe(db, "SELECT source_id AS value FROM finance_expenses LIMIT 1"),
+      reversesExpenseId: await probe(db, "SELECT reverses_expense_id AS value FROM finance_expenses LIMIT 1"),
+    },
+    simpleSum: await probe(db, "SELECT COALESCE(SUM(original_amount_minor),0) AS value FROM finance_expenses"),
+    individualPredicates: {
+      entryType: await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses WHERE entry_type='EXPENSE'"),
+      sourceType: await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses WHERE source_type='INVENTORY_INVOICE_LINE_PAYMENT'"),
+      sourcePrefix: await probe(db, `SELECT COUNT(*) AS value FROM finance_expenses WHERE source_id LIKE '${DOCUMENT_PREFIX}'`),
+    },
+    sourceIdFilter: {
+      literalLike: await probe(db, `SELECT COUNT(*) AS value FROM finance_expenses WHERE source_id LIKE '${DOCUMENT_PREFIX}'`),
+      boundLike: await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses WHERE source_id LIKE ?", [DOCUMENT_PREFIX]),
+    },
+  };
 
-  const pattern = `${String(target.document_id)}:${String(target.line_id)}:%`;
-  const bindings = [SOURCE_TYPES[0], SOURCE_TYPES[1], pattern];
-  const [current, leftJoin, matchingRows, sumWithoutReversalExclusion, relatedReversals] = await Promise.all([
-    checkedTotal(db, CURRENT_QUERY, bindings),
-    checkedTotal(db, LEFT_JOIN_QUERY, bindings),
-    checkedTotal(db, `SELECT COUNT(*) AS total FROM finance_expenses
-      WHERE entry_type='EXPENSE' AND source_type IN (?,?) AND source_id LIKE ?`, bindings),
-    checkedTotal(db, `SELECT COALESCE(SUM(original_amount_minor),0) AS total FROM finance_expenses
-      WHERE entry_type='EXPENSE' AND source_type IN (?,?) AND source_id LIKE ?`, bindings),
-    checkedTotal(db, `SELECT COUNT(*) AS total FROM finance_expenses r
-      JOIN finance_expenses e ON r.reverses_expense_id=e.id
-      WHERE e.entry_type='EXPENSE' AND e.source_type IN (?,?) AND e.source_id LIKE ?`, bindings),
-  ]);
+  const existingSource = await firstExistingSourceId(db);
+  const exactBound = existingSource.status === "PASS" && existingSource.sourceId
+    ? await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses WHERE source_id = ?", [existingSource.sourceId])
+    : existingSource.status === "FAIL"
+      ? { status: "FAIL" as const, error: existingSource.error }
+      : { status: "FAIL" as const, error: "NO_EXISTING_SOURCE_ID" };
 
   return Response.json({
-    target: "invoice-946154186-line-chatgpt-import-2-product-1174",
-    current,
-    leftJoin,
-    controls: { matchingRows, sumWithoutReversalExclusion, relatedReversals },
+    target: "finance-expenses-minimal-read-only-probe",
+    d1Binding: "DB",
+    harness: "fresh-statement-and-try-catch-per-query; sequential; no-input; no-ddl; select-only",
+    ...results,
+    sourceIdFilter: { ...results.sourceIdFilter, exactBound },
   });
 }
