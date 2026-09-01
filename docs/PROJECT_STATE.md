@@ -2,10 +2,10 @@
 
 ## Production
 
-- Version: v2.29
-- Checkpoint: 59
-- Commit: `7d9578e0b8d2abbba484646aa6198868e8479334`
-- Deployment: `appgdep_6a96b5cec4b48191864aa46b5362298f`
+- Version: v2.30
+- Checkpoint: 60
+- Commit: `b99202523fb0f2d65be130c68e34eded96761167`
+- Deployment: `appgdep_6a972ff160b08191a96cfd1ed66538be`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0017_equal_microchip.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
