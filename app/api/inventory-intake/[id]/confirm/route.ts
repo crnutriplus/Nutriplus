@@ -103,6 +103,12 @@ function databaseFailureSignals(error: unknown) {
     /NOT NULL constraint failed:\s*[A-Za-z0-9_.]+/gi,
     /CHECK constraint failed:\s*[A-Za-z0-9_.]+/gi,
     /ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint/gi,
+    /no such (?:table|column):\s*[A-Za-z0-9_.]+/gi,
+    /wrong number of parameter bindings/gi,
+    /column index out of range/gi,
+    /too many SQL variables/gi,
+    /datatype mismatch/gi,
+    /SQL logic error/gi,
     /INVENTORY_[A-Z_]+/g,
   ];
   return {
@@ -613,7 +619,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     });
 
     phase = "finance_statement_build";
-    statements.push(...await invoiceFinanceStatements(db, document, lines as unknown as Record<string, unknown>[], now, operationId));
+    statements.push(...await invoiceFinanceStatements(
+      db,
+      document,
+      lines as unknown as Record<string, unknown>[],
+      now,
+      operationId,
+      (financePhase) => { phase = `finance_statement_build:${financePhase}`; },
+    ));
 
     statements.push(documentStatusStatement(db, documentId, now));
     statements.push(db.prepare("UPDATE inventory_documents SET confirmed_at=COALESCE(confirmed_at,?),confirmed_by=COALESCE(confirmed_by,?) WHERE id=?")

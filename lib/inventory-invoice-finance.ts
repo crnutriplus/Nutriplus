@@ -61,8 +61,11 @@ export function isInvoiceNonCash(sourceType: string) {
   return sourceType === LINE_NON_CASH || sourceType === LEGACY_NON_CASH;
 }
 
-async function invoiceDetails(db: D1Database, document: Row) {
+type FinanceBuildPhase = (phase: string) => void;
+
+async function invoiceDetails(db: D1Database, document: Row, onPhase?: FinanceBuildPhase) {
   if (String(document.processing_mode) !== "chatgpt_import" || !document.active_analysis_id) return null;
+  onPhase?.("analysis_lookup");
   const analysis = await db.prepare("SELECT extraction_json FROM invoice_ai_analyses WHERE id=? LIMIT 1")
     .bind(String(document.active_analysis_id)).first<Row>();
   if (!analysis) return null;
@@ -73,6 +76,7 @@ async function invoiceDetails(db: D1Database, document: Row) {
     : [];
   const currency = text(invoice.currency || payments[0]?.currency || "USD", 3).toUpperCase();
   if (!payments.length || !["USD", "CRC"].includes(currency)) return null;
+  onPhase?.("settings_lookup");
   const settings = await db.prepare("SELECT exchange_rate_crc FROM settings WHERE id=1").first<Row>();
   return {
     invoice,
@@ -82,14 +86,16 @@ async function invoiceDetails(db: D1Database, document: Row) {
   };
 }
 
-async function activeInventoryQuantity(db: D1Database, lineId: string) {
+async function activeInventoryQuantity(db: D1Database, lineId: string, onPhase?: FinanceBuildPhase) {
+  onPhase?.("inventory_quantity_lookup");
   const row = await db.prepare(`SELECT COALESCE(SUM(m.quantity_change),0) AS quantity
     FROM inventory_movements m JOIN inventory_operations o ON o.id=m.operation_id
     WHERE m.document_line_id=? AND o.status='completed'`).bind(lineId).first<Row>();
   return Math.max(0, quantity(row?.quantity));
 }
 
-async function activeRecognizedMinor(db: D1Database, documentId: string, lineId: string) {
+async function activeRecognizedMinor(db: D1Database, documentId: string, lineId: string, onPhase?: FinanceBuildPhase) {
+  onPhase?.("recognized_amount_lookup");
   const row = await db.prepare(`SELECT COALESCE(SUM(e.original_amount_minor),0) AS total
     FROM finance_expenses e
     WHERE e.entry_type='EXPENSE' AND e.source_type IN (?,?) AND e.source_id LIKE ?
@@ -136,8 +142,9 @@ export async function invoiceFinanceStatements(
   confirmedLines: Row[],
   now: string,
   operationId = `legacy-${String(document.id)}`,
+  onPhase?: FinanceBuildPhase,
 ) {
-  const details = await invoiceDetails(db, document);
+  const details = await invoiceDetails(db, document, onPhase);
   if (!details) return [] as D1PreparedStatement[];
   const paymentWeights = details.payments.map((payment) => moneyMinor(payment.amount, details.currency));
   if (!paymentWeights.some(Boolean)) return [] as D1PreparedStatement[];
@@ -149,8 +156,8 @@ export async function invoiceFinanceStatements(
     const requestedQuantity = quantity(line.totalToAdd ?? line.total_to_add ?? line.requestedQuantity);
     const totalMinor = centsFromEvidence(line);
     if (!lineId || fullQuantity <= 0 || totalMinor <= 0) continue;
-    const currentInventory = await activeInventoryQuantity(db, lineId);
-    const activeFinancial = await activeRecognizedMinor(db, String(document.id), lineId);
+    const currentInventory = await activeInventoryQuantity(db, lineId, onPhase);
+    const activeFinancial = await activeRecognizedMinor(db, String(document.id), lineId, onPhase);
     const explicitTargetQuantity = line.financialTargetQuantity == null ? null : quantity(line.financialTargetQuantity);
     const targetQuantity = explicitTargetQuantity == null
       ? Math.min(fullQuantity, currentInventory + requestedQuantity)
@@ -158,6 +165,7 @@ export async function invoiceFinanceStatements(
     const newlyRecognized = Math.round(totalMinor * targetQuantity / fullQuantity) - activeFinancial;
     if (newlyRecognized <= 0) continue;
     const allocations = allocate(newlyRecognized, paymentWeights);
+    onPhase?.("expense_statement_bind");
     details.payments.forEach((payment, paymentIndex) => {
       const statement = statementFor(db, details, document, line, operationId, now, allocations[paymentIndex], payment, paymentIndex);
       if (statement) statements.push(statement);
