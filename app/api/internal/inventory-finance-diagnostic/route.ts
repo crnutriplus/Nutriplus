@@ -24,9 +24,16 @@ const LEFT_JOIN_QUERY = `SELECT COALESCE(SUM(e.original_amount_minor),0) AS tota
     AND e.source_id LIKE ?
     AND r.id IS NULL`;
 
-function errorMessage(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error || "Unknown D1 error");
-  return message.replace(/\s+/g, " ").slice(0, 1200);
+function errorCode(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (/wrong number of parameter bindings/i.test(message)) return "WRONG_NUMBER_OF_BINDINGS";
+  if (/no such column/i.test(message)) return "NO_SUCH_COLUMN";
+  if (/no such table/i.test(message)) return "NO_SUCH_TABLE";
+  if (/syntax error/i.test(message)) return "SQLITE_SYNTAX_ERROR";
+  if (/datatype mismatch/i.test(message)) return "SQLITE_DATATYPE_MISMATCH";
+  if (/SQLITE_ERROR/i.test(message)) return "SQLITE_ERROR";
+  if (/D1_ERROR/i.test(message)) return "D1_ERROR";
+  return "UNCLASSIFIED_D1_ERROR";
 }
 
 async function checkedTotal(db: D1Database, sql: string, bindings: string[]) {
@@ -34,7 +41,7 @@ async function checkedTotal(db: D1Database, sql: string, bindings: string[]) {
     const row = await db.prepare(sql).bind(...bindings).first<Row>();
     return { status: "PASS" as const, total: Number(row?.total || 0) };
   } catch (error) {
-    return { status: "FAIL" as const, error: errorMessage(error) };
+    return { status: "FAIL" as const, error: errorCode(error) };
   }
 }
 
