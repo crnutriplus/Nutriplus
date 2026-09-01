@@ -2,18 +2,18 @@
 
 ## Production
 
-- Version: v2.28
-- Checkpoint: 49
-- Commit: `4a4f5bad66e6d22828bfaa5c8deba453b72d2c2f`
-- Deployment: `appgdep_6a960f8e8cc48191910add3b61a6f5ee`
+- Version: v2.29
+- Checkpoint: 59
+- Commit: `7d9578e0b8d2abbba484646aa6198868e8479334`
+- Deployment: `appgdep_6a96b5cec4b48191864aa46b5362298f`
 - URL: https://nutriplus-precios.ever1822.chatgpt.site/
 - Last production migration: `0017_equal_microchip.sql`
 - Access mode: private/custom; one owner/admin, no external visitors
 
 ## Current development
 
-- v2.28 está publicada como hotfix de Facturas/Inventario: un SKU de proveedor huérfano se conserva como evidencia original y no bloquea un producto canónico vigente seleccionado; un SKU con dueño vigente distinto sigue bloqueado sin reasignación. Las referencias reanudadas a productos eliminados solo se recuperan por código canónico único.
-- No incluye migraciones, `0018_messy_nemesis.sql`, tablas/endpoints/UI de Clientes o CRM. El trabajo de CRM no está presente en este checkout y no se reconstruye en esta release.
+- v2.29 está publicada como hotfix de Facturas/Inventario: el reconocimiento financiero por línea compara el prefijo estructurado de `source_id` literalmente con `instr(...)=1`; D1 ya no ejecuta el `LIKE` que fallaba en Calmify. El ledger, reversas, reproceso y reintentos permanecen append-only e idempotentes.
+- El endpoint temporal `/api/internal/inventory-finance-diagnostic` fue retirado antes de publicar. No se añadió migración, `0018_messy_nemesis.sql`, tablas/endpoints/UI de Clientes ni CRM; el trabajo de CRM no está presente en este checkout y no se reconstruye en esta release.
 
 ## Security
 
