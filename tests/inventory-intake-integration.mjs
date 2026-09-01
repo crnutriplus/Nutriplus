@@ -212,6 +212,16 @@ const sameSkuSecondConfirm = await call(`/api/inventory-intake/${sameSkuSecondIn
 });
 assert.equal(sameSkuSecondConfirm.response.status, 200, JSON.stringify(sameSkuSecondConfirm.body));
 assert.equal((await call("/api/products?code=850008889936")).body.product.quantityAvailable, 2);
+DB.sqlite.prepare("UPDATE products SET quantity_available=0 WHERE id=?").run(calmifyProduct.id);
+const insufficientInvoiceReversal = await call("/api/inventory-intake/operations/ingress-iherb-same-sku-002/reverse", {
+  method: "POST",
+  body: JSON.stringify({ operationId: "reversal-iherb-insufficient-stock-001", reason: "Unidades ya utilizadas" }),
+});
+assert.equal(insufficientInvoiceReversal.response.status, 409);
+assert.match(insufficientInvoiceReversal.body.error, /No hay inventario suficiente/);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM inventory_operations WHERE id='reversal-iherb-insufficient-stock-001'").first()).total), 0);
+assert.equal(Number((await DB.prepare("SELECT COUNT(*) AS total FROM finance_expenses WHERE source_id LIKE 'reversal-iherb-insufficient-stock-001:%'").first()).total), 0);
+DB.sqlite.prepare("UPDATE products SET quantity_available=2 WHERE id=?").run(calmifyProduct.id);
 
 // A live supplier alias remains protected: a different explicitly selected
 // product sees both names and cannot steal or merge the alias.

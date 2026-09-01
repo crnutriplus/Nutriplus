@@ -7,6 +7,13 @@ NutriPlus mantiene dos identificadores independientes:
 
 `package.json` usa SemVer, por lo que representa la versión pública `2.23` como `2.23.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
 
+## 2.30 — 2026-09-01
+
+- Revertir un ingreso de factura usa coincidencia literal del identificador financiero estructurado y conserva operación, inventario, progreso y ledger en una sola transacción append-only. Stock insuficiente bloquea sin cambios parciales; retry y reproceso permanecen idempotentes.
+- Las devoluciones completadas de pedidos compensan la vista financiera de la entrega original: ventas netas, COGS y rentabilidad se reducen por las unidades devueltas, mientras el snapshot y la ruta cerrada permanecen históricos.
+- Caja solo cambia cuando existe un `REFUND` real en el ledger de pagos. Una devolución de producto sin reembolso no fabrica salidas de dinero.
+- No se añadió migración ni se tocaron Clientes/CRM, `0018_messy_nemesis.sql`, Web Push, seguridad o integraciones bancarias.
+
 ## 2.29 — 2026-09-01
 
 - El reconocimiento financiero de una línea de factura ahora compara el prefijo estructurado de `source_id` literalmente con `instr(...)=1`, en lugar de `LIKE`. Esto evita el error `SQLITE_ERROR` reproducido en D1 con el prefijo de Calmify y evita que `%` o `_` de un identificador se interpreten como comodines.

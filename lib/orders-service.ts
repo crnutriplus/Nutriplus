@@ -397,6 +397,8 @@ function throwInsufficient(shortages: Array<{ productId: number; productName: st
 
 function orderHeaderFromRow(row: Row) {
   const paid = Number(row.paid_total || 0);
+  const deliveredUnits = Number(row.delivered_units || 0);
+  const returnedUnits = Number(row.returned_units || 0);
   return {
     id: String(row.id),
     orderNumber: String(row.order_number),
@@ -416,6 +418,7 @@ function orderHeaderFromRow(row: Row) {
     routeId: row.route_id ? String(row.route_id) : null,
     routePosition: row.route_position == null ? null : Number(row.route_position),
     status: String(row.status),
+    returnStatus: returnedUnits <= 0 ? "NONE" : returnedUnits >= deliveredUnits ? "RETURNED" : "PARTIALLY_RETURNED",
     currency: String(row.currency),
     subtotal: Number(row.subtotal),
     discountTotal: Number(row.discount_total),
@@ -480,6 +483,10 @@ export async function loadOrder(db: D1Database, orderId: string) {
     sd.created_at AS special_created_at,sd.updated_at AS special_updated_at,
     COALESCE((SELECT SUM(CASE WHEN p.payment_type='PAYMENT' THEN p.amount ELSE -p.amount END)
       FROM order_payments p WHERE p.order_id=o.id AND p.status='POSTED'),0) AS paid_total
+    ,COALESCE((SELECT SUM(fl.quantity) FROM order_fulfillment_lines fl
+      JOIN order_fulfillments f ON f.id=fl.fulfillment_id WHERE f.order_id=o.id),0) AS delivered_units
+    ,COALESCE((SELECT SUM(rl.quantity) FROM order_return_lines rl
+      JOIN order_returns r ON r.id=rl.return_id WHERE r.order_id=o.id AND r.status='COMPLETED'),0) AS returned_units
     FROM orders o LEFT JOIN special_order_details sd ON sd.order_id=o.id WHERE o.id=? LIMIT 1`).bind(orderId).first<Row>();
   if (!row) return null;
   const [lines, payments, route, receiptLines] = await Promise.all([
@@ -609,6 +616,10 @@ export async function listOrders(db: D1Database, request: Request) {
       COALESCE((SELECT SUM(l.quantity) FROM order_lines l WHERE l.order_id=o.id AND l.removed_at IS NULL),0) AS unit_total,
       (SELECT GROUP_CONCAT(l.product_name_snapshot||' × '||l.quantity,' · ')
         FROM order_lines l WHERE l.order_id=o.id AND l.removed_at IS NULL) AS product_summary,
+      COALESCE((SELECT SUM(fl.quantity) FROM order_fulfillment_lines fl
+        JOIN order_fulfillments f ON f.id=fl.fulfillment_id WHERE f.order_id=o.id),0) AS delivered_units,
+      COALESCE((SELECT SUM(rl.quantity) FROM order_return_lines rl
+        JOIN order_returns r ON r.id=rl.return_id WHERE r.order_id=o.id AND r.status='COMPLETED'),0) AS returned_units,
       (SELECT ro.position FROM route_orders ro WHERE ro.order_id=o.id AND ro.removed_at IS NULL LIMIT 1) AS route_position
       FROM orders o LEFT JOIN special_order_details sd ON sd.order_id=o.id ${where}
       ORDER BY COALESCE(o.scheduled_delivery_date,'9999-12-31'),

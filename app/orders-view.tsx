@@ -93,6 +93,7 @@ export type OrderRecord = {
   deliveryInstructions: string | null;
   scheduledDeliveryDate: string | null;
   status: OrderStatus;
+  returnStatus: "NONE" | "PARTIALLY_RETURNED" | "RETURNED";
   subtotal: number;
   discountTotal: number;
   deliveryFee: number;
@@ -1111,7 +1112,7 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
       {visibleOrders.map((order, index) => <article className={`orders-card status-${order.status.toLowerCase()}`} key={order.id}>
         {section === "deliveries" && !["DELIVERED", "CANCELLED"].includes(order.status) && <div className="orders-route-controls"><button onClick={() => void moveOrder(index, -1)} disabled={index === 0 || routeBusy} aria-label={`Subir ${order.orderNumber}`}><ArrowUp /></button><span>{order.routePosition || index + 1}</span><button onClick={() => void moveOrder(index, 1)} disabled={index === orders.length - 1 || routeBusy} aria-label={`Bajar ${order.orderNumber}`}><ArrowDown /></button></div>}
         <div className="orders-card-main">
-          <header><div><span className="orders-number">Número: {order.orderNumber}</span><h2>{order.customerName}</h2></div><span className={`orders-status ${order.status.toLowerCase()}`}>{STATUS_LABELS[order.status]}</span></header>
+          <header><div><span className="orders-number">Número: {order.orderNumber}</span><h2>{order.customerName}</h2></div><span className={`orders-status ${order.status.toLowerCase()}`}>{order.returnStatus === "RETURNED" ? "Devuelto" : order.returnStatus === "PARTIALLY_RETURNED" ? "Parcialmente devuelto" : STATUS_LABELS[order.status]}</span></header>
           <p className="orders-products">{order.productSummary || `${order.lineCount} productos`} </p>
           <div className="orders-meta"><span><CalendarDays />{dateLabel(order.scheduledDeliveryDate)}</span>{order.phoneRaw && <span><Phone />{order.phoneRaw}</span>}{order.deliveryAddress && <span><MapPin />{order.deliveryAddress}</span>}</div>
           {order.orderType === "SPECIAL_ORDER" && <div className="orders-special-state"><ShoppingBag />{SPECIAL_LABELS[order.specialOrderStatus || ""] || order.specialOrderStatus}{order.estimatedArrivalDate && <small>{elapsedLabel(order.estimatedArrivalDate)}</small>}</div>}
@@ -1176,7 +1177,7 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
 
     {selected && !editor && <Modal label={`Pedido ${selected.orderNumber}`} onClose={closeDetail} wide>
       <div className="orders-detail">
-        <header className="orders-modal-head"><div><span className="eyebrow">{selected.orderNumber}</span><h2>{selected.customerName}</h2><p>{STATUS_LABELS[selected.status]} · Actualizado {dateTimeLabel(selected.updatedAt)}</p></div><button className="icon-btn" onClick={closeDetail} aria-label="Cerrar pedido"><X /></button></header>
+        <header className="orders-modal-head"><div><span className="eyebrow">{selected.orderNumber}</span><h2>{selected.customerName}</h2><p>{selected.returnStatus === "RETURNED" ? "Devuelto" : selected.returnStatus === "PARTIALLY_RETURNED" ? "Parcialmente devuelto" : STATUS_LABELS[selected.status]} · Actualizado {dateTimeLabel(selected.updatedAt)}</p></div><button className="icon-btn" onClick={closeDetail} aria-label="Cerrar pedido"><X /></button></header>
         <div className="orders-detail-summary"><span><b>{crc(selected.subtotal)}</b><small>Subtotal productos</small></span>{selected.discountTotal > 0 && <span><b>-{crc(selected.discountTotal)}</b><small>Descuento</small></span>}<span><b>+{crc(selected.deliveryFee)}</b><small>Envío</small></span><span><b>{crc(selected.total)}</b><small>Total del pedido</small></span>{selected.paidTotal > 0 && <span><b>-{crc(selected.paidTotal)}</b><small>Abonado</small></span>}<span><b>{crc(selected.balance)}</b><small>Saldo pendiente</small></span><span><b>{selected.expectedPaymentMethod ? PAYMENT_LABELS[selected.expectedPaymentMethod] : "Sin definir"}</b><small>Método esperado</small></span></div>
         <section className="orders-detail-info"><div><UserRound /><span><b>{selected.customerName}</b><small>{selected.phoneRaw || "Sin teléfono"}</small></span></div><div><MapPin /><span><b>{selected.deliveryAddress || "Sin dirección"}</b><small>{selected.deliveryInstructions || "Sin indicaciones"}</small></span></div>{(selected.orderType === "STANDARD" || selected.receiptResolvedAt) && <div><CalendarDays /><span><b>{dateLabel(selected.scheduledDeliveryDate)}</b><small>Fecha de entrega al cliente</small></span></div>}</section>
         {selected.orderType === "SPECIAL_ORDER" && <section className="orders-special-detail"><ShoppingBag /><div><b>{SPECIAL_LABELS[selected.specialOrder?.status || selected.specialOrderStatus || ""] || selected.specialOrder?.status}</b><span>Solicitud: {dateTimeLabel(selected.specialOrder?.requestedAt || selected.createdAt)}</span>{selected.estimatedArrivalDate && <span>Estimada: {dateLabel(selected.estimatedArrivalDate)} · {elapsedLabel(selected.estimatedArrivalDate)}</span>}<small>{selected.receiptResolvedAt ? "Recepción resuelta" : "La recepción todavía no autoriza inventario ni confirmación."}</small></div></section>}

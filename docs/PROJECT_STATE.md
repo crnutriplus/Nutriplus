@@ -12,8 +12,8 @@
 
 ## Current development
 
-- v2.29 está publicada como hotfix de Facturas/Inventario: el reconocimiento financiero por línea compara el prefijo estructurado de `source_id` literalmente con `instr(...)=1`; D1 ya no ejecuta el `LIKE` que fallaba en Calmify. El ledger, reversas, reproceso y reintentos permanecen append-only e idempotentes.
-- El endpoint temporal `/api/internal/inventory-finance-diagnostic` fue retirado antes de publicar. No se añadió migración, `0018_messy_nemesis.sql`, tablas/endpoints/UI de Clientes ni CRM; el trabajo de CRM no está presente en este checkout y no se reconstruye en esta release.
+- v2.30 corrige la reversión de ingresos de factura mediante coincidencia literal del `operationId` financiero y ajusta ventas netas, COGS y rentabilidad desde las devoluciones de pedido ya existentes, sin reescribir la entrega original ni reabrir rutas.
+- Caja continúa derivándose exclusivamente de pagos y reembolsos reales. No se añadió migración, `0018_messy_nemesis.sql`, tablas/endpoints/UI de Clientes ni CRM.
 
 ## Security
 

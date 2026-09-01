@@ -183,9 +183,9 @@ function reversalStatement(db: D1Database, original: Row, reversalOperationId: s
 /** Creates exactly one linked ledger reversal for each original invoice line posting. */
 export async function invoiceFinanceReversalStatements(db: D1Database, originalOperationId: string, reversalOperationId: string, reason: string, now: string) {
   const originals = await db.prepare(`SELECT * FROM finance_expenses e
-    WHERE e.entry_type='EXPENSE' AND e.source_type IN (?,?) AND e.source_id LIKE ?
+    WHERE e.entry_type='EXPENSE' AND e.source_type IN (?,?) AND instr(e.source_id, ?) > 0
       AND NOT EXISTS (SELECT 1 FROM finance_expenses r WHERE r.reverses_expense_id=e.id)`)
-    .bind(LINE_PAYMENT, LINE_NON_CASH, `%:${originalOperationId}:payment:%`).all<Row>();
+    .bind(LINE_PAYMENT, LINE_NON_CASH, `:${originalOperationId}:payment:`).all<Row>();
   return originals.results.map((original) => reversalStatement(db, original, reversalOperationId, reason, now));
 }
 

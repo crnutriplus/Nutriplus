@@ -277,13 +277,58 @@ function saleFromRow(row: Row) {
   };
 }
 
+function adjustedSaleFromRows(row: Row, lines: Row[]) {
+  const original = saleFromRow(row);
+  const active = lines.filter((line) => String(line.sale_id) === original.id);
+  if (!active.length) return { ...original, grossSales: original.totalIncome, returns: 0, returnStatus: "NONE" };
+  let originalUnits = 0;
+  let remainingUnits = 0;
+  let productGross = 0;
+  let discount = 0;
+  let productNet = 0;
+  let cogsKnown = 0;
+  let costsComplete = true;
+  for (const line of active) {
+    const sold = Math.max(0, Number(line.quantity));
+    const returned = Math.min(sold, Math.max(0, Number(line.returned_quantity || 0)));
+    const remaining = sold - returned;
+    originalUnits += sold;
+    remainingUnits += remaining;
+    productGross += sold > 0 ? Math.round(Number(line.gross_income) * remaining / sold) : 0;
+    discount += sold > 0 ? Math.round(Number(line.allocated_discount) * remaining / sold) : 0;
+    productNet += sold > 0 ? Math.round(Number(line.net_income) * remaining / sold) : 0;
+    if (remaining > 0 && line.historical_unit_cost == null) costsComplete = false;
+    else if (remaining > 0) cogsKnown += Number(line.historical_unit_cost) * remaining;
+  }
+  const deliveryIncome = remainingUnits > 0 ? original.deliveryIncome : 0;
+  const totalIncome = productNet + deliveryIncome;
+  const cogs = costsComplete ? cogsKnown : null;
+  return {
+    ...original,
+    productGross,
+    discount,
+    productNet,
+    deliveryIncome,
+    totalIncome,
+    cogs,
+    costStatus: costsComplete ? "COMPLETE" : "MISSING",
+    grossProfit: cogs == null ? null : productNet - cogs,
+    grossSales: original.totalIncome,
+    returns: Math.max(0, original.totalIncome - totalIncome),
+    returnStatus: remainingUnits === originalUnits ? "NONE" : remainingUnits === 0 ? "RETURNED" : "PARTIALLY_RETURNED",
+  };
+}
+
 export async function loadFinanceSnapshot(db: D1Database, range: { from: string; to: string }) {
   await reconcileDeliveredSales(db);
   await reconcileInventoryInvoicePayments(db);
   const timestamps = rangeTimestamps(range);
   const [salesResult, lineResult, paymentResult, receivableResult, expenseResult, templateResult, budgetResult, invoiceResult, routeResult] = await Promise.all([
     db.prepare(`SELECT * FROM finance_sales WHERE status='RECOGNIZED' AND delivered_at>=? AND delivered_at<? ORDER BY delivered_at DESC,id DESC`).bind(timestamps.from, timestamps.toExclusive).all<Row>(),
-    db.prepare(`SELECT sl.*,fs.order_id,fs.order_number,fs.delivered_at,fs.route_id
+    db.prepare(`SELECT sl.*,fs.order_id,fs.order_number,fs.delivered_at,fs.route_id,
+      COALESCE((SELECT SUM(rl.quantity) FROM order_return_lines rl
+        JOIN order_returns r ON r.id=rl.return_id
+        WHERE rl.order_line_id=sl.order_line_id AND r.status='COMPLETED'),0) AS returned_quantity
       FROM finance_sale_lines sl JOIN finance_sales fs ON fs.id=sl.sale_id
       WHERE fs.status='RECOGNIZED' AND fs.delivered_at>=? AND fs.delivered_at<? ORDER BY fs.delivered_at DESC,sl.id`).bind(timestamps.from, timestamps.toExclusive).all<Row>(),
     db.prepare(`SELECT p.*,o.order_number,o.customer_name_snapshot FROM order_payments p JOIN orders o ON o.id=p.order_id
@@ -317,7 +362,7 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
     const id = String(sourceId || "").split(":")[0];
     return invoiceMetadata.has(id) ? id : "";
   };
-  const sales = salesResult.results.map(saleFromRow);
+  const sales = salesResult.results.map((sale) => adjustedSaleFromRows(sale, lineResult.results));
   const expenses = expenseResult.results.map((row) => {
     const expense = expenseFromRow(row);
     const documentId = sourceDocumentId(expense.sourceId) || sourceDocumentId(row.reversed_source_id ? String(row.reversed_source_id) : "");
@@ -329,6 +374,8 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
   const operatingExpenses = businessExpenses.filter((item) => item.category !== "INVENTORY_PURCHASE").reduce((sum, item) => sum + signedExpense(item), 0);
   const cashExpenses = businessExpenses.filter((item) => !isInvoiceNonCash(item.sourceType));
   const allCashOut = cashExpenses.reduce((sum, item) => sum + signedExpense(item), 0);
+  const grossSalesTotal = sales.reduce((sum, sale) => sum + sale.grossSales, 0);
+  const returnsTotal = sales.reduce((sum, sale) => sum + sale.returns, 0);
   const salesTotal = sales.reduce((sum, sale) => sum + sale.totalIncome, 0);
   const productSales = sales.reduce((sum, sale) => sum + sale.productNet, 0);
   const deliveryIncome = sales.reduce((sum, sale) => sum + sale.deliveryIncome, 0);
@@ -351,8 +398,9 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
   const dailySales = sales.filter((sale) => sale.deliveredDate === today).reduce((sum, sale) => sum + sale.totalIncome, 0);
   const dailyCashIn = paymentEntries.filter((item) => costaRicaDay(item.createdAt) === today).reduce((sum, item) => sum + item.signedAmount, 0);
   const dailyExpenses = businessExpenses.filter((item) => item.date === today && item.category !== "INVENTORY_PURCHASE").reduce((sum, item) => sum + signedExpense(item), 0);
+  const saleByOrder = new Map(sales.map((sale) => [sale.orderId, sale]));
   const receivables = receivableResult.results.map((row) => {
-    const sale = saleFromRow(row);
+    const sale = saleByOrder.get(String(row.order_id)) || saleFromRow(row);
     const paid = Number(row.paid_total || 0);
     const deliveredDate = sale.deliveredDate;
     const ageDays = Math.max(0, Math.floor((Date.parse(`${today}T12:00:00Z`) - Date.parse(`${deliveredDate}T12:00:00Z`)) / 86_400_000));
@@ -372,7 +420,18 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
   sales.forEach((sale) => { day(sale.deliveredDate).sales += sale.totalIncome; });
   businessExpenses.forEach((item) => { const amount = signedExpense(item); if (!isInvoiceNonCash(item.sourceType)) day(item.date).cashOut += amount; if (item.category !== "INVENTORY_PURCHASE") day(item.date).expenses += amount; });
   paymentEntries.forEach((item) => { day(costaRicaDay(item.createdAt)).cashIn += item.signedAmount; });
-  const productProfitability = Object.values(lineResult.results.reduce<Record<string, {
+  const netLineRows: Row[] = lineResult.results.map((row): Row => {
+    const sold = Math.max(0, Number(row.quantity));
+    const returned = Math.min(sold, Math.max(0, Number(row.returned_quantity || 0)));
+    const remaining = sold - returned;
+    return {
+      ...row,
+      quantity: remaining,
+      net_income: sold > 0 ? Math.round(Number(row.net_income) * remaining / sold) : 0,
+      historical_cogs: row.historical_unit_cost == null ? null : Number(row.historical_unit_cost) * remaining,
+    };
+  }).filter((row) => Number(row.quantity) > 0);
+  const productProfitability = Object.values(netLineRows.reduce<Record<string, {
     productId: number | null; name: string; units: number; income: number; cogsKnown: number; missingCost: boolean;
   }>>((map, row) => {
     const key = row.product_id == null ? `manual:${String(row.product_name_snapshot)}` : `product:${String(row.product_id)}`;
@@ -432,6 +491,8 @@ export async function loadFinanceSnapshot(db: D1Database, range: { from: string;
     range,
     metrics: {
       sales: salesTotal,
+      grossSales: grossSalesTotal,
+      returns: returnsTotal,
       netProfit,
       operatingExpenses,
       cashNet: cashIn - allCashOut,

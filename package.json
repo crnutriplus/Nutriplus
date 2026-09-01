@@ -1,7 +1,7 @@
 {
   "name": "nutriplus-precios",
   "displayName": "Calculadora de Precios NutriPlus",
-  "version": "2.29.0",
+  "version": "2.30.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

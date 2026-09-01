@@ -144,8 +144,14 @@ const otherDocument = { ...document, id: "other%_invoice" };
 await post("ingress-literal-prefix-other-document", line(literalLine.id, 40), otherDocument);
 assert.equal(literalActiveMinor(), 2000, "the same line id in another document must not count");
 
+const d1CompatibleFinance = {
+  prepare(sql) {
+    assert.doesNotMatch(sql, /source_id\s+LIKE/i, "structured invoice finance identifiers must never use D1 LIKE");
+    return DB.prepare(sql);
+  },
+};
 const literalReversals = await invoiceFinanceReversalStatements(
-  DB, "ingress-literal-prefix-2", "reverse-literal-prefix-2", "Prueba de reversa literal", "2026-08-29T14:00:00.000Z",
+  d1CompatibleFinance, "ingress-literal-prefix-2", "reverse-literal-prefix-2", "Prueba de reversa literal", "2026-08-29T14:00:00.000Z",
 );
 assert.equal(literalReversals.length, 2, "each payment component has one reversal");
 await DB.batch(literalReversals);

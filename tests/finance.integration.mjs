@@ -54,7 +54,7 @@ async function createOrder(item, extra = {}) {
       expectedPaymentMethod: extra.expectedPaymentMethod || "SINPE",
       deliveryFee: extra.deliveryFee || 0,
       source: "MANUAL",
-      lines: [{ productId: item.id, quantity: 1, unitPriceSold: extra.unitPriceSold, discountAmount: extra.discountAmount || 0 }],
+      lines: [{ productId: item.id, quantity: extra.quantity || 1, unitPriceSold: extra.unitPriceSold, discountAmount: extra.discountAmount || 0 }],
     }),
   });
   assert.equal(result.response.status, 201, JSON.stringify(result.body));
@@ -242,6 +242,67 @@ assert.equal(finance.metrics.operatingExpenses, 1700);
 assert.equal(finance.metrics.netProfit, 13300);
 assert.equal(finance.cash.outgoing, 101700);
 assert.deepEqual(finance.payables, []);
+
+// Una devolución compensa la venta reconocida sin borrar la entrega original.
+// Inventario, COGS, venta neta y Caja mantienen ledgers independientes.
+let returnedOrder = await createOrder(catalogProduct, {
+  quantity: 2, unitPriceSold: 10000, discountAmount: 2000, deliveryFee: 1000,
+  phone: "8800-0099", scheduledDeliveryDate: "2026-08-29",
+});
+DB.sqlite.prepare("UPDATE order_lines SET historical_cost_snapshot=4000 WHERE order_id=?").run(returnedOrder.id);
+returnedOrder = (await action(returnedOrder, "payments", { amount: 19000, method: "SINPE" })).order;
+const returnedOrderPaymentId = returnedOrder.payments.find((payment) => payment.type === "PAYMENT").id;
+returnedOrder = (await action(returnedOrder, "confirm")).order;
+returnedOrder = (await action(returnedOrder, "prepare")).order;
+returnedOrder = (await action(returnedOrder, "deliver")).order;
+DB.sqlite.prepare("UPDATE delivery_routes SET status='CLOSED',closed_at='2026-08-29T20:00:00.000Z' WHERE id=?").run(returnedOrder.routeId);
+const returnLineId = returnedOrder.lines[0].id;
+const stockBeforePartialReturn = Number(DB.sqlite.prepare("SELECT quantity_available FROM products WHERE id=?").get(catalogProduct.id).quantity_available);
+const cashBeforeReturn = (await snapshot()).cash.incoming;
+const partialOperation = op("partial-return");
+const partialPayload = JSON.stringify({
+  operationId: partialOperation, version: returnedOrder.version, reason: "Una unidad devuelta",
+  lines: [{ orderLineId: returnLineId, quantity: 1, reenterInventory: true }],
+});
+const partialReturn = await call(`/api/orders/${returnedOrder.id}/returns`, { method: "POST", body: partialPayload });
+assert.equal(partialReturn.response.status, 200, JSON.stringify(partialReturn.body));
+const partialRetry = await call(`/api/orders/${returnedOrder.id}/returns`, { method: "POST", body: partialPayload });
+assert.equal(partialRetry.response.status, 200, JSON.stringify(partialRetry.body));
+assert.equal(partialRetry.body.idempotent, true);
+returnedOrder = partialReturn.body.order;
+assert.equal(Number(DB.sqlite.prepare("SELECT quantity_available FROM products WHERE id=?").get(catalogProduct.id).quantity_available), stockBeforePartialReturn + 1);
+assert.equal(Number(DB.sqlite.prepare("SELECT COUNT(*) AS total FROM inventory_movements WHERE order_id=? AND movement_type='ORDER_RETURN'").get(returnedOrder.id).total), 1);
+finance = await snapshot();
+let returnedSale = finance.sales.find((sale) => sale.orderId === returnedOrder.id);
+assert.deepEqual({ status: returnedSale.returnStatus, net: returnedSale.productNet, delivery: returnedSale.deliveryIncome, total: returnedSale.totalIncome, returns: returnedSale.returns, cogs: returnedSale.cogs }, {
+  status: "PARTIALLY_RETURNED", net: 9000, delivery: 1000, total: 10000, returns: 9000, cogs: 4000,
+});
+assert.equal(finance.cash.incoming, cashBeforeReturn, "product return without a refund must not invent a cash movement");
+
+const totalReturn = await action(returnedOrder, "returns", {
+  reason: "Segunda unidad devuelta", lines: [{ orderLineId: returnLineId, quantity: 1, reenterInventory: true }],
+});
+returnedOrder = totalReturn.order;
+finance = await snapshot();
+returnedSale = finance.sales.find((sale) => sale.orderId === returnedOrder.id);
+assert.deepEqual({ status: returnedSale.returnStatus, net: returnedSale.productNet, delivery: returnedSale.deliveryIncome, total: returnedSale.totalIncome, cogs: returnedSale.cogs }, {
+  status: "RETURNED", net: 0, delivery: 0, total: 0, cogs: 0,
+});
+assert.equal(Number(DB.sqlite.prepare("SELECT COUNT(*) AS total FROM order_returns WHERE order_id=? AND status='COMPLETED'").get(returnedOrder.id).total), 2);
+assert.equal(String(DB.sqlite.prepare("SELECT status FROM delivery_routes WHERE id=?").get(returnedOrder.routeId).status), "CLOSED");
+const refundOperation = op("returned-order-refund");
+const refundPayload = JSON.stringify({
+  operationId: refundOperation, version: returnedOrder.version, type: "REFUND",
+  reversesPaymentId: returnedOrderPaymentId, reason: "Reembolso real confirmado",
+});
+const refund = await call(`/api/orders/${returnedOrder.id}/payments`, { method: "POST", body: refundPayload });
+assert.equal(refund.response.status, 200, JSON.stringify(refund.body));
+const refundRetry = await call(`/api/orders/${returnedOrder.id}/payments`, { method: "POST", body: refundPayload });
+assert.equal(refundRetry.response.status, 200, JSON.stringify(refundRetry.body));
+assert.equal(refundRetry.body.idempotent, true);
+finance = await snapshot();
+assert.equal(finance.cash.incoming, cashBeforeReturn - 19000, "a confirmed refund affects cash exactly once");
+assert.equal(Number(DB.sqlite.prepare("SELECT COUNT(*) AS total FROM order_payments WHERE reverses_payment_id=?").get(returnedOrderPaymentId).total), 1);
 
 // Exportaciones contienen datos reales y las secciones mínimas de Finanzas v1.
 const excelExport = await call(`/api/finance/export?from=${FINANCE_TEST_FROM}&to=${FINANCE_TEST_TO}&format=excel`);
