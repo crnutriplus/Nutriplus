@@ -31,10 +31,18 @@ function normalizedValue(value: unknown): string | number {
 
 async function probe(db: D1Database, sql: string, bindings: string[] = []): Promise<Probe> {
   try {
-    // Every probe creates a fresh statement and catches only its own execution error.
     const statement = bindings.length ? db.prepare(sql).bind(...bindings) : db.prepare(sql);
     const row = await statement.first<Row>();
     return { status: "PASS", value: normalizedValue(row?.value) };
+  } catch (error) {
+    return { status: "FAIL", error: errorCode(error) };
+  }
+}
+
+async function tripleBindingProbe(db: D1Database): Promise<Probe> {
+  try {
+    const row = await db.prepare("SELECT ? AS a, ? AS b, ? AS c").bind("a", "b", "c").first<Row>();
+    return { status: "PASS", value: row?.a === "a" && row?.b === "b" && row?.c === "c" ? "a|b|c" : "UNEXPECTED" };
   } catch (error) {
     return { status: "FAIL", error: errorCode(error) };
   }
@@ -56,32 +64,31 @@ async function resolveFixedTarget(db: D1Database): Promise<Target> {
   }
 }
 
-/**
- * Temporary owner-only composition probe. It accepts no input and runs only fixed SELECT statements.
- * It intentionally avoids ensureDatabase() because that normal-app initializer may issue compatibility DDL.
- */
+/** Temporary owner-only probe. It accepts no input and executes only fixed SELECT statements. */
 export async function GET() {
   const db = getD1();
   const target = await resolveFixedTarget(db);
   if (target.status === "FAIL") return Response.json({ target, d1Binding: "DB" }, { status: 500 });
 
   const pattern = `${target.documentId}:${target.lineId}:%`;
+  // documentId and lineId are server-resolved UUIDs; interpolation here creates the requested literal control.
+  const literalPattern = `'${pattern}'`;
   const sourceTypes = [LINE_PAYMENT, LINE_NON_CASH];
-  const sourceTypeAndPattern = [...sourceTypes, pattern];
 
   const composition = {
-    inTwoBinds: await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses WHERE source_type IN (?,?)", sourceTypes),
-    entryTypeAndIn: await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses WHERE entry_type='EXPENSE' AND source_type IN (?,?)", sourceTypes),
-    entryTypeInLike: await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses WHERE entry_type='EXPENSE' AND source_type IN (?,?) AND source_id LIKE ?", sourceTypeAndPattern),
-    entryTypeOrLike: await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses WHERE entry_type='EXPENSE' AND (source_type=? OR source_type=?) AND source_id LIKE ?", sourceTypeAndPattern),
-    completeNotExistsCount: await probe(db, `SELECT COUNT(*) AS value FROM finance_expenses e
-      WHERE e.entry_type='EXPENSE' AND e.source_type IN (?,?) AND e.source_id LIKE ?
-      AND NOT EXISTS (SELECT 1 FROM finance_expenses r WHERE r.reverses_expense_id=e.id)`, sourceTypeAndPattern),
-    minimalNotExistsCount: await probe(db, `SELECT COUNT(*) AS value FROM finance_expenses e
-      WHERE NOT EXISTS (SELECT 1 FROM finance_expenses r WHERE r.reverses_expense_id=e.id)`),
-    completeNotExistsSum: await probe(db, `SELECT COALESCE(SUM(e.original_amount_minor),0) AS value FROM finance_expenses e
-      WHERE e.entry_type='EXPENSE' AND e.source_type IN (?,?) AND e.source_id LIKE ?
-      AND NOT EXISTS (SELECT 1 FROM finance_expenses r WHERE r.reverses_expense_id=e.id)`, sourceTypeAndPattern),
+    threeInnocuousBinds: await tripleBindingProbe(db),
+    exactLikeBound: await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses WHERE source_id LIKE ?", [pattern]),
+    exactLikeLiteral: await probe(db, `SELECT COUNT(*) AS value FROM finance_expenses WHERE source_id LIKE ${literalPattern}`),
+    hardcodedTypesLikeBound: await probe(db, `SELECT COUNT(*) AS value FROM finance_expenses
+      WHERE entry_type='EXPENSE'
+        AND source_type IN ('${LINE_PAYMENT}','${LINE_NON_CASH}')
+        AND source_id LIKE ?`, [pattern]),
+    boundTypesLikeLiteral: await probe(db, `SELECT COUNT(*) AS value FROM finance_expenses
+      WHERE entry_type='EXPENSE'
+        AND source_type IN (?,?)
+        AND source_id LIKE ${literalPattern}`, sourceTypes),
+    twoBoundPredicates: await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses WHERE source_type=? AND source_id LIKE ?", [LINE_PAYMENT, pattern]),
+    threeBoundPredicates: await probe(db, "SELECT COUNT(*) AS value FROM finance_expenses WHERE source_type=? AND source_id LIKE ? AND entry_type=?", [LINE_PAYMENT, pattern, "EXPENSE"]),
   };
 
   return Response.json({
