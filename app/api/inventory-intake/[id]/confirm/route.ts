@@ -83,7 +83,35 @@ class InventoryConfirmError extends Error {
   ) { super(message); }
 }
 
-function confirmErrorResponse(error: unknown) {
+function databaseFailureSignals(error: unknown) {
+  const messages: string[] = [];
+  const names: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    if (current instanceof Error) {
+      names.push(current.name);
+      messages.push(current.message);
+      current = current.cause;
+    } else break;
+  }
+  const joined = messages.join(" | ");
+  const patterns = [
+    /D1_ERROR/gi,
+    /SQLITE_[A-Z_]+/g,
+    /UNIQUE constraint failed:\s*[A-Za-z0-9_.,\s]+/gi,
+    /FOREIGN KEY constraint failed/gi,
+    /NOT NULL constraint failed:\s*[A-Za-z0-9_.]+/gi,
+    /CHECK constraint failed:\s*[A-Za-z0-9_.]+/gi,
+    /ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint/gi,
+    /INVENTORY_[A-Z_]+/g,
+  ];
+  return {
+    errorNames: [...new Set(names)].slice(0, 4),
+    databaseSignals: [...new Set(patterns.flatMap((pattern) => joined.match(pattern) || []))].slice(0, 8),
+  };
+}
+
+function confirmErrorResponse(error: unknown, phase = "unknown") {
   if (error instanceof InventoryConfirmError) {
     return Response.json({ error: error.message, title: error.title, code: error.code }, { status: error.status });
   }
@@ -110,7 +138,12 @@ function confirmErrorResponse(error: unknown) {
     }, { status: 409 });
   }
   const reference = crypto.randomUUID().slice(0, 8).toUpperCase();
-  console.error("[INVENTORY_CONFIRM]", { code: "DATABASE_WRITE_FAILED", reference, errorName: error instanceof Error ? error.name : typeof error });
+  console.error("[INVENTORY_CONFIRM]", {
+    code: "DATABASE_WRITE_FAILED",
+    reference,
+    phase,
+    ...databaseFailureSignals(error),
+  });
   return Response.json({
     error: "No pudimos guardar los cambios en este momento. El progreso guardado anteriormente se conserva y no se realizaron cambios nuevos en el inventario. Intentá nuevamente.",
     title: "Problema temporal de NutriPlus",
@@ -202,6 +235,7 @@ function originalSupplierIdentifierEvidence(
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   let operationId = "";
+  let phase = "request_validation";
   try {
     const documentId = (await context.params).id;
     const payload = await request.json() as Record<string, unknown> & { lines?: ConfirmLine[] };
@@ -210,6 +244,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const sourceLines = Array.isArray(payload.lines) ? payload.lines.filter((line) => line?.selected !== false).slice(0, 500) : [];
     if (!sourceLines.length) return Response.json({ error: "Seleccioná al menos una línea confirmada para ingresar." }, { status: 400 });
 
+    phase = "database_initialization";
     await ensureDatabase();
     const db = getD1();
     const priorResult = await loadOperationResult(db, operationId);
@@ -577,6 +612,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       }
     });
 
+    phase = "finance_statement_build";
     statements.push(...await invoiceFinanceStatements(db, document, lines as unknown as Record<string, unknown>[], now, operationId));
 
     statements.push(documentStatusStatement(db, documentId, now));
@@ -584,12 +620,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       .bind(now, user, documentId));
     statements.push(db.prepare("UPDATE inventory_operations SET status='completed',verification_status='verified',confirmed_at=? WHERE id=?").bind(now, operationId));
 
+    phase = "transaction_commit";
     try { await db.batch(statements); }
     catch (error) {
       const raced = await loadOperationResult(db, operationId);
       if (raced?.operation.status === "completed") return Response.json({ ...raced, idempotent: true });
       throw error;
     }
+    phase = "post_commit_verification";
     const result = await loadOperationResult(db, operationId);
     if (!result || result.movements.length !== lines.length) throw new Error("No se pudo verificar que todas las líneas fueran guardadas. Ninguna línea debe volver a confirmarse hasta revisar el historial.");
     return Response.json(result);
@@ -601,6 +639,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         if (existing?.operation.status === "completed") return Response.json({ ...existing, recoveredAfterConnectionCheck: true });
       } catch { /* Se devuelve el error original. */ }
     }
-    return confirmErrorResponse(error);
+    return confirmErrorResponse(error, phase);
   }
 }
