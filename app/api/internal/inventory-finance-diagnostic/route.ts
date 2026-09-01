@@ -25,6 +25,7 @@ const LEFT_JOIN_QUERY = `SELECT COALESCE(SUM(e.original_amount_minor),0) AS tota
     AND r.id IS NULL`;
 
 function errorCode(error: unknown) {
+  // Keep D1 messages and SQL out of the response, even on the private site.
   const message = error instanceof Error ? error.message : String(error || "");
   if (/wrong number of parameter bindings/i.test(message)) return "WRONG_NUMBER_OF_BINDINGS";
   if (/no such column/i.test(message)) return "NO_SUCH_COLUMN";
