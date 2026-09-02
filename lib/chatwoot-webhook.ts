@@ -9,7 +9,11 @@ export async function verifyChatwootWebhook(request:Request,raw:string,secret:st
  if(!Number.isInteger(seconds)||Math.abs(now-seconds*1000)>300000)throw new ChatwootWebhookError(401,"CHATWOOT_TIMESTAMP_INVALID");
  if(!equal(supplied,await sign(secret,`${ts}.${raw}`)))throw new ChatwootWebhookError(401,"CHATWOOT_SIGNATURE_INVALID");
  let payload:Record<string,unknown>;try{payload=JSON.parse(raw);}catch{throw new ChatwootWebhookError(400,"CHATWOOT_JSON_INVALID");}
- const event=typeof payload.event==="string"?payload.event:"";const supported=new Set(["contact_created","contact_updated","conversation_created","conversation_updated"]); const delivery=request.headers.get("x-chatwoot-delivery")||`fallback-${await sha(raw)}`;
+ const event=typeof payload.event==="string"?payload.event:"";const supported=new Set(["contact_created","contact_updated","conversation_created","conversation_updated"]); const account=payload.account&&typeof payload.account==="object"?(payload.account as Record<string,unknown>).id:""; const delivery=request.headers.get("x-chatwoot-delivery")||`fallback-${await sha(`${event}|${String(account)}|${raw}`)}`;
  return {payload,event,supported:supported.has(event),delivery};
+}
+export async function claimChatwootDelivery(db:D1Database,key:string){
+ await db.prepare("DELETE FROM crm_operations WHERE operation_type='CHATWOOT_WEBHOOK' AND created_at < datetime('now','-7 days')").run();
+ try{await db.prepare("INSERT INTO crm_operations (operation_id,operation_type,request_hash,status) VALUES (?, 'CHATWOOT_WEBHOOK', ?, 'COMPLETED')").bind(`chatwoot-${key}`,key).run();return true;}catch{return false;}
 }
 async function sha(value:string){return hex(await crypto.subtle.digest("SHA-256",encoder.encode(value)));}
