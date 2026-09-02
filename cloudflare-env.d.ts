@@ -12,6 +12,7 @@ declare global {
   var __NUTRIPLUS_PUSH_TEST_FETCH__: typeof fetch | undefined;
   var __NUTRIPLUS_CRM_SERVICE_ID__: string | undefined;
   var __NUTRIPLUS_CRM_SERVICE_SECRET__: string | undefined;
+  var __NUTRIPLUS_CHATWOOT_WEBHOOK_SECRET__: string | undefined;
 
   namespace Cloudflare {
     interface Env {
