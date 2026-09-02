@@ -13,7 +13,8 @@
 ## Current development
 
 - v2.30 corrige la reversión de ingresos de factura mediante coincidencia literal del `operationId` financiero y ajusta ventas netas, COGS y rentabilidad desde las devoluciones de pedido ya existentes, sin reescribir la entrega original ni reabrir rutas.
-- Caja continúa derivándose exclusivamente de pagos y reembolsos reales. No se añadió migración, `0018_messy_nemesis.sql`, tablas/endpoints/UI de Clientes ni CRM.
+- Caja continúa derivándose exclusivamente de pagos y reembolsos reales.
+- CRM/Chatwoot Fase 2 está implementada y validada solo localmente en una rama de trabajo: migración `0018_friendly_bedlam.sql`, customers, identidades externas, vínculos Chatwoot y API HMAC `/api/crm/*`. No está desplegada, no hay secreto productivo configurado y Chatwoot/Meta no fueron modificados.
 
 ## Security
 
