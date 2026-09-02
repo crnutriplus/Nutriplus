@@ -13,6 +13,8 @@ declare global {
   var __NUTRIPLUS_CRM_SERVICE_ID__: string | undefined;
   var __NUTRIPLUS_CRM_SERVICE_SECRET__: string | undefined;
   var __NUTRIPLUS_CHATWOOT_WEBHOOK_SECRET__: string | undefined;
+  var __NUTRIPLUS_CHATWOOT_BASE_URL__: string | undefined;
+  var __NUTRIPLUS_CHATWOOT_API_TOKEN__: string | undefined;
 
   namespace Cloudflare {
     interface Env {
@@ -27,6 +29,9 @@ declare global {
       VAPID_SUBJECT?: string;
       CRM_SERVICE_ID?: string;
       CRM_SERVICE_SECRET?: string;
+      CHATWOOT_WEBHOOK_SECRET?: string;
+      CHATWOOT_BASE_URL?: string;
+      CHATWOOT_API_TOKEN?: string;
     }
   }
 }

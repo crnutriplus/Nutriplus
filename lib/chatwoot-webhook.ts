@@ -16,4 +16,7 @@ export async function claimChatwootDelivery(db:D1Database,key:string){
  await db.prepare("DELETE FROM crm_operations WHERE operation_type='CHATWOOT_WEBHOOK' AND created_at < datetime('now','-7 days')").run();
  try{await db.prepare("INSERT INTO crm_operations (operation_id,operation_type,request_hash,status) VALUES (?, 'CHATWOOT_WEBHOOK', ?, 'COMPLETED')").bind(`chatwoot-${key}`,key).run();return true;}catch{return false;}
 }
+export async function releaseChatwootDelivery(db:D1Database,key:string){
+ await db.prepare("DELETE FROM crm_operations WHERE operation_id=? AND operation_type='CHATWOOT_WEBHOOK'").bind(`chatwoot-${key}`).run();
+}
 async function sha(value:string){return hex(await crypto.subtle.digest("SHA-256",encoder.encode(value)));}

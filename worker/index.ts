@@ -18,6 +18,8 @@ interface Env {
   CRM_SERVICE_ID?: string;
   CRM_SERVICE_SECRET?: string;
   CHATWOOT_WEBHOOK_SECRET?: string;
+  CHATWOOT_BASE_URL?: string;
+  CHATWOOT_API_TOKEN?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -52,6 +54,8 @@ const worker = {
     globalThis.__NUTRIPLUS_CRM_SERVICE_ID__ = env.CRM_SERVICE_ID;
     globalThis.__NUTRIPLUS_CRM_SERVICE_SECRET__ = env.CRM_SERVICE_SECRET;
     globalThis.__NUTRIPLUS_CHATWOOT_WEBHOOK_SECRET__ = env.CHATWOOT_WEBHOOK_SECRET;
+    globalThis.__NUTRIPLUS_CHATWOOT_BASE_URL__ = env.CHATWOOT_BASE_URL;
+    globalThis.__NUTRIPLUS_CHATWOOT_API_TOKEN__ = env.CHATWOOT_API_TOKEN;
     const url = new URL(request.url);
 
     if (url.pathname === "/_vinext/image") {
