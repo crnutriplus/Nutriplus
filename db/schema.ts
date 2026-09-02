@@ -890,3 +890,41 @@ export const productDeletionRows = sqliteTable("product_deletion_rows", {
   index("product_deletion_rows_pending_idx").on(table.deletionId, table.processed, table.id),
   index("product_deletion_rows_claim_idx").on(table.deletionId, table.processed, table.claimedAt, table.id),
 ]);
+
+// CRM Phase 2: canonical customer records remain separate from immutable order snapshots.
+export const customers = sqliteTable("customers", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  phoneRaw: text("phone_raw"),
+  phoneNormalized: text("phone_normalized"),
+  customerStatus: text("customer_status").notNull().default("PROSPECT"),
+  province: text("province"), canton: text("canton"), district: text("district"),
+  defaultDeliveryAddress: text("default_delivery_address"), locationUrl: text("location_url"),
+  locationReference: text("location_reference"), latitude: real("latitude"), longitude: real("longitude"),
+  preferredPaymentMethod: text("preferred_payment_method"), version: integer("version").notNull().default(1),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("customers_phone_normalized_unique").on(table.phoneNormalized), index("customers_updated_idx").on(table.updatedAt, table.id)]);
+
+export const customerExternalIdentities = sqliteTable("customer_external_identities", {
+  id: text("id").primaryKey(), customerId: text("customer_id").notNull().references(() => customers.id, { onDelete: "restrict" }),
+  provider: text("provider").notNull(), externalAccount: text("external_account").notNull().default(""), externalId: text("external_id").notNull(), phoneNormalized: text("phone_normalized"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("customer_external_identity_unique").on(table.provider, table.externalAccount, table.externalId), index("customer_external_identities_customer_idx").on(table.customerId, table.createdAt), index("customer_external_identities_phone_idx").on(table.phoneNormalized)]);
+
+export const chatwootContactLinks = sqliteTable("chatwoot_contact_links", {
+  id: text("id").primaryKey(), chatwootAccountId: integer("chatwoot_account_id").notNull(), chatwootContactId: integer("chatwoot_contact_id").notNull(),
+  customerId: text("customer_id").notNull().references(() => customers.id, { onDelete: "restrict" }), source: text("source").notNull().default("CRM"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("chatwoot_contact_link_unique").on(table.chatwootAccountId, table.chatwootContactId), index("chatwoot_contact_links_customer_idx").on(table.customerId, table.createdAt)]);
+
+export const chatwootConversationOrderLinks = sqliteTable("chatwoot_conversation_order_links", {
+  id: text("id").primaryKey(), chatwootAccountId: integer("chatwoot_account_id").notNull(), chatwootConversationId: integer("chatwoot_conversation_id").notNull(),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "restrict" }), linkRole: text("link_role").notNull().default("RELATED"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("chatwoot_conversation_order_link_unique").on(table.chatwootAccountId, table.chatwootConversationId, table.orderId, table.linkRole), index("chatwoot_conversation_order_links_order_idx").on(table.orderId, table.createdAt), index("chatwoot_conversation_order_links_conversation_idx").on(table.chatwootAccountId, table.chatwootConversationId)]);
+
+export const crmOperations = sqliteTable("crm_operations", {
+  operationId: text("operation_id").primaryKey(), operationType: text("operation_type").notNull(), requestHash: text("request_hash").notNull(), status: text("status").notNull().default("PENDING"), responseJson: text("response_json"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), completedAt: text("completed_at"),
+});
