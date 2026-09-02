@@ -15,6 +15,8 @@ interface Env {
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
   VAPID_SUBJECT?: string;
+  CRM_SERVICE_ID?: string;
+  CRM_SERVICE_SECRET?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -46,6 +48,8 @@ const worker = {
     globalThis.__NUTRIPLUS_VAPID_PUBLIC_KEY__ = env.VAPID_PUBLIC_KEY;
     globalThis.__NUTRIPLUS_VAPID_PRIVATE_KEY__ = env.VAPID_PRIVATE_KEY;
     globalThis.__NUTRIPLUS_VAPID_SUBJECT__ = env.VAPID_SUBJECT;
+    globalThis.__NUTRIPLUS_CRM_SERVICE_ID__ = env.CRM_SERVICE_ID;
+    globalThis.__NUTRIPLUS_CRM_SERVICE_SECRET__ = env.CRM_SERVICE_SECRET;
     const url = new URL(request.url);
 
     if (url.pathname === "/_vinext/image") {

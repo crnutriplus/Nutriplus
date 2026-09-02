@@ -10,6 +10,8 @@ declare global {
   var __NUTRIPLUS_VAPID_PRIVATE_KEY__: string | undefined;
   var __NUTRIPLUS_VAPID_SUBJECT__: string | undefined;
   var __NUTRIPLUS_PUSH_TEST_FETCH__: typeof fetch | undefined;
+  var __NUTRIPLUS_CRM_SERVICE_ID__: string | undefined;
+  var __NUTRIPLUS_CRM_SERVICE_SECRET__: string | undefined;
 
   namespace Cloudflare {
     interface Env {
@@ -22,6 +24,8 @@ declare global {
       VAPID_PUBLIC_KEY?: string;
       VAPID_PRIVATE_KEY?: string;
       VAPID_SUBJECT?: string;
+      CRM_SERVICE_ID?: string;
+      CRM_SERVICE_SECRET?: string;
     }
   }
 }
