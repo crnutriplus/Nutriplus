@@ -127,6 +127,13 @@
       "when": 1787970210338,
       "tag": "0017_equal_microchip",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1788363474727,
+      "tag": "0018_friendly_bedlam",
+      "breakpoints": true
     }
   ]
 }
