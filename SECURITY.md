@@ -4,11 +4,11 @@ Este documento describe los controles presentes y las reglas obligatorias para c
 
 ## Modelo de acceso actual
 
-El sitio publicado utiliza una política de acceso administrada por ChatGPT Sites y, al momento de esta auditoría, está restringido al propietario. La aplicación incluye helpers de Sign in with ChatGPT en `app/chatgpt-auth.ts`, pero las páginas y Route Handlers actuales no los invocan para autorizar cada operación.
+El Worker aplica una barrera *deny-by-default* antes de enrutar la aplicación. Requiere una identidad de Sign in with ChatGPT entregada por Sites y la compara contra una lista de emails autorizados configurada solo en el runtime. Si falta la configuración o la identidad, las páginas redirigen al inicio de sesión y las APIs empresariales responden `401`.
 
-No existe un sistema propio de roles (administración, empleados o clientes). Los endpoints dependen de la barrera de acceso de la plataforma; `lib/request-user.ts` usa encabezados de identidad confiables cuando están disponibles únicamente para atribuir acciones y aplica una etiqueta genérica si faltan.
+Las únicas excepciones sin sesión de usuario son el flujo de Sign in with ChatGPT, recursos estáticos y las fronteras de integración: `/api/integrations/chatwoot/webhook` (HMAC de Chatwoot) y `/api/crm/*` (HMAC de servicio). Esas excepciones no aceptan tráfico anónimo sin su verificación criptográfica correspondiente.
 
-Antes de ampliar el acceso a más personas o crear portales, se debe diseñar autorización de servidor por rol y recurso. Identidad no equivale a autorización.
+No existe todavía un sistema propio de roles (administración, empleados o clientes). Antes de ampliar el acceso a más personas o crear portales, se debe diseñar autorización de servidor por rol y recurso. Identidad no equivale a autorización.
 
 ## Secretos
 
@@ -57,7 +57,7 @@ Hallazgo pendiente: la carga normal determina actualmente PDF/imagen por MIME de
 - No ejecutar restauraciones sobre producción como prueba.
 - En Pedidos, `expected_payment_method` es solo una expectativa y nunca autoriza ni fabrica un pago. Las recepciones de Encargos requieren `operationId`, versión vigente, producto existente y una decisión explícita entre entrada nueva o stock ya ingresado; marcar recibido por sí solo no mueve inventario.
 
-Las rutas `/api/orders/*` y `/api/delivery-routes/*`, incluidas fulfillments, impresión, cierre, `/special-order/transition` y `/special-order/receipts`, dependen actualmente de la política privada de Sites. Deben incorporarse explícitamente a la autorización por rol/recurso antes de abrir el Site a empleados, clientes o público. La rama experimental `security/phase-3b1` no forma parte de esta implementación.
+Las rutas `/api/orders/*` y `/api/delivery-routes/*`, incluidas fulfillments, impresión, cierre, `/special-order/transition` y `/special-order/receipts`, están protegidas por la barrera de aplicación de identidad autorizada. Deben incorporarse controles explícitos de rol/recurso antes de abrir el uso a empleados, clientes o público amplio.
 
 ## Logging seguro
 
