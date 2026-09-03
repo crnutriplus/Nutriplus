@@ -3,6 +3,7 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { ensureDatabase } from "../db";
 import { reconcileNotifications } from "../lib/notifications";
+import { siteAccessDecision, siteUnauthorizedResponse } from "../lib/site-access";
 
 interface Env {
   ASSETS: Fetcher;
@@ -20,6 +21,8 @@ interface Env {
   CHATWOOT_WEBHOOK_SECRET?: string;
   CHATWOOT_BASE_URL?: string;
   CHATWOOT_API_TOKEN?: string;
+  NUTRIPLUS_APP_AUTH_MODE?: string;
+  NUTRIPLUS_ALLOWED_USER_EMAILS?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -57,6 +60,12 @@ const worker = {
     globalThis.__NUTRIPLUS_CHATWOOT_BASE_URL__ = env.CHATWOOT_BASE_URL;
     globalThis.__NUTRIPLUS_CHATWOOT_API_TOKEN__ = env.CHATWOOT_API_TOKEN;
     const url = new URL(request.url);
+
+    const access = siteAccessDecision(request, {
+      mode: env.NUTRIPLUS_APP_AUTH_MODE,
+      allowedEmails: env.NUTRIPLUS_ALLOWED_USER_EMAILS,
+    });
+    if (!access.allowed) return siteUnauthorizedResponse(request);
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];

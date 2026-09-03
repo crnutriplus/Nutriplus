@@ -8,7 +8,7 @@ const BUCKET = new LocalR2Bucket();
 const workerUrl = new URL("../dist/server/index.js", import.meta.url);
 workerUrl.searchParams.set("invoiceFinance", `${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
-const env = { DB, BUCKET, ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } };
+const env = { DB, BUCKET, NUTRIPLUS_APP_AUTH_MODE: "disabled", ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
 await worker.fetch(new Request("http://local.test/api/settings"), env, ctx);
 

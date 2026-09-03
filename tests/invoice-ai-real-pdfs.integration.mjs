@@ -18,6 +18,7 @@ workerUrl.searchParams.set("real-invoice-ai", `${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
 const env = {
   DB,
+  NUTRIPLUS_APP_AUTH_MODE: "disabled",
   BUCKET,
   OPENAI_API_KEY: ["sk", "test", "abcdefghijklmnopqrstuvwxyz0123456789"].join("-"),
   INVOICE_AI_ENABLED: "true",

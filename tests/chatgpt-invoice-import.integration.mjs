@@ -22,6 +22,7 @@ workerUrl.searchParams.set("chatgpt-invoice-import", `${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
 const env = {
   DB,
+  NUTRIPLUS_APP_AUTH_MODE: "disabled",
   BUCKET,
   OPENAI_API_KEY: ["sk", "test", "unused-chatgpt-import-key-000000000000"].join("-"),
   INVOICE_AI_ENABLED: "true",
