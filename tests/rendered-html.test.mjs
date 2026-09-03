@@ -23,6 +23,7 @@ test("renders development preview metadata", async () => {
       headers: { accept: "text/html" },
     }),
     {
+      NUTRIPLUS_APP_AUTH_MODE: "disabled",
       ASSETS: {
         fetch: async () => new Response("Not found", { status: 404 }),
       },

@@ -22,6 +22,7 @@ workerUrl.searchParams.set("real-invoice-storage", `${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
 const env = {
   DB,
+  NUTRIPLUS_APP_AUTH_MODE: "disabled",
   BUCKET,
   INVOICE_AI_ENABLED: "false",
   ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },

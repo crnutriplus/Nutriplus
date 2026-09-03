@@ -48,6 +48,7 @@ const ctx = {
 };
 const env = {
   DB,
+  NUTRIPLUS_APP_AUTH_MODE: "disabled",
   ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
   IMAGES: { input() { throw new Error("Images are not used in notification tests."); } },
   ...push.env,

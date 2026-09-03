@@ -8,6 +8,7 @@ workerUrl.searchParams.set("ordersPhase2", `${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
 const env = {
   DB,
+  NUTRIPLUS_APP_AUTH_MODE: "disabled",
   ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
   IMAGES: { input() { throw new Error("Images are not used in order tests."); } },
 };
