@@ -18,7 +18,7 @@ export function parseCrmPanelContext(url: URL): CrmPanelContext {
   return { accountId: integer(url.searchParams.get("account_id"), "account_id"), contactId: integer(url.searchParams.get("contact_id"), "contact_id"), conversationId: conversation ? integer(conversation, "conversation_id") : null };
 }
 
-async function linkedCustomer(db: D1Database, context: CrmPanelContext) {
+export async function linkedCrmPanelCustomer(db: D1Database, context: CrmPanelContext) {
   const customer = await one(db, `SELECT c.* FROM chatwoot_contact_links l JOIN customers c ON c.id=l.customer_id WHERE l.chatwoot_account_id=? AND l.chatwoot_contact_id=?`, context.accountId, context.contactId);
   if (!customer) throw new CrmError("El contacto aún no está asociado a un cliente NutriPlus.", 404, "CRM_PANEL_CUSTOMER_NOT_LINKED");
   return customer;
@@ -32,7 +32,7 @@ const orderSelect = `SELECT o.*, ${paymentSql} AS paid_total,
   FROM orders o`;
 
 export async function getCrmPanel(db: D1Database, context: CrmPanelContext) {
-  const customer = await linkedCustomer(db, context);
+  const customer = await linkedCrmPanelCustomer(db, context);
   const customerStats = await one(db, "SELECT COUNT(*) AS orders_count, MAX(created_at) AS last_order_date FROM orders WHERE customer_id=?", customer.id);
   const recent = (await rows(db, `${orderSelect} WHERE o.customer_id=? ORDER BY o.created_at DESC LIMIT 12`, customer.id)).map(orderSummary);
   const activeOrders = recent.filter((order) => !["DELIVERED", "CANCELLED", "RETURNED"].includes(String(order.status)));
@@ -42,7 +42,7 @@ export async function getCrmPanel(db: D1Database, context: CrmPanelContext) {
 
 export async function getCrmPanelOrder(db: D1Database, context: CrmPanelContext, orderId: string) {
   if (!/^order-[0-9a-f-]{36}$/i.test(orderId)) throw new CrmError("Pedido inválido.", 400, "CRM_PANEL_ORDER_INVALID");
-  const customer = await linkedCustomer(db, context);
+  const customer = await linkedCrmPanelCustomer(db, context);
   const order = await one(db, `${orderSelect} WHERE o.id=? AND o.customer_id=?`, orderId, customer.id);
   if (!order) throw new CrmError("Ese pedido no pertenece al cliente asociado.", 404, "CRM_PANEL_ORDER_NOT_FOUND");
   const lines = await rows(db, "SELECT product_name_snapshot,presentation_snapshot,quantity,unit_price_original,unit_price_sold,discount_amount,line_total FROM order_lines WHERE order_id=? AND removed_at IS NULL ORDER BY position", orderId);
