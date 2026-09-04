@@ -12,7 +12,7 @@ function request(path, init = {}) {
 }
 
 test("denies anonymous application pages and business APIs", () => {
-  for (const path of ["/", "/api/orders", "/api/products", "/api/inventory-intake", "/api/finance"]) {
+  for (const path of ["/", "/api/orders", "/api/products", "/api/inventory-intake", "/api/finance", "/operations/crm-panel", "/api/operations/crm-panel"]) {
     const decision = siteAccessDecision(request(path), options);
     assert.equal(decision.allowed, false, path);
   }
