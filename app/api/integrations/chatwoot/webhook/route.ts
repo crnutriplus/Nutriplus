@@ -1,6 +1,16 @@
 import { ChatwootWebhookError, verifyChatwootWebhook } from "@/lib/chatwoot-webhook";
 import { getD1 } from "@/db";
-import { chatwootWebhookJobFromPayload, enqueueChatwootWebhookJob, ensureChatwootWebhookOutboxSchema } from "@/lib/chatwoot-webhook-outbox";
+import { chatwootWebhookJobFromPayload, enqueueChatwootWebhookJob, ensureChatwootWebhookOutboxSchema, isChatwootWebhookOutboxMissingTableError } from "@/lib/chatwoot-webhook-outbox";
+
+async function persistChatwootWebhookJob(db: D1Database, job: NonNullable<ReturnType<typeof chatwootWebhookJobFromPayload>>) {
+  try {
+    return await enqueueChatwootWebhookJob(db, job);
+  } catch (error) {
+    if (!isChatwootWebhookOutboxMissingTableError(error)) throw error;
+    await ensureChatwootWebhookOutboxSchema(db);
+    return enqueueChatwootWebhookJob(db, job);
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -12,8 +22,7 @@ export async function POST(request: Request) {
     const job = chatwootWebhookJobFromPayload(result.event, result.delivery, result.payload);
     if (!job) throw new ChatwootWebhookError(400, "CHATWOOT_RESOURCE_INVALID");
     const db = getD1();
-    await ensureChatwootWebhookOutboxSchema(db);
-    const queued = await enqueueChatwootWebhookJob(db, job);
+    const queued = await persistChatwootWebhookJob(db, job);
     return Response.json({ accepted: true, duplicate: !queued.created, event: result.event, supported: true }, { status: 202 });
   } catch (error) {
     const webhookError = error instanceof ChatwootWebhookError ? error : new ChatwootWebhookError(500, "CHATWOOT_WEBHOOK_INTERNAL");

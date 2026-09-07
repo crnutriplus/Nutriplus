@@ -98,12 +98,22 @@ export function chatwootWebhookJobFromPayload(eventType: string, deliveryId: str
 }
 
 export async function enqueueChatwootWebhookJob(db: D1Database, job: NewChatwootWebhookJob) {
-  await ensureChatwootWebhookOutboxSchema(db);
   const result = await db.prepare(`INSERT OR IGNORE INTO chatwoot_webhook_jobs (
     id, delivery_id, event_type, chatwoot_account_id, chatwoot_contact_id, chatwoot_conversation_id
   ) VALUES (?, ?, ?, ?, ?, ?)`)
     .bind(id(), job.deliveryId, job.eventType, job.accountId, job.contactId, job.conversationId).run();
   return { created: result.meta.changes > 0 };
+}
+
+/**
+ * D1's missing-table error is the only reason the synchronous webhook path
+ * may run the isolated bootstrap. Keeping this check narrow prevents a slow
+ * DDL batch from becoming normal isolate-startup work.
+ */
+export function isChatwootWebhookOutboxMissingTableError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /no such table:\s*chatwoot_webhook_jobs\b/i.test(message)
+    || /(?:table|relation)\s+['`"]?chatwoot_webhook_jobs['`"]?\s+(?:does not exist|not found)/i.test(message);
 }
 
 function rowToJob(row: Record<string, unknown> | null): ChatwootWebhookJob | null {
