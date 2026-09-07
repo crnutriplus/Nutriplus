@@ -10,6 +10,7 @@ const attrs = (value: Data) => object(value.custom_attributes);
 const same = (left: Data, right: Data) => Object.keys(right).every((key) => (left[key] ?? null) === (right[key] ?? null));
 const chatwootStatus: Record<string,string> = { PROSPECT: "Prospecto", CUSTOMER: "Cliente", RECURRING: "Cliente recurrente", INACTIVE: "Inactivo" };
 const chatwootPayment: Record<string,string> = { CASH: "Efectivo", SINPE: "SINPE", CARD: "Tarjeta", OTHER: "Otro" };
+const CRM_PANEL_ORIGIN = "https://nutriplus-precios.ever1822.chatgpt.site";
 
 function providerFor(contact: Data) {
   const raw = [contact.channel_type, object(contact.inbox).channel_type, object(contact.contact_inbox).channel_type].map(string).join(" ").toLowerCase();
@@ -18,6 +19,11 @@ function providerFor(contact: Data) {
   return "";
 }
 function externalIdFor(contact: Data) { return string(contact.identifier) || string(contact.source_id) || string(object(contact.contact_inbox).source_id); }
+function conversationContactId(conversation: Data) { return integer(object(object(conversation.meta).sender).id) ?? integer(object(conversation.contact).id); }
+function crmPanelUrl(accountId: number, contactId: number, conversationId: number) {
+  const query = new URLSearchParams({ account_id: String(accountId), contact_id: String(contactId), conversation_id: String(conversationId) });
+  return `${CRM_PANEL_ORIGIN}/operations/crm-panel?${query}`;
+}
 
 export async function syncContact(db: D1Database, client: ChatwootClient, accountId: number, input: Data) {
   const contact = object(input.contact).id ? object(input.contact) : input;
@@ -40,12 +46,20 @@ export async function syncContact(db: D1Database, client: ChatwootClient, accoun
 
 export async function syncConversation(db: D1Database, client: ChatwootClient, accountId: number, input: Data) {
   const conversation = object(input.conversation).id ? object(input.conversation) : input; const conversationId = integer(conversation.id); if (!conversationId) throw new CrmError("Conversación Chatwoot inválida.", 400, "CHATWOOT_CONVERSATION_INVALID");
-  const custom = attrs(conversation); const orderId = string(custom.nutriplus_order_id); if (!orderId) return { skipped: true, reason: "NO_ORDER" };
+  const custom = attrs(conversation); const contactId = conversationContactId(conversation);
+  const linked = contactId ? await db.prepare("SELECT 1 FROM chatwoot_contact_links WHERE chatwoot_account_id=? AND chatwoot_contact_id=?").bind(accountId, contactId).first() : null;
+  const panelUrl = contactId && linked ? crmPanelUrl(accountId, contactId, conversationId) : null;
+  const orderId = string(custom.nutriplus_order_id);
+  if (!orderId) {
+    const desired = panelUrl ? { nutriplus_crm_url: panelUrl } : {};
+    if (!same(custom, desired)) await client.patchConversationAttributes(accountId, conversationId, desired);
+    return { skipped: true, reason: "NO_ORDER", patched: !same(custom, desired) };
+  }
   await linkChatwootConversationOrder(db, { accountId, conversationId, orderId, linkRole: "PRIMARY" });
   const order = await db.prepare("SELECT id,status,expected_payment_method,scheduled_delivery_date,total FROM orders WHERE id=?").bind(orderId).first<Data>(); if (!order) throw new CrmError("Pedido no encontrado.", 404, "CRM_ORDER_NOT_FOUND");
   const paid = await db.prepare("SELECT COALESCE(sum(CASE WHEN payment_type='PAYMENT' THEN amount ELSE -amount END),0) AS total FROM order_payments WHERE order_id=? AND status='POSTED'").bind(orderId).first<{total:number}>();
   const paymentStatus = Number(paid?.total ?? 0) >= Number(order.total ?? 0) && Number(order.total ?? 0) > 0 ? "PAID" : Number(paid?.total ?? 0) > 0 ? "PARTIAL" : "PENDING";
-  const desired: Data = { nutriplus_order_id: order.id, order_status: order.status, payment_status: paymentStatus, delivery_method: null, delivery_date: order.scheduled_delivery_date };
+  const desired: Data = { nutriplus_order_id: order.id, order_status: order.status, payment_status: paymentStatus, delivery_method: null, delivery_date: order.scheduled_delivery_date, ...(panelUrl ? { nutriplus_crm_url: panelUrl } : {}) };
   if (!same(custom, desired)) await client.patchConversationAttributes(accountId, conversationId, desired);
   return { orderId, patched: !same(custom, desired) };
 }

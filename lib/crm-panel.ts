@@ -1,4 +1,5 @@
 import { CrmError } from "./crm";
+import type { ChatwootClient } from "./chatwoot-client";
 
 type Row = Record<string, unknown>;
 
@@ -23,6 +24,32 @@ export async function linkedCrmPanelCustomer(db: D1Database, context: CrmPanelCo
   if (!customer) throw new CrmError("El contacto aún no está asociado a un cliente NutriPlus.", 404, "CRM_PANEL_CUSTOMER_NOT_LINKED");
   return customer;
 }
+type ConversationClient = Pick<ChatwootClient, "getConversation">;
+
+function conversationContactId(conversation: Row) {
+  const meta = conversation.meta && typeof conversation.meta === "object" ? conversation.meta as Row : {};
+  const sender = meta.sender && typeof meta.sender === "object" ? meta.sender as Row : {};
+  const contact = conversation.contact && typeof conversation.contact === "object" ? conversation.contact as Row : {};
+  const value = sender.id ?? contact.id;
+  return typeof value === "number" || typeof value === "string" ? Number(value) : NaN;
+}
+
+/**
+ * Browser query parameters are only lookup keys. A conversation context is
+ * accepted only after Chatwoot confirms that it is scoped to the same account
+ * and contact that are canonically linked in NutriPlus.
+ */
+export async function validateCrmPanelContext(db: D1Database, context: CrmPanelContext, client?: ConversationClient) {
+  const customer = await linkedCrmPanelCustomer(db, context);
+  if (context.conversationId == null) return customer;
+  if (!client) throw new CrmError("No se puede validar la conversación de Chatwoot en este momento.", 503, "CRM_PANEL_CHATWOOT_NOT_CONFIGURED");
+  const conversation = await client.getConversation(context.accountId, context.conversationId);
+  const account = Number(conversation.account_id ?? context.accountId);
+  if (!Number.isSafeInteger(account) || account !== context.accountId || conversationContactId(conversation) !== context.contactId) {
+    throw new CrmError("La conversación no corresponde al contacto seleccionado.", 404, "CRM_PANEL_CONTEXT_MISMATCH");
+  }
+  return customer;
+}
 function orderSummary(row: Row) {
   const total = Number(row.total || 0), paidTotal = Math.max(0, Number(row.paid_total || 0));
   return { id: row.id, orderNumber: row.order_number, orderType: row.order_type, status: row.status, total, paidTotal, balance: Math.max(0, total - paidTotal), paymentStatus: paidTotal >= total ? "PAID" : paidTotal > 0 ? "PARTIAL" : "PENDING", deliveryMethod: row.order_type === "SPECIAL_ORDER" ? "ENCARGO" : "ENTREGA", deliveryDate: row.scheduled_delivery_date ?? null, createdAt: row.created_at };
@@ -31,8 +58,8 @@ const orderSelect = `SELECT o.*, ${paymentSql} AS paid_total,
   (SELECT sd.special_order_status FROM special_order_details sd WHERE sd.order_id=o.id) AS special_order_status
   FROM orders o`;
 
-export async function getCrmPanel(db: D1Database, context: CrmPanelContext) {
-  const customer = await linkedCrmPanelCustomer(db, context);
+export async function getCrmPanel(db: D1Database, context: CrmPanelContext, client?: ConversationClient) {
+  const customer = await validateCrmPanelContext(db, context, client);
   const customerStats = await one(db, "SELECT COUNT(*) AS orders_count, MAX(created_at) AS last_order_date FROM orders WHERE customer_id=?", customer.id);
   const recent = (await rows(db, `${orderSelect} WHERE o.customer_id=? ORDER BY o.created_at DESC LIMIT 12`, customer.id)).map(orderSummary);
   const activeOrders = recent.filter((order) => !["DELIVERED", "CANCELLED", "RETURNED"].includes(String(order.status)));
@@ -40,9 +67,9 @@ export async function getCrmPanel(db: D1Database, context: CrmPanelContext) {
   return { customer: { id: customer.id, name: customer.name, phone: customer.phone_normalized || customer.phone_raw, customerStatus: customer.customer_status, province: customer.province, canton: customer.canton, district: customer.district, defaultDeliveryAddress: customer.default_delivery_address, locationUrl: customer.location_url, locationReference: customer.location_reference, latitude: customer.latitude, longitude: customer.longitude, preferredPaymentMethod: customer.preferred_payment_method, ordersCount: Number(customerStats?.orders_count || 0), lastOrderDate: customerStats?.last_order_date ?? null }, activeOrders, recentOrders: recent, conversationOrders };
 }
 
-export async function getCrmPanelOrder(db: D1Database, context: CrmPanelContext, orderId: string) {
+export async function getCrmPanelOrder(db: D1Database, context: CrmPanelContext, orderId: string, client?: ConversationClient) {
   if (!/^order-[0-9a-f-]{36}$/i.test(orderId)) throw new CrmError("Pedido inválido.", 400, "CRM_PANEL_ORDER_INVALID");
-  const customer = await linkedCrmPanelCustomer(db, context);
+  const customer = await validateCrmPanelContext(db, context, client);
   const order = await one(db, `${orderSelect} WHERE o.id=? AND o.customer_id=?`, orderId, customer.id);
   if (!order) throw new CrmError("Ese pedido no pertenece al cliente asociado.", 404, "CRM_PANEL_ORDER_NOT_FOUND");
   const lines = await rows(db, "SELECT product_name_snapshot,presentation_snapshot,quantity,unit_price_original,unit_price_sold,discount_amount,line_total FROM order_lines WHERE order_id=? AND removed_at IS NULL ORDER BY position", orderId);

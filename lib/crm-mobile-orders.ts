@@ -1,5 +1,5 @@
 import { createCrmOrder, CrmError, linkChatwootConversationOrder } from "./crm";
-import { type CrmPanelContext, linkedCrmPanelCustomer } from "./crm-panel";
+import { type CrmPanelContext, validateCrmPanelContext } from "./crm-panel";
 import { calculatePrices, settingsFromRow } from "./pricing";
 import { syncConversationOrder } from "./chatwoot-sync";
 import { type ChatwootClient } from "./chatwoot-client";
@@ -46,7 +46,7 @@ async function canonicalLines(db: D1Database, input: Record<string, unknown>) {
 }
 
 export async function createCrmMobileOrder(db: D1Database, context: CrmPanelContext, input: Record<string, unknown>, client?: ChatwootClient) {
-  const customer = await linkedCrmPanelCustomer(db, context);
+  const customer = await validateCrmPanelContext(db, context, client);
   const lines = await canonicalLines(db, input);
   const result = await createCrmOrder(db, {
     operationId: operationId(input.operationId), customerId: customer.id, orderType: lines.orderType, lines: lines.lines,

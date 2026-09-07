@@ -32,11 +32,14 @@ function fixture() {
 }
 
 const context = { accountId: 1, contactId: 77, conversationId: 900 };
+function conversationClient(conversation = { id: 900, account_id: 1, meta: { sender: { id: 77 } } }) {
+  return { async getConversation() { return conversation; } };
+}
 
 test("CRM mobile panel resolves only the linked customer and remains read-only", async () => {
   const db = fixture();
   const writesBefore = db.sqlite.prepare("SELECT count(*) AS count FROM orders").get().count;
-  const panel = await getCrmPanel(db, context);
+  const panel = await getCrmPanel(db, context, conversationClient());
   assert.equal(panel.customer.id, customerId);
   assert.equal(panel.customer.ordersCount, 2);
   assert.equal(panel.activeOrders.length, 1);
@@ -48,11 +51,11 @@ test("CRM mobile panel resolves only the linked customer and remains read-only",
 
 test("CRM mobile panel returns order detail only for the resolved customer", async () => {
   const db = fixture();
-  const result = await getCrmPanelOrder(db, context, orderA);
+  const result = await getCrmPanelOrder(db, context, orderA, conversationClient());
   assert.equal(result.order.lines.length, 1);
   assert.equal(result.order.payments.length, 1);
   assert.equal(result.order.balance, 7000);
-  await assert.rejects(() => getCrmPanelOrder(db, { ...context, contactId: 999 }, orderA), (error) => error instanceof CrmError && error.code === "CRM_PANEL_CUSTOMER_NOT_LINKED");
+  await assert.rejects(() => getCrmPanelOrder(db, { ...context, contactId: 999 }, orderA, conversationClient()), (error) => error instanceof CrmError && error.code === "CRM_PANEL_CUSTOMER_NOT_LINKED");
   db.close();
 });
 
@@ -61,7 +64,7 @@ test("CRM mobile panel handles customers without orders, locations, or conversat
   const emptyCustomer = "customer-panel-00000000-0000-4000-8000-000000000002";
   db.sqlite.prepare("INSERT INTO customers VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(emptyCustomer, "Cliente sin pedidos", null, null, "PROSPECT", null, null, null, null, null, null, null, null, null);
   db.sqlite.prepare("INSERT INTO chatwoot_contact_links VALUES (?,?,?,?)").run("link-2", 1, 78, emptyCustomer);
-  const panel = await getCrmPanel(db, { accountId: 1, contactId: 78, conversationId: 901 });
+  const panel = await getCrmPanel(db, { accountId: 1, contactId: 78, conversationId: 901 }, conversationClient({ id: 901, account_id: 1, meta: { sender: { id: 78 } } }));
   assert.equal(panel.customer.ordersCount, 0);
   assert.equal(panel.customer.locationUrl, null);
   assert.deepEqual(panel.activeOrders, []);
@@ -71,5 +74,15 @@ test("CRM mobile panel handles customers without orders, locations, or conversat
 
 test("CRM mobile context rejects malformed browser parameters", () => {
   assert.deepEqual(parseCrmPanelContext(new URL("https://panel.test/?account_id=1&contact_id=77&conversation_id=900")), context);
+  assert.deepEqual(parseCrmPanelContext(new URL("https://panel.test/?account_id=1&contact_id=77&conversation_id=900&customer_id=other")), context);
   assert.throws(() => parseCrmPanelContext(new URL("https://panel.test/?account_id=1&contact_id=0")), (error) => error instanceof CrmError && error.code === "CRM_PANEL_CONTEXT_INVALID");
+});
+
+test("CRM mobile context rejects a tampered account, contact, or conversation before exposing data", async () => {
+  const db = fixture();
+  await assert.rejects(() => getCrmPanel(db, context, conversationClient({ id: 900, account_id: 1, meta: { sender: { id: 78 } } })), (error) => error instanceof CrmError && error.code === "CRM_PANEL_CONTEXT_MISMATCH");
+  await assert.rejects(() => getCrmPanel(db, context, conversationClient({ id: 900, account_id: 2, meta: { sender: { id: 77 } } })), (error) => error instanceof CrmError && error.code === "CRM_PANEL_CONTEXT_MISMATCH");
+  await assert.rejects(() => getCrmPanel(db, { ...context, conversationId: 901 }, conversationClient({ id: 901, account_id: 1, meta: { sender: { id: 78 } } })), (error) => error instanceof CrmError && error.code === "CRM_PANEL_CONTEXT_MISMATCH");
+  await assert.rejects(() => getCrmPanel(db, context), (error) => error instanceof CrmError && error.code === "CRM_PANEL_CHATWOOT_NOT_CONFIGURED");
+  db.close();
 });

@@ -30,6 +30,17 @@ test("links conversation orders many-to-many and only PATCHes changed owned attr
   await syncConversation(value,api,1,{id:92,custom_attributes:{nutriplus_order_id:"o-1"}}); assert.equal(value.sqlite.prepare("SELECT count(*) n FROM chatwoot_conversation_order_links").get().n,2);
   const desired=api.calls[0][3]; assert.equal((await syncConversation(value,api,1,{id:91,custom_attributes:{...input.custom_attributes,...desired}})).patched,false); assert.equal(api.calls.length,2); value.close();
 });
+test("adds the validated mobile CRM link without creating a conversation-order link", async () => {
+  const value=db(), api=client(); const customer=await syncContact(value,api,1,contact());
+  const input={id:93,meta:{sender:{id:42}},custom_attributes:{}};
+  const result=await syncConversation(value,api,1,input);
+  assert.equal(result.skipped,true); assert.equal(result.patched,true);
+  const desired=api.calls.at(-1)[3];
+  assert.match(desired.nutriplus_crm_url,/\/operations\/crm-panel\?account_id=1&contact_id=42&conversation_id=93$/);
+  assert.equal(value.sqlite.prepare("SELECT count(*) n FROM chatwoot_conversation_order_links").get().n,0);
+  await syncConversation(value,api,1,{...input,custom_attributes:desired});
+  assert.equal(api.calls.length,2); assert.ok(customer.customerId); value.close();
+});
 test("Chatwoot client retries retryable failures and classifies API errors without exposing token", async () => {
   let count=0; const fetcher=async()=>{count++;return count===1?new Response("slow",{status:429}):new Response(JSON.stringify({payload:{id:1}}),{headers:{"content-type":"application/json"}});}; const api=new ChatwootClient("https://chatwoot.test","never-log-this-token",fetcher,1); assert.equal((await api.getContact(1,1)).id,1); assert.equal(count,2);
   for (const status of [401,403,404]) { const failing=new ChatwootClient("https://chatwoot.test","never-log-this-token",async()=>new Response("x",{status}),0); await assert.rejects(()=>failing.getConversation(1,1),error=>error instanceof ChatwootApiError&&error.status===status); }
