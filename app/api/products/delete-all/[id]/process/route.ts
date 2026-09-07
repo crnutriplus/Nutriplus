@@ -58,6 +58,10 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
     const serializedProductIds = JSON.stringify(productIds);
     await db.prepare(`DELETE FROM products
       WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+      AND NOT EXISTS (
+        SELECT 1 FROM special_order_receipt_lines receipt_line
+        WHERE receipt_line.product_id=products.id
+      )
       AND julianday(replace(replace(updated_at,'T',' '),'Z','')) <= julianday(replace(replace(?,'T',' '),'Z',''))`)
       .bind(serializedProductIds, String(job.created_at)).run();
     const survivors = await db.prepare(`SELECT id FROM products
