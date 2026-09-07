@@ -7,6 +7,12 @@ NutriPlus mantiene dos identificadores independientes:
 
 `package.json` usa SemVer, por lo que representa la versión pública `2.23` como `2.23.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
 
+## 2.31 — 2026-09-07
+
+- La integración CRM con Chatwoot 4.17 ahora resuelve correctamente la identidad de contactos de Instagram y Messenger cuando `contacts#show` entrega `source_id` y `channel_type` dentro de `contact_inboxes[]`.
+- La resolución mantiene unidos `provider` y `externalId` de la misma estructura, evitando combinar señales incompatibles y permitiendo crear el vínculo canónico Contact↔Customer necesario para generar `nutriplus_crm_url`.
+- Se añadió una regresión con la forma real de Chatwoot 4.17. No se añadió migración ni se modificaron inventario, pedidos, finanzas, Web Push o autenticación.
+
 ## 2.30 — 2026-09-01
 
 - Revertir un ingreso de factura usa coincidencia literal del identificador financiero estructurado y conserva operación, inventario, progreso y ledger en una sola transacción append-only. Stock insuficiente bloquea sin cambios parciales; retry y reproceso permanecen idempotentes.
