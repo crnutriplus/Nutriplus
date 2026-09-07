@@ -560,20 +560,23 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
     return () => window.clearTimeout(timer);
   }, [loadOrders]);
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadUpcoming(), 0);
+    // The route-date chips are only rendered in Entregas. Avoid a second,
+    // expensive order-list query when opening Encargos or Historial.
+    if (section !== "deliveries") return;
+    const timer = window.setTimeout(() => void loadUpcoming(), 120);
     return () => window.clearTimeout(timer);
-  }, [loadUpcoming]);
+  }, [loadUpcoming, section]);
 
   const loadDetail = useCallback(async (id: string) => {
     setDetailLoading(true);
+    setOrderHistory(null);
     try {
-      const [result, history] = await Promise.all([
-        api<{ order: OrderRecord }>(`/api/orders/${id}`),
-        api<OrderHistoryRecord>(`/api/orders/${id}/history`),
-      ]);
+      const result = await api<{ order: OrderRecord }>(`/api/orders/${id}`);
       setSelected(result.order);
-      setOrderHistory(history);
       setPreparedChecks(new Set());
+      // History is valuable but not required to make the order actionable.
+      // Fetch it after the detail has rendered instead of extending open time.
+      void api<OrderHistoryRecord>(`/api/orders/${id}/history`).then(setOrderHistory).catch(() => undefined);
       return result.order;
     } catch (error) {
       showError(error, "No se pudo abrir el pedido.");
@@ -604,12 +607,12 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
     setSelected(order);
     const [, , , history] = await Promise.all([
       loadOrders(),
-      loadUpcoming(),
+      section === "deliveries" ? loadUpcoming() : Promise.resolve(),
       inventoryChanged ? Promise.resolve(onInventoryChanged()) : Promise.resolve(),
       api<OrderHistoryRecord>(`/api/orders/${order.id}/history`),
     ]);
     setOrderHistory(history);
-  }, [loadOrders, loadUpcoming, onInventoryChanged]);
+  }, [loadOrders, loadUpcoming, onInventoryChanged, section]);
 
   const visibleOrders = useMemo(() => {
     return orders;
@@ -781,7 +784,9 @@ export function OrdersView({ products, quotes, settings, scannedBarcode, onConsu
       setEditor(null);
       setDuplicateOrders([]);
       setNotice({ tone: "success", title: editor.id ? "Pedido actualizado" : "Borrador guardado", message: `${result.order.orderNumber} quedó guardado sin mover inventario${editor.id && ["CONFIRMED", "REOPENED"].includes(editor.status) ? "; los cambios confirmados se aplicaron por delta" : ""}.` });
-      await refreshAfterMutation(result.order, Boolean(editor.id && ["CONFIRMED", "REOPENED"].includes(editor.status)));
+      // Persistence already completed successfully. Reloading summaries and
+      // history is secondary work, so it must not keep the save action busy.
+      void refreshAfterMutation(result.order, Boolean(editor.id && ["CONFIRMED", "REOPENED"].includes(editor.status))).catch(() => undefined);
     } catch (error) { showError(error, "No se pudo guardar el pedido."); }
     finally { submitInFlight.current = false; setSaving(false); }
   }, [editor, refreshAfterMutation, saving, showError]);

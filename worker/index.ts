@@ -1,7 +1,6 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { ensureDatabase } from "../db";
 import { reconcileNotifications } from "../lib/notifications";
 import { siteAccessDecision, siteUnauthorizedResponse } from "../lib/site-access";
 import { ChatwootClient } from "../lib/chatwoot-client";
@@ -100,7 +99,6 @@ const worker = {
     const isNavigation = request.method === "GET" && request.headers.get("accept")?.includes("text/html");
     if ((isMutation || isNavigation) && url.pathname !== "/api/notifications/reconcile") {
       ctx.waitUntil((async () => {
-        await ensureDatabase();
         await reconcileNotifications(env.DB, { evaluateScheduled: isNavigation });
       })().catch(() => undefined));
     }

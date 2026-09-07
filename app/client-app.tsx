@@ -38,6 +38,8 @@ import {
   X,
 } from "lucide-react";
 import {
+  lazy,
+  Suspense,
   type ChangeEvent,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -50,10 +52,8 @@ import {
   useState,
 } from "react";
 import Image from "next/image";
-import { InventoryIntakeModal, type IntakeScanEvent } from "./inventory-intake";
-import { FinanceView } from "./finance-view";
-import { NotificationCenter } from "./notification-center";
-import { OrdersView, type OrderScanEvent } from "./orders-view";
+import type { IntakeScanEvent } from "./inventory-intake";
+import type { OrderScanEvent } from "./orders-view";
 import type { ImportChangedProduct, ImportJobRecord } from "@/lib/import-jobs";
 import type { ProductDeletionJobRecord } from "@/lib/deletion-jobs";
 import { NUTRIPLUS_PUBLIC_VERSION } from "@/lib/public-version";
@@ -83,6 +83,14 @@ import {
   saveOfflineSnapshot,
   type QueuedMutation,
 } from "@/lib/offline-store";
+
+// Operational modules are intentionally split from the calculator shell. They
+// used to mount while hidden, which made every initial visit fetch Orders,
+// Finance and inventory-intake data before the user could use the app.
+const OrdersView = lazy(async () => ({ default: (await import("./orders-view")).OrdersView }));
+const FinanceView = lazy(async () => ({ default: (await import("./finance-view")).FinanceView }));
+const NotificationCenter = lazy(async () => ({ default: (await import("./notification-center")).NotificationCenter }));
+const InventoryIntakeModal = lazy(async () => ({ default: (await import("./inventory-intake")).InventoryIntakeModal }));
 
 type Tab = "calculator" | "orders" | "products" | "finance" | "settings";
 type NumericField = "purchasePriceUsd" | "weightLb" | "code";
@@ -887,6 +895,7 @@ function initialTab(): Tab {
 
 export function NutriPlusApp() {
   const [tab, setTab] = useState<Tab>(initialTab);
+  const [mountedTabs, setMountedTabs] = useState<Set<Tab>>(() => new Set([initialTab()]));
   const [settingsPanel, setSettingsPanel] = useState<"home" | "import">(() => {
     if (typeof window === "undefined") return "home";
     const params = new URLSearchParams(window.location.search);
@@ -962,6 +971,7 @@ export function NutriPlusApp() {
       tabRef.current = next;
       setActiveNumeric(null);
       setTab(next);
+      setMountedTabs((current) => current.has(next) ? current : new Set([...current, next]));
       window.requestAnimationFrame(() => window.scrollTo({ top: scrollByTab.current[next], behavior: "auto" }));
     }
     if (next === "settings") {
@@ -1248,13 +1258,17 @@ export function NutriPlusApp() {
     (async () => {
       try {
         setIsOnline(navigator.onLine);
-        const [settingsResponse, productsResponse, quotesResponse, importsResponse, deletionsResponse] = await Promise.all([fetch("/api/settings"), fetch("/api/products?limit=5000"), fetch("/api/quotes?limit=5000"), fetch("/api/imports"), fetch("/api/products/delete-all")]);
-        const settingsData = await json<{ settings: PricingSettings }>(settingsResponse);
+        // Settings are the only data required to render the calculator shell.
+        // Catalog and import recovery continue immediately afterwards without
+        // keeping the entire application behind their network round-trips.
+        const settingsData = await json<{ settings: PricingSettings }>(await fetch("/api/settings"));
+        setSettings(settingsData.settings);
+        setLoading(false);
+        const [productsResponse, quotesResponse, importsResponse, deletionsResponse] = await Promise.all([fetch("/api/products?limit=5000"), fetch("/api/quotes?limit=5000"), fetch("/api/imports"), fetch("/api/products/delete-all")]);
         const productsData = await json<{ products: ProductRecord[] }>(productsResponse);
         const quotesData = await json<{ quotes: NonInventoryRecord[] }>(quotesResponse);
         const importsData = await json<{ jobs: ImportJobRecord[] }>(importsResponse);
         const deletionsData = await json<{ jobs: ProductDeletionJobRecord[] }>(deletionsResponse);
-        setSettings(settingsData.settings);
         setProducts(productsData.products);
         setQuotes(quotesData.quotes);
         setImportHistory(importsData.jobs);
@@ -2049,15 +2063,15 @@ export function NutriPlusApp() {
   if (loading) return <main className="loading"><Image className="loading-logo" src="/nutriplus-logo.jpg" alt="NutriPlus Supplements" width={94} height={94} priority /><Loader2 className="spin" />Preparando NutriPlus…</main>;
 
   return <main className="app-shell">
-    <NotificationCenter />
+    <Suspense fallback={null}><NotificationCenter /></Suspense>
     {(!isOnline || pendingSyncCount > 0) && <div className={`sync-status ${isOnline ? "syncing" : "offline"}`}>{isOnline ? <Cloud /> : <WifiOff />}<span>{isOnline ? syncing ? "Sincronizando cambios…" : `${pendingSyncCount} cambio${pendingSyncCount === 1 ? "" : "s"} por sincronizar` : `Sin conexión · ${pendingSyncCount ? `${pendingSyncCount} cambio${pendingSyncCount === 1 ? " guardado" : "s guardados"}` : "podés seguir trabajando"}`}</span></div>}
     {showPriceBar && <StickyPrices price={validPrice ? price : null} weight={validWeight ? weight : null} settings={settings} />}
     <div className="body"><aside className={`side ${showPriceBar ? "under-price" : ""}`}><span>Menú</span>{nav.map(([id, label, Icon]) => <a href={`/?tab=${id}`} className={tab === id ? "active" : ""} onClick={(event) => { event.preventDefault(); navigateTab(id); }} key={id}><Icon />{label}</a>)}<div className="weight-note"><Weight /><span><b>+{settings.extraWeightLb.toFixed(2)} lb</b><small>en cada cálculo</small></span></div></aside><div className="content">
       {tab === "calculator" && <div className="view calculator-view"><header className="compact-head"><div><span className="eyebrow">Cotización rápida</span><h1>{calculatorForm.source === "no_inventory" ? "Actualizar cotización" : calculatorForm.id ? "Actualizar producto" : "Calcular precio"}</h1></div><button className="btn ghost small" onClick={clearCalculatorForm}><RotateCcw />Limpiar</button></header><ProductForm form={calculatorForm} setForm={setCalculatorForm} settings={settings} suggestions={suggestions} suggestionsOpen={suggestionsOpen} setSuggestionsOpen={setSuggestionsOpen} onPick={fillCalculator} onExternalCode={(code) => void lookupCode(code, "calculator")} onOpenScanner={() => openScanner("lookup-calculator")} onImageCode={(file) => readCodeFromImage(file, "calculator")} onPasteCode={() => void pasteCode("calculator")} onSubmit={(event) => save(event, "calculator")} saving={false} activeNumeric={activeNumeric} setActiveNumeric={setActiveNumeric} /></div>}
 
-      <div className="module-slot" hidden={tab !== "orders"}><OrdersView products={products} quotes={quotes} settings={settings} scannedBarcode={orderScannedBarcode} onConsumeScan={() => setOrderScannedBarcode(null)} onRequestScan={() => openScanner("orders")} onInventoryChanged={refreshProducts} onCatalogChanged={async () => { await Promise.all([refreshProducts(), refreshQuotes()]); }} onReturnToOrigin={() => window.history.back()} /></div>
+      {mountedTabs.has("orders") && <div className="module-slot" hidden={tab !== "orders"}><Suspense fallback={<div className="orders-loading"><Loader2 className="spin" />Cargando Pedidos…</div>}><OrdersView products={products} quotes={quotes} settings={settings} scannedBarcode={orderScannedBarcode} onConsumeScan={() => setOrderScannedBarcode(null)} onRequestScan={() => openScanner("orders")} onInventoryChanged={refreshProducts} onCatalogChanged={async () => { await Promise.all([refreshProducts(), refreshQuotes()]); }} onReturnToOrigin={() => window.history.back()} /></Suspense></div>}
 
-      <div className="module-slot" hidden={tab !== "finance"}><FinanceView active={tab === "finance"} onNavigateView={(view) => navigation.current?.navigate("finance", view === "summary" ? undefined : view)} onOpenOrder={(orderId) => { navigateTab("orders"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("nutriplus:open-order", { detail: { orderId, origin: "finance" } })), 0); }} onNotify={notify} /></div>
+      {mountedTabs.has("finance") && <div className="module-slot" hidden={tab !== "finance"}><Suspense fallback={<div className="orders-loading"><Loader2 className="spin" />Cargando Finanzas…</div>}><FinanceView active={tab === "finance"} onNavigateView={(view) => navigation.current?.navigate("finance", view === "summary" ? undefined : view)} onOpenOrder={(orderId) => { navigateTab("orders"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("nutriplus:open-order", { detail: { orderId, origin: "finance" } })), 0); }} onNotify={notify} /></Suspense></div>}
 
       {tab === "products" && <div className="view"><header className="view-head products-head"><div><span className="eyebrow">Historial guardado</span><h1>Productos</h1><p>Buscá, agregá o editá cualquier producto guardado.</p></div><button className={`restock-head-btn ${lowStockProducts.length ? "has-items" : ""}`} onClick={() => setRestockOpen(true)} aria-label={`Ver productos por abastecer: ${lowStockProducts.length}`}><BellRing /><span>Por abastecer</span><b>{lowStockProducts.length}</b></button></header>
         <div className="products-toolbar"><button className="btn primary" onClick={addInProducts}><Plus />Agregar producto</button><button className="btn secondary" onClick={() => setNoInventoryOpen(true)}><Package />No inventario ({quotes.length})</button><button className="btn secondary" onClick={() => void openRecent()}><Clock3 />Guardados recientemente</button><button className="btn secondary" onClick={() => setInventoryIntakeOpen(true)}><Upload />Agregar inventario</button><button className={`btn ${selectionMode ? "ghost" : "secondary"}`} onClick={() => { setSelectionMode((current) => !current); setSelectedProductIds(new Set()); }} disabled={!products.length}><Check />{selectionMode ? "Cancelar selección" : "Seleccionar varios"}</button>{selectionMode && selectedProductIds.size > 0 && <button className="btn danger-solid" onClick={() => setBulkDeleteConfirm(true)} disabled={bulkDeleting}><Trash2 />Eliminar ({selectedProductIds.size})</button>}<button className="btn secondary" onClick={() => setExportConfirm(true)} disabled={!products.length && !quotes.length}><Download />Descargar inventario</button></div>
@@ -2075,7 +2089,7 @@ export function NutriPlusApp() {
     {restockOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos por abastecer" onPointerDown={() => setRestockOpen(false)}><div className="restock-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Lista de compra</span><h2>Productos por abastecer</h2><p>Incluye los productos en el mínimo y cualquiera que haya llegado a stock 0.</p></div><button className="icon-btn" onClick={() => setRestockOpen(false)} aria-label="Cerrar lista"><X /></button></div>{lowStockProducts.length ? <div className="restock-list">{lowStockProducts.map((product) => <article className={`${product.restockPurchasedAt ? "purchased" : "pending-purchase"} ${product.quantityAvailable === 0 ? "zero-stock" : ""}`} key={product.id}><div><b>{product.name}</b>{product.code && <small>{product.code}</small>}<small className="purchase-status">{product.restockPurchasedAt ? "Comprado" : "Pendiente de compra"}{product.quantityAvailable === 0 ? " · Stock 0" : ""}</small></div><span><small>Disponible</small><b>{product.quantityAvailable}</b></span><span><small>Mínimo</small><b>{product.minimumStockEnabled ? product.minimumStock : "-"}</b></span><div className="restock-actions"><button className={`btn small ${product.restockPurchasedAt ? "secondary" : "primary"}`} onClick={() => void markRestock(product, !product.restockPurchasedAt)}>{product.restockPurchasedAt ? <RotateCcw /> : <Check />}{product.restockPurchasedAt ? "Marcar pendiente" : "Comprado"}</button><button className="btn ghost small" onClick={() => editInProducts(product)}><Pencil />Actualizar</button></div></article>)}</div> : <div className="restock-empty"><Check /><h3>Todo abastecido</h3><p>No hay productos por debajo del mínimo ni con stock 0.</p></div>}</div></div>}
     {noInventoryOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos de No inventario" onPointerDown={() => setNoInventoryOpen(false)}><div className="restock-card recent-card no-inventory-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Cotizaciones separadas</span><h2>No inventario</h2><p>{quotes.length} producto{quotes.length === 1 ? "" : "s"} que no {quotes.length === 1 ? "aparece" : "aparecen"} en el catálogo principal.</p></div><button className="icon-btn" onClick={() => setNoInventoryOpen(false)} aria-label="Cerrar No inventario"><X /></button></div><div className="surface search-card no-inventory-search"><div className="input-icon grow"><Search /><input value={noInventoryQuery} onChange={(event) => setNoInventoryQuery(event.target.value)} placeholder="Buscar por nombre o código" /></div></div>{filteredNoInventory.length ? <div className="recent-list no-inventory-list">{filteredNoInventory.map((item) => { const prices = hasCompletePricing(item) ? calculatePrices(item.purchasePriceUsd, item.weightLb, settings) : null; return <article key={item.id}><div><b>{item.name}</b><small>{item.code || "Sin código"} · {importDate(item.updatedAt)}</small></div><span className="source-pill no_inventory">No inventario</span><span><small>GAM</small><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></span><button className="btn ghost small" onClick={() => editNoInventory(item)}><Pencil />Editar</button></article>; })}</div> : <p className="empty-summary">{noInventoryQuery ? "No hay coincidencias." : "Todavía no hay productos en No inventario."}</p>}</div></div>}
     {recentOpen && <div className="modal" role="dialog" aria-modal="true" aria-label="Productos guardados recientemente" onPointerDown={() => setRecentOpen(false)}><div className="restock-card recent-card" onPointerDown={(event) => event.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">Actividad reciente</span><h2>Guardados recientemente</h2><p>Se identifica si cada registro pertenece al Inventario o a No inventario.</p></div><button className="icon-btn" onClick={() => setRecentOpen(false)} aria-label="Cerrar recientes"><X /></button></div>{recentLoading ? <div className="recent-loading"><Loader2 className="spin" />Cargando…</div> : <div className="recent-list">{recentItems.map(({ source, item }) => { const prices = hasCompletePricing(item) ? calculatePrices(item.purchasePriceUsd, item.weightLb, settings) : null; return <article key={`${source}-${item.id}`}><div><b>{item.name}</b><small>{item.code || "Sin código"} · {importDate(item.updatedAt)}</small></div><span className={`source-pill ${source}`}>{source === "inventory" ? "Inventario" : "No inventario"}</span><span><small>GAM</small><b>{prices ? crc(prices.gamPriceCrc) : "Incompleto"}</b></span><button className="btn ghost small" onClick={() => source === "inventory" ? editInProducts(item as ProductRecord) : editNoInventory(item as NonInventoryRecord)}><Pencil />Editar</button></article>; })}</div>}</div></div>}
-    <InventoryIntakeModal
+    {inventoryIntakeOpen && <Suspense fallback={null}><InventoryIntakeModal
       open={inventoryIntakeOpen}
       products={products}
       quotes={quotes}
@@ -2101,7 +2115,7 @@ export function NutriPlusApp() {
       scannedBarcode={intakeScannedBarcode}
       onConsumeScan={() => setIntakeScannedBarcode(null)}
       readBarcodeImage={decodeBarcodeImage}
-    />
+    /></Suspense>}
     {exportConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Elegir descarga del inventario"><div className="confirm-card export-card"><div className="download-symbol"><Download /></div><h2>Descargar inventario</h2><p>Incluye {products.length} productos del inventario y {quotes.length} de No inventario. El PDF también tendrá la sección No inventario.</p><div className="export-options"><button className={exportFormat === "pdf" ? "chosen" : ""} onClick={() => setExportFormat("pdf")}><b>PDF</b><small>Documento minimalista</small></button><button className={exportFormat === "excel" ? "chosen" : ""} onClick={() => setExportFormat("excel")}><b>Excel</b><small>Hojas editables</small></button><button className={exportFormat === "both" ? "chosen" : ""} onClick={() => setExportFormat("both")}><b>Ambos</b><small>Dos archivos separados</small></button></div><div className="confirm-actions"><button className="btn secondary" onClick={() => setExportConfirm(false)} disabled={exporting}>Cancelar</button><button className="btn primary" onClick={() => void downloadInventory(exportFormat)} disabled={exporting}>{exporting ? <Loader2 className="spin" /> : <Download />}Descargar</button></div></div></div>}
     {deleteTarget && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar producto?</h2><p>Vas a eliminar <b>{deleteTarget.name}</b>. Esta acción no se puede deshacer.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setDeleteTarget(null)} disabled={deleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeProduct()} disabled={deleting}>{deleting ? <Loader2 className="spin" /> : <Trash2 />}Sí, eliminar</button></div></div></div>}
     {bulkDeleteConfirm && <div className="modal" role="dialog" aria-modal="true" aria-label="Confirmar eliminación de productos seleccionados"><div className="confirm-card"><div className="delete-symbol"><Trash2 /></div><h2>¿Eliminar {selectedProductIds.size} productos?</h2><p>Se eliminarán únicamente los productos seleccionados. Esta acción también puede completarse en segundo plano o sincronizarse al volver Internet.</p><div className="confirm-actions"><button className="btn secondary" onClick={() => setBulkDeleteConfirm(false)} disabled={bulkDeleting}>No, cancelar</button><button className="btn danger-solid" onClick={() => void removeSelectedProducts()} disabled={bulkDeleting}><Trash2 />Sí, eliminar seleccionados</button></div></div></div>}

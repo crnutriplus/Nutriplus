@@ -136,7 +136,7 @@ test("fallback without modern APIs preserves ordinary SPA history and does not c
   app.controller.dispose();
 });
 
-test("the App Shell keeps module roots mounted and exposes the five requested tabs", async () => {
+test("the App Shell defers operational modules until their tab is first visited", async () => {
   const [client, notifications, css] = await Promise.all([
     readFile(new URL("../app/client-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/notification-center.tsx", import.meta.url), "utf8"),
@@ -144,6 +144,9 @@ test("the App Shell keeps module roots mounted and exposes the five requested ta
   ]);
   assert.match(client, /hidden=\{tab !== "orders"\}/);
   assert.match(client, /hidden=\{tab !== "finance"\}/);
+  assert.match(client, /lazy\(async \(\) => \(\{ default: \(await import\("\.\/orders-view"\)\)/);
+  assert.match(client, /mountedTabs\.has\("orders"\)/);
+  assert.match(client, /inventoryIntakeOpen && <Suspense/);
   assert.match(client, /settingsPanel !== "import"/);
   assert.match(client, /"finance", "Finanzas"/);
   assert.doesNotMatch(client, /\["import", "Importar"/);
