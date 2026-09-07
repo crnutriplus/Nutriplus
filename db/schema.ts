@@ -924,6 +924,28 @@ export const chatwootConversationOrderLinks = sqliteTable("chatwoot_conversation
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [uniqueIndex("chatwoot_conversation_order_link_unique").on(table.chatwootAccountId, table.chatwootConversationId, table.orderId, table.linkRole), index("chatwoot_conversation_order_links_order_idx").on(table.orderId, table.createdAt), index("chatwoot_conversation_order_links_conversation_idx").on(table.chatwootAccountId, table.chatwootConversationId)]);
 
+export const chatwootWebhookJobs = sqliteTable("chatwoot_webhook_jobs", {
+  id: text("id").primaryKey(),
+  deliveryId: text("delivery_id").notNull(),
+  eventType: text("event_type").notNull(),
+  chatwootAccountId: integer("chatwoot_account_id").notNull(),
+  chatwootContactId: integer("chatwoot_contact_id"),
+  chatwootConversationId: integer("chatwoot_conversation_id"),
+  status: text("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  nextAttemptAt: text("next_attempt_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  leaseToken: text("lease_token"),
+  leaseExpiresAt: text("lease_expires_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  completedAt: text("completed_at"),
+}, (table) => [
+  uniqueIndex("chatwoot_webhook_jobs_delivery_unique").on(table.deliveryId),
+  index("chatwoot_webhook_jobs_due_idx").on(table.status, table.nextAttemptAt, table.createdAt),
+  index("chatwoot_webhook_jobs_lease_idx").on(table.status, table.leaseExpiresAt),
+]);
+
 export const crmOperations = sqliteTable("crm_operations", {
   operationId: text("operation_id").primaryKey(), operationType: text("operation_type").notNull(), requestHash: text("request_hash").notNull(), status: text("status").notNull().default("PENDING"), responseJson: text("response_json"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), completedAt: text("completed_at"),

@@ -134,6 +134,13 @@
       "when": 1788363474727,
       "tag": "0018_friendly_bedlam",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1788755246927,
+      "tag": "0019_chatwoot_webhook_outbox",
+      "breakpoints": true
     }
   ]
 }

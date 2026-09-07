@@ -1,6 +1,20 @@
 import { ChatwootWebhookError, verifyChatwootWebhook } from "@/lib/chatwoot-webhook";
-import { ensureDatabase,getD1 } from "@/db";
-import { claimChatwootDelivery, releaseChatwootDelivery } from "@/lib/chatwoot-webhook";
-import { ChatwootClient } from "@/lib/chatwoot-client";
-import { processChatwootEvent } from "@/lib/chatwoot-sync";
-export async function POST(request:Request){let delivery="",db:D1Database|undefined;try{const raw=await request.text();const secret=globalThis.__NUTRIPLUS_CHATWOOT_WEBHOOK_SECRET__;if(!secret)return Response.json({error:{code:"CHATWOOT_WEBHOOK_NOT_CONFIGURED"}},{status:503});const result=await verifyChatwootWebhook(request,raw,secret);delivery=result.delivery;await ensureDatabase();db=getD1();if(!await claimChatwootDelivery(db,delivery))return Response.json({accepted:true,duplicate:true},{status:202});if(result.supported){const base=globalThis.__NUTRIPLUS_CHATWOOT_BASE_URL__,token=globalThis.__NUTRIPLUS_CHATWOOT_API_TOKEN__;if(!base||!token)throw new ChatwootWebhookError(503,"CHATWOOT_API_NOT_CONFIGURED");await processChatwootEvent(db,new ChatwootClient(base,token),result.event,result.payload);}return Response.json({accepted:true,duplicate:false,event:result.event||"unknown",supported:result.supported},{status:202});}catch(error){if(db&&delivery)await releaseChatwootDelivery(db,delivery).catch(()=>undefined);const e=error instanceof ChatwootWebhookError?error:new ChatwootWebhookError(500,"CHATWOOT_WEBHOOK_INTERNAL");return Response.json({error:{code:e.code}},{status:e.status});}}
+import { getD1 } from "@/db";
+import { chatwootWebhookJobFromPayload, enqueueChatwootWebhookJob } from "@/lib/chatwoot-webhook-outbox";
+
+export async function POST(request: Request) {
+  try {
+    const raw = await request.text();
+    const secret = globalThis.__NUTRIPLUS_CHATWOOT_WEBHOOK_SECRET__;
+    if (!secret) return Response.json({ error: { code: "CHATWOOT_WEBHOOK_NOT_CONFIGURED" } }, { status: 503 });
+    const result = await verifyChatwootWebhook(request, raw, secret);
+    if (!result.supported) return Response.json({ accepted: true, duplicate: false, event: result.event || "unknown", supported: false }, { status: 202 });
+    const job = chatwootWebhookJobFromPayload(result.event, result.delivery, result.payload);
+    if (!job) throw new ChatwootWebhookError(400, "CHATWOOT_RESOURCE_INVALID");
+    const queued = await enqueueChatwootWebhookJob(getD1(), job);
+    return Response.json({ accepted: true, duplicate: !queued.created, event: result.event, supported: true }, { status: 202 });
+  } catch (error) {
+    const webhookError = error instanceof ChatwootWebhookError ? error : new ChatwootWebhookError(500, "CHATWOOT_WEBHOOK_INTERNAL");
+    return Response.json({ error: { code: webhookError.code } }, { status: webhookError.status });
+  }
+}

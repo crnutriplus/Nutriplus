@@ -1,4 +1,15 @@
 export const CRM_DATABASE_SQL = [
+  `CREATE TABLE IF NOT EXISTS chatwoot_webhook_jobs (
+    id TEXT PRIMARY KEY NOT NULL, delivery_id TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
+    chatwoot_account_id INTEGER NOT NULL, chatwoot_contact_id INTEGER, chatwoot_conversation_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','completed','failed')),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0), last_error TEXT,
+    next_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, lease_token TEXT, lease_expires_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT
+  )`,
+  "CREATE INDEX IF NOT EXISTS chatwoot_webhook_jobs_due_idx ON chatwoot_webhook_jobs (status, next_attempt_at, created_at)",
+  "CREATE INDEX IF NOT EXISTS chatwoot_webhook_jobs_lease_idx ON chatwoot_webhook_jobs (status, lease_expires_at)",
   `CREATE TABLE IF NOT EXISTS customers (
     id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, phone_raw TEXT, phone_normalized TEXT,
     customer_status TEXT NOT NULL DEFAULT 'PROSPECT', province TEXT, canton TEXT, district TEXT,

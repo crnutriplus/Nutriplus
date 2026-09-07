@@ -17,6 +17,14 @@ const env = {
   CHATWOOT_WEBHOOK_SECRET: secret,
 };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
+env.DB.sqlite.exec(`CREATE TABLE chatwoot_webhook_jobs (
+  id TEXT PRIMARY KEY NOT NULL, delivery_id TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
+  chatwoot_account_id INTEGER NOT NULL, chatwoot_contact_id INTEGER, chatwoot_conversation_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+  next_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, lease_token TEXT, lease_expires_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT
+)`);
 
 async function signature(timestamp, raw) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -50,6 +58,21 @@ test("webhook remains reachable only through its HMAC boundary", async () => {
   }), env, ctx);
   assert.equal(denied.status, 401);
   assert.equal(accepted.status, 202);
+});
+
+test("a supported webhook returns 202 while its durable outbox processor is scheduled with waitUntil", async () => {
+  const raw = JSON.stringify({ event: "contact_updated", account: { id: 1 }, contact: { id: 42, content: "never persisted" } });
+  const timestamp = String(Math.floor(Date.now() / 1000)); const pending = [];
+  const response = await worker.fetch(new Request("https://nutriplus.test/api/integrations/chatwoot/webhook", {
+    method: "POST", headers: {
+      "content-type": "application/json", "x-chatwoot-timestamp": timestamp,
+      "x-chatwoot-signature": await signature(timestamp, raw), "x-chatwoot-delivery": "site-access-outbox-001",
+    }, body: raw,
+  }), env, { waitUntil(promise) { pending.push(promise); }, passThroughOnException() {} });
+  assert.equal(response.status, 202); assert.ok(pending.length >= 2, "webhook outbox and notification work are both background tasks");
+  await Promise.all(pending);
+  const row = env.DB.sqlite.prepare("SELECT * FROM chatwoot_webhook_jobs WHERE delivery_id='site-access-outbox-001'").get();
+  assert.equal(row.chatwoot_contact_id, 42); assert.equal(JSON.stringify(row).includes("never persisted"), false);
 });
 
 test("CRM remains outside browser login but rejects missing service HMAC", async () => {

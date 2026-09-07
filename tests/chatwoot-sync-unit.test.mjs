@@ -3,7 +3,7 @@ import test from "node:test";
 import { LocalD1Database } from "./helpers/local-bindings.mjs";
 import { CRM_DATABASE_SQL } from "../lib/crm-database.ts";
 import { ChatwootApiError, ChatwootClient } from "../lib/chatwoot-client.ts";
-import { syncContact, syncConversation } from "../lib/chatwoot-sync.ts";
+import { processChatwootWebhookJob, syncContact, syncConversation } from "../lib/chatwoot-sync.ts";
 
 function db() {
   const value = new LocalD1Database();
@@ -42,4 +42,14 @@ test("Chatwoot client gets conversations, PATCHes only through the scoped endpoi
 });
 test("creates an identity-only customer and refuses a contact without an identity signal", async () => {
   const value=db(), api=client(); const identityOnly=await syncContact(value,api,1,contact({id:88,phone_number:"",identifier:"ig-only"})); assert.ok(identityOnly.customerId); const skipped=await syncContact(value,api,1,contact({id:89,phone_number:"",identifier:"",channel_type:""})); assert.deepEqual(skipped,{skipped:true,reason:"INSUFFICIENT_IDENTITY"}); value.close();
+});
+test("outbox processing reloads the canonical Chatwoot contact instead of retaining webhook content", async () => {
+  const value = db(), api = client(); let fetched = 0;
+  api.getContact = async () => { fetched++; return contact({ custom_attributes: {} }); };
+  await processChatwootWebhookJob(value, api, {
+    id: "job-1", deliveryId: "delivery-1", eventType: "contact_updated", accountId: 1,
+    contactId: 42, conversationId: null, status: "processing", attempts: 1, leaseToken: "lease",
+  });
+  assert.equal(fetched, 1); assert.equal(api.calls.length, 1);
+  value.close();
 });

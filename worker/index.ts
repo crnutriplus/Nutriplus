@@ -4,6 +4,9 @@ import handler from "vinext/server/app-router-entry";
 import { ensureDatabase } from "../db";
 import { reconcileNotifications } from "../lib/notifications";
 import { siteAccessDecision, siteUnauthorizedResponse } from "../lib/site-access";
+import { ChatwootClient } from "../lib/chatwoot-client";
+import { drainChatwootWebhookJobs } from "../lib/chatwoot-webhook-outbox";
+import { processChatwootWebhookJob } from "../lib/chatwoot-sync";
 
 interface Env {
   ASSETS: Fetcher;
@@ -35,6 +38,12 @@ interface Env {
 interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;
+}
+
+async function processChatwootWebhookOutbox(env: Env) {
+  if (!env.CHATWOOT_BASE_URL || !env.CHATWOOT_API_TOKEN) return;
+  const client = new ChatwootClient(env.CHATWOOT_BASE_URL, env.CHATWOOT_API_TOKEN);
+  await drainChatwootWebhookJobs(env.DB, async (job) => { await processChatwootWebhookJob(env.DB, client, job); });
 }
 
 // Image security config. SVG sources with .svg extension auto-skip the
@@ -79,6 +88,9 @@ const worker = {
     }
 
     const response = await handler.fetch(request, env, ctx);
+    if (url.pathname === "/api/integrations/chatwoot/webhook" && request.method === "POST" && response.status === 202) {
+      ctx.waitUntil(processChatwootWebhookOutbox(env).catch(() => undefined));
+    }
     const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(request.method.toUpperCase());
     const isNavigation = request.method === "GET" && request.headers.get("accept")?.includes("text/html");
     if ((isMutation || isNavigation) && url.pathname !== "/api/notifications/reconcile") {
@@ -88,6 +100,10 @@ const worker = {
       })().catch(() => undefined));
     }
     return response;
+  },
+
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(processChatwootWebhookOutbox(env).catch(() => undefined));
   },
 };
 

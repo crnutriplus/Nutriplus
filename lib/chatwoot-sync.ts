@@ -1,5 +1,6 @@
 import { addCustomerIdentity, createCustomer, CrmError, linkChatwootContact, linkChatwootConversationOrder, resolveCustomer } from "./crm";
 import { ChatwootClient } from "./chatwoot-client";
+import type { ChatwootWebhookJob } from "./chatwoot-webhook-outbox";
 
 type Data = Record<string, unknown>;
 const object = (value: unknown): Data => value && typeof value === "object" && !Array.isArray(value) ? value as Data : {};
@@ -66,5 +67,18 @@ export async function processChatwootEvent(db: D1Database, client: ChatwootClien
   const accountId = integer(object(payload.account).id); if (!accountId) throw new CrmError("Cuenta Chatwoot inválida.", 400, "CHATWOOT_ACCOUNT_INVALID");
   if (event === "contact_created" || event === "contact_updated") return syncContact(db, client, accountId, object(payload.contact).id ? object(payload.contact) : payload);
   if (event === "conversation_created" || event === "conversation_updated") return syncConversation(db, client, accountId, object(payload.conversation).id ? object(payload.conversation) : payload);
+  return { skipped: true, reason: "UNSUPPORTED_EVENT" };
+}
+
+/** Fetches the canonical Chatwoot resource after the signed webhook has been durably queued. */
+export async function processChatwootWebhookJob(db: D1Database, client: ChatwootClient, job: ChatwootWebhookJob) {
+  if (job.eventType === "contact_created" || job.eventType === "contact_updated") {
+    if (!job.contactId) throw new CrmError("Contacto Chatwoot inválido.", 400, "CHATWOOT_CONTACT_INVALID");
+    return syncContact(db, client, job.accountId, await client.getContact(job.accountId, job.contactId));
+  }
+  if (job.eventType === "conversation_created" || job.eventType === "conversation_updated") {
+    if (!job.conversationId) throw new CrmError("Conversación Chatwoot inválida.", 400, "CHATWOOT_CONVERSATION_INVALID");
+    return syncConversation(db, client, job.accountId, await client.getConversation(job.accountId, job.conversationId));
+  }
   return { skipped: true, reason: "UNSUPPORTED_EVENT" };
 }
