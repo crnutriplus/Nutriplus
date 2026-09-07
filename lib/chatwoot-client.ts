@@ -4,6 +4,7 @@ export class ChatwootApiError extends Error {
 
 type FetchLike = typeof fetch;
 type Attributes = Record<string, unknown>;
+type JsonObject = Record<string, unknown>;
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const retryable = (status: number) => status === 429 || status >= 500;
@@ -35,9 +36,21 @@ export class ChatwootClient {
     throw last instanceof Error ? last : new ChatwootApiError(503, "CHATWOOT_API_RETRY_EXHAUSTED");
   }
 
-  async getContact(accountId: number, contactId: number) { return this.json(await this.request(`/api/v1/accounts/${accountId}/contacts/${contactId}`)); }
+  /**
+   * Chatwoot's authenticated contacts#show endpoint returns the resource as
+   * `{ payload: { ...contact } }`, unlike conversations#show. Keep that
+   * transport detail here so downstream CRM code always receives a contact.
+   */
+  async getContact(accountId: number, contactId: number) {
+    const body = await this.json(await this.request(`/api/v1/accounts/${accountId}/contacts/${contactId}`));
+    return this.contactFromShowResponse(body);
+  }
   async getConversation(accountId: number, conversationId: number) { return this.json(await this.request(`/api/v1/accounts/${accountId}/conversations/${conversationId}`)); }
   async patchContactAttributes(accountId: number, contactId: number, customAttributes: Attributes) { return this.json(await this.request(`/api/v1/accounts/${accountId}/contacts/${contactId}`, { method: "PATCH", body: JSON.stringify({ custom_attributes: customAttributes }) })); }
   async patchConversationAttributes(accountId: number, conversationId: number, customAttributes: Attributes) { return this.json(await this.request(`/api/v1/accounts/${accountId}/conversations/${conversationId}`, { method: "PATCH", body: JSON.stringify({ custom_attributes: customAttributes }) })); }
-  private async json(response: Response): Promise<Record<string, unknown>> { try { return await response.json() as Record<string, unknown>; } catch { throw new ChatwootApiError(502, "CHATWOOT_API_INVALID_JSON"); } }
+  private contactFromShowResponse(body: JsonObject): JsonObject {
+    const payload = body.payload;
+    return payload && typeof payload === "object" && !Array.isArray(payload) ? payload as JsonObject : body;
+  }
+  private async json(response: Response): Promise<JsonObject> { try { return await response.json() as JsonObject; } catch { throw new ChatwootApiError(502, "CHATWOOT_API_INVALID_JSON"); } }
 }

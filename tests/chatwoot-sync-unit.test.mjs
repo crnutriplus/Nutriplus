@@ -31,7 +31,7 @@ test("links conversation orders many-to-many and only PATCHes changed owned attr
   const desired=api.calls[0][3]; assert.equal((await syncConversation(value,api,1,{id:91,custom_attributes:{...input.custom_attributes,...desired}})).patched,false); assert.equal(api.calls.length,2); value.close();
 });
 test("Chatwoot client retries retryable failures and classifies API errors without exposing token", async () => {
-  let count=0; const fetcher=async()=>{count++;return count===1?new Response("slow",{status:429}):new Response(JSON.stringify({id:1}),{headers:{"content-type":"application/json"}});}; const api=new ChatwootClient("https://chatwoot.test","never-log-this-token",fetcher,1); assert.equal((await api.getContact(1,1)).id,1); assert.equal(count,2);
+  let count=0; const fetcher=async()=>{count++;return count===1?new Response("slow",{status:429}):new Response(JSON.stringify({payload:{id:1}}),{headers:{"content-type":"application/json"}});}; const api=new ChatwootClient("https://chatwoot.test","never-log-this-token",fetcher,1); assert.equal((await api.getContact(1,1)).id,1); assert.equal(count,2);
   for (const status of [401,403,404]) { const failing=new ChatwootClient("https://chatwoot.test","never-log-this-token",async()=>new Response("x",{status}),0); await assert.rejects(()=>failing.getConversation(1,1),error=>error instanceof ChatwootApiError&&error.status===status); }
   for (const status of [500,502,503]) { const failing=new ChatwootClient("https://chatwoot.test","never-log-this-token",async()=>new Response("x",{status}),0); await assert.rejects(()=>failing.getConversation(1,1),error=>error instanceof ChatwootApiError&&error.code==="CHATWOOT_API_RETRY_EXHAUSTED"); }
 });
@@ -51,5 +51,22 @@ test("outbox processing reloads the canonical Chatwoot contact instead of retain
     contactId: 42, conversationId: null, status: "processing", attempts: 1, leaseToken: "lease",
   });
   assert.equal(fetched, 1); assert.equal(api.calls.length, 1);
+  value.close();
+});
+
+test("outbox processing unwraps the Chatwoot 4.17 contacts#show payload before syncing", async () => {
+  const value = db(); const requests = [];
+  const api = new ChatwootClient("https://chatwoot.test", "never-log-this-token", async (url, init) => {
+    requests.push([String(url), init]);
+    if (String(url).endsWith("/contacts/42")) return new Response(JSON.stringify({ payload: contact({ custom_attributes: {} }) }), { headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({}), { headers: { "content-type": "application/json" } });
+  }, 0);
+  await processChatwootWebhookJob(value, api, {
+    id: "job-envelope", deliveryId: "delivery-envelope", eventType: "contact_updated", accountId: 1,
+    contactId: 42, conversationId: null, status: "processing", attempts: 1, leaseToken: "lease",
+  });
+  assert.equal(requests.length, 2);
+  assert.match(requests[0][0], /contacts\/42$/);
+  assert.equal(requests[1][1].method, "PATCH");
   value.close();
 });
