@@ -12,13 +12,32 @@ const chatwootStatus: Record<string,string> = { PROSPECT: "Prospecto", CUSTOMER:
 const chatwootPayment: Record<string,string> = { CASH: "Efectivo", SINPE: "SINPE", CARD: "Tarjeta", OTHER: "Otro" };
 const CRM_PANEL_ORIGIN = "https://nutriplus-precios.ever1822.chatgpt.site";
 
-function providerFor(contact: Data) {
-  const raw = [contact.channel_type, object(contact.inbox).channel_type, object(contact.contact_inbox).channel_type].map(string).join(" ").toLowerCase();
+function providerForChannel(value: unknown) {
+  const raw = string(value).toLowerCase();
   if (raw.includes("instagram")) return "instagram";
   if (raw.includes("facebook") || raw.includes("messenger")) return "messenger";
   return "";
 }
-function externalIdFor(contact: Data) { return string(contact.identifier) || string(contact.source_id) || string(object(contact.contact_inbox).source_id); }
+function externalIdentityFor(contact: Data) {
+  const directProvider = providerForChannel(contact.channel_type) || providerForChannel(object(contact.inbox).channel_type);
+  const directExternalId = string(contact.identifier) || string(contact.source_id);
+  if (directProvider && directExternalId) return { provider: directProvider, externalId: directExternalId };
+
+  const singular = object(contact.contact_inbox);
+  const singularProvider = providerForChannel(singular.channel_type) || providerForChannel(object(singular.inbox).channel_type);
+  const singularExternalId = string(singular.source_id);
+  if (singularProvider && singularExternalId) return { provider: singularProvider, externalId: singularExternalId };
+
+  const contactInboxes = Array.isArray(contact.contact_inboxes) ? contact.contact_inboxes : [];
+  for (const value of contactInboxes) {
+    const contactInbox = object(value);
+    const provider = providerForChannel(contactInbox.channel_type) || providerForChannel(object(contactInbox.inbox).channel_type);
+    const externalId = string(contactInbox.source_id);
+    if (provider && externalId) return { provider, externalId };
+  }
+
+  return { provider: "", externalId: directExternalId || singularExternalId };
+}
 function conversationContactId(conversation: Data) { return integer(object(object(conversation.meta).sender).id) ?? integer(object(conversation.contact).id); }
 function crmPanelUrl(accountId: number, contactId: number, conversationId: number) {
   const query = new URLSearchParams({ account_id: String(accountId), contact_id: String(contactId), conversation_id: String(conversationId) });
@@ -28,7 +47,7 @@ function crmPanelUrl(accountId: number, contactId: number, conversationId: numbe
 export async function syncContact(db: D1Database, client: ChatwootClient, accountId: number, input: Data) {
   const contact = object(input.contact).id ? object(input.contact) : input;
   const contactId = integer(contact.id); if (!contactId) throw new CrmError("Contacto Chatwoot inválido.", 400, "CHATWOOT_CONTACT_INVALID");
-  const custom = attrs(contact); const explicit = string(custom.nutriplus_customer_id); const provider = providerFor(contact); const externalId = externalIdFor(contact);
+  const custom = attrs(contact); const explicit = string(custom.nutriplus_customer_id); const { provider, externalId } = externalIdentityFor(contact);
   const identity = provider && externalId ? { externalProvider: provider, externalAccount: String(accountId), externalId } : {};
   let resolved = await resolveCustomer(db, { customerId: explicit || undefined, ...identity, phone: contact.phone_number });
   if (!resolved) {

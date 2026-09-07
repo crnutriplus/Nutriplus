@@ -81,3 +81,33 @@ test("outbox processing unwraps the Chatwoot 4.17 contacts#show payload before s
   assert.equal(requests[1][1].method, "PATCH");
   value.close();
 });
+
+test("supports the real Chatwoot 4.17 contact_inboxes identity shape", async () => {
+  const value = db(), api = client();
+  const result = await syncContact(value, api, 1, {
+    id: 143,
+    name: "Cliente Instagram real",
+    phone_number: "",
+    identifier: "",
+    custom_attributes: {},
+    contact_inboxes: [
+      {
+        source_id: "1626090009237784",
+        inbox: {
+          channel_type: "Channel::Instagram",
+        },
+      },
+    ],
+  });
+
+  assert.ok(result.customerId);
+  assert.equal(
+    value.sqlite.prepare("SELECT provider FROM customer_external_identities").get().provider,
+    "instagram",
+  );
+  assert.equal(
+    value.sqlite.prepare("SELECT count(*) n FROM chatwoot_contact_links").get().n,
+    1,
+  );
+  value.close();
+});
