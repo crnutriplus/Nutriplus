@@ -5,7 +5,7 @@ import { ensureDatabase } from "../db";
 import { reconcileNotifications } from "../lib/notifications";
 import { siteAccessDecision, siteUnauthorizedResponse } from "../lib/site-access";
 import { ChatwootClient } from "../lib/chatwoot-client";
-import { drainChatwootWebhookJobs } from "../lib/chatwoot-webhook-outbox";
+import { drainChatwootWebhookJobs, shouldRunChatwootWebhookOpportunisticDrain } from "../lib/chatwoot-webhook-outbox";
 import { processChatwootWebhookJob } from "../lib/chatwoot-sync";
 
 interface Env {
@@ -43,7 +43,7 @@ interface ExecutionContext {
 async function processChatwootWebhookOutbox(env: Env) {
   if (!env.CHATWOOT_BASE_URL || !env.CHATWOOT_API_TOKEN) return;
   const client = new ChatwootClient(env.CHATWOOT_BASE_URL, env.CHATWOOT_API_TOKEN);
-  await drainChatwootWebhookJobs(env.DB, async (job) => { await processChatwootWebhookJob(env.DB, client, job); });
+  await drainChatwootWebhookJobs(env.DB, async (job) => { await processChatwootWebhookJob(env.DB, client, job); }, 3);
 }
 
 // Image security config. SVG sources with .svg extension auto-skip the
@@ -88,7 +88,12 @@ const worker = {
     }
 
     const response = await handler.fetch(request, env, ctx);
-    if (url.pathname === "/api/integrations/chatwoot/webhook" && request.method === "POST" && response.status === 202) {
+    const isAcceptedChatwootWebhook = url.pathname === "/api/integrations/chatwoot/webhook" && request.method === "POST" && response.status === 202;
+    if (isAcceptedChatwootWebhook) {
+      ctx.waitUntil(processChatwootWebhookOutbox(env).catch(() => undefined));
+    } else if (shouldRunChatwootWebhookOpportunisticDrain()) {
+      // Sites has no configurable cron trigger. Normal traffic safely resumes
+      // due work in the background; the D1 lease prevents duplicate work.
       ctx.waitUntil(processChatwootWebhookOutbox(env).catch(() => undefined));
     }
     const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(request.method.toUpperCase());

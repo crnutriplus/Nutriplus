@@ -7,7 +7,10 @@ import {
   claimNextChatwootWebhookJob,
   drainChatwootWebhookJobs,
   enqueueChatwootWebhookJob,
+  ensureChatwootWebhookOutboxSchema,
   processNextChatwootWebhookJob,
+  resetChatwootWebhookOutboxRuntimeForTests,
+  shouldRunChatwootWebhookOpportunisticDrain,
 } from "../lib/chatwoot-webhook-outbox.ts";
 
 function db() {
@@ -21,6 +24,28 @@ function contactJob(deliveryId = "delivery-1") {
     account: { id: 1 }, contact: { id: 42, name: "not persisted", message: "not persisted" },
   });
 }
+
+test("isolated schema bootstrap creates only the outbox and is idempotent", async () => {
+  const value = new LocalD1Database();
+  value.sqlite.exec("CREATE TABLE existing_business_data (id INTEGER PRIMARY KEY, note TEXT NOT NULL)");
+  value.sqlite.exec("INSERT INTO existing_business_data VALUES (1, 'preserve')");
+  let batches = 0; const originalBatch = value.batch.bind(value);
+  value.batch = async (statements) => { batches++; return originalBatch(statements); };
+  await ensureChatwootWebhookOutboxSchema(value);
+  await ensureChatwootWebhookOutboxSchema(value);
+  assert.equal(batches, 1);
+  assert.equal(value.sqlite.prepare("SELECT note FROM existing_business_data WHERE id=1").get().note, "preserve");
+  assert.equal(value.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chatwoot_webhook_jobs'").get().name, "chatwoot_webhook_jobs");
+  value.close();
+});
+
+test("normal-traffic drain throttle is per-isolate and never suppresses the first attempt", () => {
+  resetChatwootWebhookOutboxRuntimeForTests();
+  assert.equal(shouldRunChatwootWebhookOpportunisticDrain(1_000), true);
+  assert.equal(shouldRunChatwootWebhookOpportunisticDrain(1_001), false);
+  assert.equal(shouldRunChatwootWebhookOpportunisticDrain(61_000), true);
+  resetChatwootWebhookOutboxRuntimeForTests();
+});
 
 test("queues only canonical IDs and deduplicates a delivery durably", async () => {
   const value = db(); const job = contactJob(); assert.ok(job);

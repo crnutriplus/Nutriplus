@@ -17,14 +17,6 @@ const env = {
   CHATWOOT_WEBHOOK_SECRET: secret,
 };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
-env.DB.sqlite.exec(`CREATE TABLE chatwoot_webhook_jobs (
-  id TEXT PRIMARY KEY NOT NULL, delivery_id TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
-  chatwoot_account_id INTEGER NOT NULL, chatwoot_contact_id INTEGER, chatwoot_conversation_id INTEGER,
-  status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
-  next_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, lease_token TEXT, lease_expires_at TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  completed_at TEXT
-)`);
 
 async function signature(timestamp, raw) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);

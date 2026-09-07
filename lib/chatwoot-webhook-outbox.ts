@@ -14,10 +14,14 @@ export type ChatwootWebhookJob = {
 
 export type NewChatwootWebhookJob = Pick<ChatwootWebhookJob, "deliveryId" | "eventType" | "accountId" | "contactId" | "conversationId">;
 
+/**
+ * The only DDL executed on the webhook path. It intentionally owns no CRM
+ * tables, triggers, data migrations, or cleanup work.
+ */
 export const CHATWOOT_WEBHOOK_OUTBOX_SQL = [
   `CREATE TABLE IF NOT EXISTS chatwoot_webhook_jobs (
     id TEXT PRIMARY KEY NOT NULL,
-    delivery_id TEXT NOT NULL UNIQUE,
+    delivery_id TEXT NOT NULL,
     event_type TEXT NOT NULL,
     chatwoot_account_id INTEGER NOT NULL,
     chatwoot_contact_id INTEGER,
@@ -32,6 +36,7 @@ export const CHATWOOT_WEBHOOK_OUTBOX_SQL = [
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT
   )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS chatwoot_webhook_jobs_delivery_unique ON chatwoot_webhook_jobs (delivery_id)",
   "CREATE INDEX IF NOT EXISTS chatwoot_webhook_jobs_due_idx ON chatwoot_webhook_jobs (status, next_attempt_at, created_at)",
   "CREATE INDEX IF NOT EXISTS chatwoot_webhook_jobs_lease_idx ON chatwoot_webhook_jobs (status, lease_expires_at)",
 ] as const;
@@ -39,11 +44,38 @@ export const CHATWOOT_WEBHOOK_OUTBOX_SQL = [
 const MAX_ATTEMPTS = 20;
 const LEASE_MS = 120_000;
 const RETRY_MAX_MS = 300_000;
+export const CHATWOOT_WEBHOOK_OPPORTUNISTIC_DRAIN_INTERVAL_MS = 60_000;
+
+const schemaInitializations = new WeakMap<object, Promise<void>>();
+let nextOpportunisticDrainAt = 0;
 
 const nowIso = (now = Date.now()) => new Date(now).toISOString();
 const integer = (value: unknown) => Number.isInteger(Number(value)) ? Number(value) : null;
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const id = () => crypto.randomUUID();
+
+/** Idempotently creates only the isolated outbox schema. Never call ensureDatabase here. */
+export async function ensureChatwootWebhookOutboxSchema(db: D1Database) {
+  const key = db as unknown as object;
+  let initialization = schemaInitializations.get(key);
+  if (!initialization) {
+    initialization = db.batch(CHATWOOT_WEBHOOK_OUTBOX_SQL.map((statement) => db.prepare(statement))).then(() => undefined);
+    schemaInitializations.set(key, initialization);
+    initialization.catch(() => schemaInitializations.delete(key));
+  }
+  return initialization;
+}
+
+/** Per-isolate throttle; D1 leases remain the cross-isolate correctness guard. */
+export function shouldRunChatwootWebhookOpportunisticDrain(now = Date.now()) {
+  if (now < nextOpportunisticDrainAt) return false;
+  nextOpportunisticDrainAt = now + CHATWOOT_WEBHOOK_OPPORTUNISTIC_DRAIN_INTERVAL_MS;
+  return true;
+}
+
+export function resetChatwootWebhookOutboxRuntimeForTests() {
+  nextOpportunisticDrainAt = 0;
+}
 
 function cleanExpiredJobs(db: D1Database) {
   return db.prepare(`DELETE FROM chatwoot_webhook_jobs
@@ -66,7 +98,7 @@ export function chatwootWebhookJobFromPayload(eventType: string, deliveryId: str
 }
 
 export async function enqueueChatwootWebhookJob(db: D1Database, job: NewChatwootWebhookJob) {
-  await cleanExpiredJobs(db);
+  await ensureChatwootWebhookOutboxSchema(db);
   const result = await db.prepare(`INSERT OR IGNORE INTO chatwoot_webhook_jobs (
     id, delivery_id, event_type, chatwoot_account_id, chatwoot_contact_id, chatwoot_conversation_id
   ) VALUES (?, ?, ?, ?, ?, ?)`)
@@ -154,6 +186,10 @@ export async function drainChatwootWebhookJobs(
   processor: (job: ChatwootWebhookJob) => Promise<void>,
   limit = 3,
 ) {
+  // Without a Sites Cron Trigger, failed jobs remain durable in D1 and are
+  // retried by the next opportunistic drain caused by later traffic.
+  await ensureChatwootWebhookOutboxSchema(db);
+  await cleanExpiredJobs(db);
   let processed = 0;
   for (let index = 0; index < limit; index++) {
     const result = await processNextChatwootWebhookJob(db, processor);

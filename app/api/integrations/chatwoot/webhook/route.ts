@@ -1,6 +1,6 @@
 import { ChatwootWebhookError, verifyChatwootWebhook } from "@/lib/chatwoot-webhook";
 import { getD1 } from "@/db";
-import { chatwootWebhookJobFromPayload, enqueueChatwootWebhookJob } from "@/lib/chatwoot-webhook-outbox";
+import { chatwootWebhookJobFromPayload, enqueueChatwootWebhookJob, ensureChatwootWebhookOutboxSchema } from "@/lib/chatwoot-webhook-outbox";
 
 export async function POST(request: Request) {
   try {
@@ -11,7 +11,9 @@ export async function POST(request: Request) {
     if (!result.supported) return Response.json({ accepted: true, duplicate: false, event: result.event || "unknown", supported: false }, { status: 202 });
     const job = chatwootWebhookJobFromPayload(result.event, result.delivery, result.payload);
     if (!job) throw new ChatwootWebhookError(400, "CHATWOOT_RESOURCE_INVALID");
-    const queued = await enqueueChatwootWebhookJob(getD1(), job);
+    const db = getD1();
+    await ensureChatwootWebhookOutboxSchema(db);
+    const queued = await enqueueChatwootWebhookJob(db, job);
     return Response.json({ accepted: true, duplicate: !queued.created, event: result.event, supported: true }, { status: 202 });
   } catch (error) {
     const webhookError = error instanceof ChatwootWebhookError ? error : new ChatwootWebhookError(500, "CHATWOOT_WEBHOOK_INTERNAL");
