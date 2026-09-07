@@ -1938,13 +1938,20 @@ export function NutriPlusApp() {
     notify({ type: "success", text: `Eliminando ${ids.length} producto${ids.length === 1 ? "" : "s"} en segundo plano.` });
     void (async () => {
       try {
-        const data = await json<{ deleted: number; deletedIds: number[]; alreadyDeleted: number[] }>(await fetch(mutation.url, {
+        const data = await json<{ deleted: number; deletedIds: number[]; alreadyDeleted: number[]; protectedIds: number[] }>(await fetch(mutation.url, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Mutation-Id": id },
           body: JSON.stringify({ ids, mutationId: id }),
           keepalive: true,
         }));
-        notify({ type: "success", text: `${ids.length} producto${ids.length === 1 ? " fue eliminado" : "s fueron eliminados"}${data.alreadyDeleted.length ? "; algunos ya habían sido eliminados por otra persona" : ""}.` });
+        const details = [
+          data.protectedIds.length ? `${data.protectedIds.length} se conservaron porque tienen recibos históricos de encargos` : "",
+          data.alreadyDeleted.length ? "algunos ya habían sido eliminados por otra persona" : "",
+        ].filter(Boolean);
+        notify({
+          type: data.protectedIds.length ? "warning" : "success",
+          text: `${data.deleted} producto${data.deleted === 1 ? " fue eliminado" : "s fueron eliminados"}${details.length ? `; ${details.join("; ")}` : ""}.`,
+        });
       } catch (error) {
         if (!navigator.onLine || error instanceof TypeError) {
           await queueOfflineMutation(mutation);

@@ -13,15 +13,25 @@ export async function POST(request: Request) {
     await ensureDatabase();
     const db = getD1();
     const mutation = await runIdempotentMutation(db, request, payload, async () => {
+      const serializedIds = JSON.stringify(ids);
       const deleted = await db.prepare(`DELETE FROM products
-        WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?)) RETURNING id,name`)
-        .bind(JSON.stringify(ids)).all<{ id: number; name: string }>();
+        WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+        AND NOT EXISTS (
+          SELECT 1 FROM special_order_receipt_lines receipt_line
+          WHERE receipt_line.product_id=products.id
+        ) RETURNING id,name`)
+        .bind(serializedIds).all<{ id: number; name: string }>();
       const deletedIds = deleted.results.map((row) => Number(row.id));
+      const protectedRows = await db.prepare(`SELECT DISTINCT product_id FROM special_order_receipt_lines
+        WHERE product_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))`)
+        .bind(serializedIds).all<{ product_id: number }>();
+      const protectedIds = protectedRows.results.map((row) => Number(row.product_id));
       return {
         body: {
           deleted: deletedIds.length,
           deletedIds,
-          alreadyDeleted: ids.filter((id) => !deletedIds.includes(id)),
+          protectedIds,
+          alreadyDeleted: ids.filter((id) => !deletedIds.includes(id) && !protectedIds.includes(id)),
         },
       };
     });

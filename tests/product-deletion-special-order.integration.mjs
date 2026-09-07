@@ -64,6 +64,19 @@ await DB.prepare(`INSERT INTO special_order_receipt_lines (
 ) VALUES ('receipt-line-special-delete-guard','receipt-special-delete-guard','line-special-delete-guard',?,1,0,CURRENT_TIMESTAMP)`)
   .bind(protectedProduct.body.product.id).run();
 
+const individualDelete = await call(`/api/products/${protectedProduct.body.product.id}`, { method: "DELETE" });
+assert.equal(individualDelete.response.status, 409);
+assert.match(individualDelete.body.error, /recibo histórico de encargo/i);
+
+const bulkDelete = await call("/api/products/bulk-delete", {
+  method: "POST",
+  body: JSON.stringify({ ids: [protectedProduct.body.product.id, removableProduct.body.product.id] }),
+});
+assert.equal(bulkDelete.response.status, 200, JSON.stringify(bulkDelete.body));
+assert.equal(bulkDelete.body.deleted, 1);
+assert.deepEqual(bulkDelete.body.protectedIds, [protectedProduct.body.product.id]);
+assert.equal((await call("/api/products?code=DELETE-OK")).body.product, null);
+
 let deletion = await call("/api/products/delete-all", { method: "POST" });
 assert.equal(deletion.response.status, 201, JSON.stringify(deletion.body));
 for (let round = 0; round < 4 && deletion.body.job.status !== "completed"; round += 1) {
@@ -72,10 +85,9 @@ for (let round = 0; round < 4 && deletion.body.job.status !== "completed"; round
 }
 
 assert.equal(deletion.body.job.status, "completed");
-assert.equal(deletion.body.job.deletedProducts, 1);
+assert.equal(deletion.body.job.deletedProducts, 0);
 assert.equal(deletion.body.job.preservedProducts, 1);
 assert.equal((await call("/api/products?code=SPECIAL-DELETE-GUARD")).body.product.id, protectedProduct.body.product.id);
-assert.equal((await call("/api/products?code=DELETE-OK")).body.product, null);
 
 DB.close();
 console.log("Bulk deletion preserves products with historical special-order receipts");

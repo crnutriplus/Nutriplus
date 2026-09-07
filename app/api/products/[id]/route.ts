@@ -29,6 +29,17 @@ function same(left: unknown, right: unknown) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
+function productHistoryProtectionResponse() {
+  return Response.json({
+    error: "Este producto se conserva porque está vinculado a un recibo histórico de encargo. El pedido y su trazabilidad no se modificaron.",
+  }, { status: 409 });
+}
+
+function isForeignKeyConstraint(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /FOREIGN KEY constraint failed|SQLITE_CONSTRAINT_FOREIGNKEY/i.test(message);
+}
+
 export async function PUT(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const id = Number((await context.params).id);
@@ -111,11 +122,16 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     if (!Number.isInteger(id) || id < 1) return Response.json({ error: "Producto inválido." }, { status: 400 });
     await ensureDatabase();
     const db = getD1();
+    const receiptReference = await db.prepare("SELECT 1 FROM special_order_receipt_lines WHERE product_id=? LIMIT 1")
+      .bind(id).first();
+    if (receiptReference) return productHistoryProtectionResponse();
     const payload = { mutationId: request.headers.get("x-mutation-id") || "" };
     const mutation = await runIdempotentMutation(db, request, payload, async () => {
       const existing = await db.prepare("DELETE FROM products WHERE id=? RETURNING name").bind(id).first<{ name: string }>();
       return { body: { deleted: true, alreadyDeleted: !existing, name: existing?.name || null } };
     });
     return Response.json(mutation.body, { status: mutation.status ?? 200 });
-  } catch (error) { return errorResponse(error); }
+  } catch (error) {
+    return isForeignKeyConstraint(error) ? productHistoryProtectionResponse() : errorResponse(error);
+  }
 }
