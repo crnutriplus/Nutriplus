@@ -47,7 +47,7 @@ export class ChatwootClient {
   }
   async getConversation(accountId: number, conversationId: number) { return this.json(await this.request(`/api/v1/accounts/${accountId}/conversations/${conversationId}`)); }
   async patchContactAttributes(accountId: number, contactId: number, customAttributes: Attributes) { return this.json(await this.request(`/api/v1/accounts/${accountId}/contacts/${contactId}`, { method: "PATCH", body: JSON.stringify({ custom_attributes: customAttributes }) })); }
-  async patchConversationAttributes(accountId: number, conversationId: number, customAttributes: Attributes) { return this.json(await this.request(`/api/v1/accounts/${accountId}/conversations/${conversationId}`, { method: "PATCH", body: JSON.stringify({ custom_attributes: customAttributes }) })); }
+  async patchConversationAttributes(accountId: number, conversationId: number, customAttributes: Attributes) { return this.json(await this.request(`/api/v1/accounts/${accountId}/conversations/${conversationId}/custom_attributes`, { method: "POST", body: JSON.stringify({ custom_attributes: customAttributes, merge: true }) })); }
   private contactFromShowResponse(body: JsonObject): JsonObject {
     const payload = body.payload;
     return payload && typeof payload === "object" && !Array.isArray(payload) ? payload as JsonObject : body;
