@@ -1,7 +1,7 @@
 {
   "name": "nutriplus-precios",
   "displayName": "Calculadora de Precios NutriPlus",
-  "version": "2.31.0",
+  "version": "2.32.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -35,7 +35,7 @@
     "exceljs": "^4.4.0",
     "fflate": "^0.7.4",
     "lucide-react": "1.30.0",
-    "next": "16.3.1",
+    "next": "16.3.3",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.2.108",
     "react": "19.2.6",

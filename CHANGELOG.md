@@ -7,6 +7,12 @@ NutriPlus mantiene dos identificadores independientes:
 
 `package.json` usa SemVer, por lo que representa la versión pública `2.23` como `2.23.0`. El valor que controla la versión mostrada por la aplicación está en `lib/public-version.ts`.
 
+## 2.32 — 2026-09-09
+
+- La integración CRM con Chatwoot 4.17 ahora actualiza los atributos personalizados de conversación mediante `POST /api/v1/accounts/:account_id/conversations/:id/custom_attributes`, evitando el endpoint general que descartaba silenciosamente `custom_attributes`.
+- Se usa `merge=true` para conservar atributos personalizados ajenos mientras NutriPlus actualiza únicamente sus propias claves.
+- Se añadió una regresión que valida el endpoint y payload correctos para generar `nutriplus_crm_url`.
+
 ## 2.31 — 2026-09-07
 
 - La integración CRM con Chatwoot 4.17 ahora resuelve correctamente la identidad de contactos de Instagram y Messenger cuando `contacts#show` entrega `source_id` y `channel_type` dentro de `contact_inboxes[]`.
