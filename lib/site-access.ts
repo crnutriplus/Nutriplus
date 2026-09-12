@@ -23,6 +23,29 @@ const PUBLIC_STATIC_PATHS = new Set([
 
 const STATIC_EXTENSION = /\.(?:avif|css|gif|ico|jpe?g|js|map|mjs|png|svg|webp|woff2?)$/i;
 
+const CRM_DASHBOARD_SESSION_COOKIE = "nutriplus_crm_session";
+
+function hasCrmDashboardSessionCookie(request: Request): boolean {
+  return (request.headers.get("cookie") ?? "")
+    .split(";")
+    .some((item) => item.trim().startsWith(`${CRM_DASHBOARD_SESSION_COOKIE}=`));
+}
+
+function isEmbeddedCrmApiRequest(request: Request, pathname: string): boolean {
+  const method = request.method.toUpperCase();
+
+  if (pathname === "/api/operations/crm-panel") return method === "GET";
+  if (pathname === "/api/operations/crm-panel/products") return method === "GET";
+
+  if (pathname === "/api/operations/crm-panel/orders") {
+    return method === "POST"
+      && request.headers.get("origin") === new URL(request.url).origin;
+  }
+
+  return method === "GET"
+    && /^\/api\/operations\/crm-panel\/orders\/[^/]+$/.test(pathname);
+}
+
 export function siteAccessDecision(
   request: Request,
   options: SiteAccessOptions,
@@ -36,7 +59,8 @@ export function siteAccessDecision(
   if (CHATGPT_AUTH_PATHS.has(pathname)) return { allowed: true, reason: "chatgpt_auth" };
   if (PUBLIC_STATIC_PATHS.has(pathname) || STATIC_EXTENSION.test(pathname)) return { allowed: true, reason: "static" };
   if (pathname === "/api/integrations/chatwoot/webhook") return { allowed: true, reason: "webhook" };
-  if (pathname === "/api/operations/crm-panel/embed/session") return { allowed: true, reason: "crm_embed" };
+  if (pathname === "/api/operations/crm-panel/embed/session" && request.method === "POST") return { allowed: true, reason: "crm_embed" };
+  if (hasCrmDashboardSessionCookie(request) && isEmbeddedCrmApiRequest(request, pathname)) return { allowed: true, reason: "crm_embed" };
   if (pathname === "/api/crm" || pathname.startsWith("/api/crm/")) return { allowed: true, reason: "crm" };
 
   const allowed = parseAllowedEmails(options.allowedEmails);
