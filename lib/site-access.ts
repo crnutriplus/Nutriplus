@@ -1,7 +1,7 @@
 const CHATGPT_EMAIL_HEADER = "oai-authenticated-user-email";
 
 export type SiteAccessDecision =
-  | { allowed: true; reason: "not_enforced" | "static" | "chatgpt_auth" | "webhook" | "crm" | "user" }
+  | { allowed: true; reason: "not_enforced" | "static" | "chatgpt_auth" | "webhook" | "crm" | "crm_embed" | "user" }
   | { allowed: false; reason: "anonymous" | "not_allowed" | "misconfigured" };
 
 export type SiteAccessOptions = {
@@ -36,6 +36,7 @@ export function siteAccessDecision(
   if (CHATGPT_AUTH_PATHS.has(pathname)) return { allowed: true, reason: "chatgpt_auth" };
   if (PUBLIC_STATIC_PATHS.has(pathname) || STATIC_EXTENSION.test(pathname)) return { allowed: true, reason: "static" };
   if (pathname === "/api/integrations/chatwoot/webhook") return { allowed: true, reason: "webhook" };
+  if (pathname === "/api/operations/crm-panel/embed/session") return { allowed: true, reason: "crm_embed" };
   if (pathname === "/api/crm" || pathname.startsWith("/api/crm/")) return { allowed: true, reason: "crm" };
 
   const allowed = parseAllowedEmails(options.allowedEmails);

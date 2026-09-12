@@ -23,6 +23,7 @@ interface Env {
   CHATWOOT_WEBHOOK_SECRET?: string;
   CHATWOOT_BASE_URL?: string;
   CHATWOOT_API_TOKEN?: string;
+  NUTRIPLUS_DASHBOARD_APP_SECRET?: string;
   NUTRIPLUS_APP_AUTH_MODE?: string;
   NUTRIPLUS_ALLOWED_USER_EMAILS?: string;
   IMAGES: {
@@ -67,6 +68,7 @@ const worker = {
     globalThis.__NUTRIPLUS_CHATWOOT_WEBHOOK_SECRET__ = env.CHATWOOT_WEBHOOK_SECRET;
     globalThis.__NUTRIPLUS_CHATWOOT_BASE_URL__ = env.CHATWOOT_BASE_URL;
     globalThis.__NUTRIPLUS_CHATWOOT_API_TOKEN__ = env.CHATWOOT_API_TOKEN;
+    globalThis.__NUTRIPLUS_DASHBOARD_APP_SECRET__ = env.NUTRIPLUS_DASHBOARD_APP_SECRET;
     const url = new URL(request.url);
 
     const access = siteAccessDecision(request, {

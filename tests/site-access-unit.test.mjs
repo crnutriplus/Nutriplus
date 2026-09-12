@@ -12,7 +12,7 @@ function request(path, init = {}) {
 }
 
 test("denies anonymous application pages and business APIs", () => {
-  for (const path of ["/", "/api/orders", "/api/products", "/api/inventory-intake", "/api/finance", "/operations/crm-panel", "/api/operations/crm-panel"]) {
+  for (const path of ["/", "/api/orders", "/api/products", "/api/inventory-intake", "/api/finance", "/operations/crm-panel", "/api/operations/crm-panel", "/api/operations/crm-panel/embed/session/extra"]) {
     const decision = siteAccessDecision(request(path), options);
     assert.equal(decision.allowed, false, path);
   }
@@ -31,6 +31,7 @@ test("allows only approved ChatGPT identities", () => {
 
 test("keeps only the security-checked integration routes outside user login", () => {
   assert.deepEqual(siteAccessDecision(request("/api/integrations/chatwoot/webhook", { method: "POST" }), options), { allowed: true, reason: "webhook" });
+  assert.deepEqual(siteAccessDecision(request("/api/operations/crm-panel/embed/session", { method: "POST" }), options), { allowed: true, reason: "crm_embed" });
   assert.deepEqual(siteAccessDecision(request("/api/crm/customers/resolve"), options), { allowed: true, reason: "crm" });
   assert.deepEqual(siteAccessDecision(request("/nutriplus-logo.jpg"), options), { allowed: true, reason: "static" });
 });

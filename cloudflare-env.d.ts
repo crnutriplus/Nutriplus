@@ -15,6 +15,7 @@ declare global {
   var __NUTRIPLUS_CHATWOOT_WEBHOOK_SECRET__: string | undefined;
   var __NUTRIPLUS_CHATWOOT_BASE_URL__: string | undefined;
   var __NUTRIPLUS_CHATWOOT_API_TOKEN__: string | undefined;
+  var __NUTRIPLUS_DASHBOARD_APP_SECRET__: string | undefined;
 
   namespace Cloudflare {
     interface Env {
@@ -32,6 +33,7 @@ declare global {
       CHATWOOT_WEBHOOK_SECRET?: string;
       CHATWOOT_BASE_URL?: string;
       CHATWOOT_API_TOKEN?: string;
+      NUTRIPLUS_DASHBOARD_APP_SECRET?: string;
     }
   }
 }
