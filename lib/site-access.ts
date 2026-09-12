@@ -59,7 +59,12 @@ export function siteAccessDecision(
   if (CHATGPT_AUTH_PATHS.has(pathname)) return { allowed: true, reason: "chatgpt_auth" };
   if (PUBLIC_STATIC_PATHS.has(pathname) || STATIC_EXTENSION.test(pathname)) return { allowed: true, reason: "static" };
   if (pathname === "/api/integrations/chatwoot/webhook") return { allowed: true, reason: "webhook" };
-  if (pathname === "/api/operations/crm-panel/embed/session" && request.method === "POST") return { allowed: true, reason: "crm_embed" };
+  if (pathname === "/operations/crm-panel/embed" && request.method === "GET") return { allowed: true, reason: "crm_embed" };
+  if (
+    pathname === "/api/operations/crm-panel/embed/session"
+    && request.method === "POST"
+    && request.headers.get("origin") === new URL(request.url).origin
+  ) return { allowed: true, reason: "crm_embed" };
   if (hasCrmDashboardSessionCookie(request) && isEmbeddedCrmApiRequest(request, pathname)) return { allowed: true, reason: "crm_embed" };
   if (pathname === "/api/crm" || pathname.startsWith("/api/crm/")) return { allowed: true, reason: "crm" };
 

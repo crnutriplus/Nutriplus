@@ -60,6 +60,13 @@ async function bootstrapToken(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    if (request.headers.get("origin") !== new URL(request.url).origin) {
+      throw new CrmError(
+        "Origen de solicitud no permitido.",
+        403,
+        "CRM_DASHBOARD_ORIGIN_INVALID",
+      );
+    }
     await ensureDatabase();
     const token = await bootstrapToken(request);
     const claims = await verifyCrmDashboardBootstrapToken(token);

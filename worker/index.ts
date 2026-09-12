@@ -3,6 +3,7 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { reconcileNotifications } from "../lib/notifications";
 import { siteAccessDecision, siteUnauthorizedResponse } from "../lib/site-access";
+import { withCrmDashboardFramePolicy } from "../lib/crm-dashboard-frame-policy";
 import { ChatwootClient } from "../lib/chatwoot-client";
 import { drainChatwootWebhookJobs, shouldRunChatwootWebhookOpportunisticDrain } from "../lib/chatwoot-webhook-outbox";
 import { processChatwootWebhookJob } from "../lib/chatwoot-sync";
@@ -103,6 +104,9 @@ const worker = {
       ctx.waitUntil((async () => {
         await reconcileNotifications(env.DB, { evaluateScheduled: isNavigation });
       })().catch(() => undefined));
+    }
+    if (url.pathname === "/operations/crm-panel/embed" && request.method === "GET") {
+      return withCrmDashboardFramePolicy(response, env.CHATWOOT_BASE_URL);
     }
     return response;
   },

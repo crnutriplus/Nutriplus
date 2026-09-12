@@ -31,7 +31,7 @@ test("allows only approved ChatGPT identities", () => {
 
 test("keeps only the security-checked integration routes outside user login", () => {
   assert.deepEqual(siteAccessDecision(request("/api/integrations/chatwoot/webhook", { method: "POST" }), options), { allowed: true, reason: "webhook" });
-  assert.deepEqual(siteAccessDecision(request("/api/operations/crm-panel/embed/session", { method: "POST" }), options), { allowed: true, reason: "crm_embed" });
+  assert.deepEqual(siteAccessDecision(request("/api/operations/crm-panel/embed/session", { method: "POST", headers: { origin: "https://nutriplus.test" } }), options), { allowed: true, reason: "crm_embed" });
   assert.deepEqual(siteAccessDecision(request("/api/crm/customers/resolve"), options), { allowed: true, reason: "crm" });
   assert.deepEqual(siteAccessDecision(request("/nutriplus-logo.jpg"), options), { allowed: true, reason: "static" });
 });

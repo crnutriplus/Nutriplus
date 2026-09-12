@@ -17,9 +17,11 @@ function claims(overrides = {}) {
   const now = Math.floor(Date.now() / 1000);
   return { iss:"chatwoot", aud:"nutriplus-crm", sub:"7", account_id:1, agent_id:7, conversation_id:900, contact_id:77, iat:now, exp:now+300, jti:crypto.randomUUID(), ...overrides };
 }
-function req(token) {
+function req(token, origin = "https://nutriplus.test") {
+  const headers = { "content-type":"application/json" };
+  if (origin) headers.origin = origin;
   return new Request("https://nutriplus.test/api/operations/crm-panel/embed/session", {
-    method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ token })
+    method:"POST", headers, body:JSON.stringify({ token })
   });
 }
 
@@ -43,6 +45,14 @@ test("dashboard exchange creates secure session, blocks replay and rejects bad c
     const { POST } = await import("../app/api/operations/crm-panel/embed/session/route.ts");
     const jti = crypto.randomUUID();
     const token = await jwt(claims({ jti }));
+
+    const missingOrigin = await POST(req(await jwt(claims()), null));
+    assert.equal(missingOrigin.status, 403);
+    assert.equal((await missingOrigin.json()).error.code, "CRM_DASHBOARD_ORIGIN_INVALID");
+
+    const badOrigin = await POST(req(await jwt(claims()), "https://evil.test"));
+    assert.equal(badOrigin.status, 403);
+    assert.equal((await badOrigin.json()).error.code, "CRM_DASHBOARD_ORIGIN_INVALID");
 
     const ok = await POST(req(token));
     assert.equal(ok.status, 201);
