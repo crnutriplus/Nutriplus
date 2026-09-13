@@ -47,4 +47,8 @@ export const CRM_DATABASE_SQL = [
     status TEXT NOT NULL DEFAULT 'PENDING', response_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at TEXT
   )`,
+  "CREATE TABLE IF NOT EXISTS crm_dashboard_sessions (id TEXT PRIMARY KEY NOT NULL, bootstrap_jti TEXT NOT NULL, chatwoot_account_id INTEGER NOT NULL, chatwoot_contact_id INTEGER NOT NULL, chatwoot_conversation_id INTEGER NOT NULL, chatwoot_agent_id INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at TEXT NOT NULL, revoked_at TEXT)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS crm_dashboard_sessions_jti_unique ON crm_dashboard_sessions (bootstrap_jti)",
+  "CREATE INDEX IF NOT EXISTS crm_dashboard_sessions_expiry_idx ON crm_dashboard_sessions (expires_at, id)",
+  "CREATE INDEX IF NOT EXISTS crm_dashboard_sessions_context_idx ON crm_dashboard_sessions (chatwoot_account_id, chatwoot_conversation_id, expires_at)",
 ] as const;
