@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   crmDashboardParentOrigin,
+  isSuccessfulCrmDashboardSessionExchange,
   isTrustedCrmDashboardMessage,
   parseCrmDashboardBootstrapMessage,
 } from "../lib/crm-dashboard-handshake.ts";
@@ -76,4 +77,11 @@ test("parses only the exact serialized bootstrap event with a bounded token", ()
     ),
     null,
   );
+});
+
+test("accepts only HTTP 201 for dashboard session exchange", () => {
+  assert.equal(isSuccessfulCrmDashboardSessionExchange(201), true);
+  assert.equal(isSuccessfulCrmDashboardSessionExchange(200), false);
+  assert.equal(isSuccessfulCrmDashboardSessionExchange(204), false);
+  assert.equal(isSuccessfulCrmDashboardSessionExchange(400), false);
 });

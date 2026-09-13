@@ -10,6 +10,10 @@ export function crmDashboardParentOrigin(baseUrl: string | undefined) {
   }
 }
 
+export function isSuccessfulCrmDashboardSessionExchange(status: number) {
+  return status === 201;
+}
+
 export function isTrustedCrmDashboardMessage(
   event: { origin: string; source: unknown },
   expectedOrigin: string,

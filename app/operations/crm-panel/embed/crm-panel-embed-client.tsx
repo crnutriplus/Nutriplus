@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  isSuccessfulCrmDashboardSessionExchange,
   isTrustedCrmDashboardMessage,
   parseCrmDashboardBootstrapMessage,
 } from "@/lib/crm-dashboard-handshake";
@@ -61,7 +62,7 @@ export function CrmPanelEmbedClient({
           | { error?: { message?: string } }
           | null;
 
-        if (!response.ok) {
+        if (!isSuccessfulCrmDashboardSessionExchange(response.status)) {
           throw new Error(
             body?.error?.message ||
               "No se pudo iniciar la sesión del CRM.",
