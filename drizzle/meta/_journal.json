@@ -148,6 +148,13 @@
       "when": 1789219367528,
       "tag": "0020_crm_dashboard_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1789499656831,
+      "tag": "0021_chief_tomas",
+      "breakpoints": true
     }
   ]
 }
