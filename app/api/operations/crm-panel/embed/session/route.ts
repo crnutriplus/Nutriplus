@@ -59,6 +59,17 @@ async function bootstrapToken(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const started = performance.now();
+  const timings: Record<string, number> = {};
+  const timed = async <T>(name: string, work: () => Promise<T>) => {
+    const t = performance.now();
+    try {
+      return await work();
+    } finally {
+      timings[name] = performance.now() - t;
+    }
+  };
+
   try {
     if (request.headers.get("origin") !== new URL(request.url).origin) {
       throw new CrmError(
@@ -67,9 +78,9 @@ export async function POST(request: Request) {
         "CRM_DASHBOARD_ORIGIN_INVALID",
       );
     }
-    await ensureDatabase();
-    const token = await bootstrapToken(request);
-    const claims = await verifyCrmDashboardBootstrapToken(token);
+    await timed("database", () => ensureDatabase());
+    const token = await timed("request", () => bootstrapToken(request));
+    const claims = await timed("jwt", () => verifyCrmDashboardBootstrapToken(token));
     const db = getD1();
 
     const context = {
@@ -77,16 +88,22 @@ export async function POST(request: Request) {
       contactId: claims.contactId,
       conversationId: claims.conversationId,
     };
-    const customer = await validateCrmPanelContext(
-      db,
-      context,
-      configuredClient(),
+    const customer = await timed("context", () =>
+      validateCrmPanelContext(
+        db,
+        context,
+        configuredClient(),
+      ),
     );
 
     const [session, panel] = await Promise.all([
-      createCrmDashboardSession(db, claims),
-      getCrmPanelForCustomer(db, context, customer),
+      timed("session", () => createCrmDashboardSession(db, claims)),
+      timed("panel", () => getCrmPanelForCustomer(db, context, customer)),
     ]);
+    timings.total = performance.now() - started;
+    const serverTiming = Object.entries(timings)
+      .map(([name, duration]) => `${name};dur=${duration.toFixed(1)}`)
+      .join(", ");
     return Response.json(
       { ok: true, expiresAt: session.expiresAt, panel },
       {
@@ -94,6 +111,7 @@ export async function POST(request: Request) {
         headers: {
           "cache-control": "no-store",
           "set-cookie": crmDashboardSessionCookie(session.id),
+          "server-timing": serverTiming,
         },
       },
     );
