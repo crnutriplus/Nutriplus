@@ -1,6 +1,6 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { CrmError } from "@/lib/crm";
-import { validateCrmPanelContext } from "@/lib/crm-panel";
+import { getCrmPanelForCustomer, validateCrmPanelContext } from "@/lib/crm-panel";
 import { ChatwootApiError, ChatwootClient } from "@/lib/chatwoot-client";
 import {
   createCrmDashboardSession,
@@ -72,19 +72,23 @@ export async function POST(request: Request) {
     const claims = await verifyCrmDashboardBootstrapToken(token);
     const db = getD1();
 
-    await validateCrmPanelContext(
+    const context = {
+      accountId: claims.accountId,
+      contactId: claims.contactId,
+      conversationId: claims.conversationId,
+    };
+    const customer = await validateCrmPanelContext(
       db,
-      {
-        accountId: claims.accountId,
-        contactId: claims.contactId,
-        conversationId: claims.conversationId,
-      },
+      context,
       configuredClient(),
     );
 
-    const session = await createCrmDashboardSession(db, claims);
+    const [session, panel] = await Promise.all([
+      createCrmDashboardSession(db, claims),
+      getCrmPanelForCustomer(db, context, customer),
+    ]);
     return Response.json(
-      { ok: true, expiresAt: session.expiresAt },
+      { ok: true, expiresAt: session.expiresAt, panel },
       {
         status: 201,
         headers: {

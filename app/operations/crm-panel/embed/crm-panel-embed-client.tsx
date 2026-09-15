@@ -6,7 +6,7 @@ import {
   isTrustedCrmDashboardMessage,
   parseCrmDashboardBootstrapMessage,
 } from "@/lib/crm-dashboard-handshake";
-import { CrmPanelClient } from "../crm-panel-client";
+import { CrmPanelClient, type Panel } from "../crm-panel-client";
 
 const EMPTY_CONTEXT = {
   accountId: "",
@@ -23,6 +23,7 @@ export function CrmPanelEmbedClient({
 }) {
   const [state, setState] = useState<EmbedState>("waiting");
   const [error, setError] = useState<string | null>(null);
+  const [initialPanel, setInitialPanel] = useState<Panel | null>(null);
   const exchanging = useRef(false);
 
   useEffect(() => {
@@ -59,7 +60,7 @@ export function CrmPanelEmbedClient({
         );
 
         const body = (await response.json().catch(() => null)) as
-          | { error?: { message?: string } }
+          | { panel?: Panel; error?: { message?: string } }
           | null;
 
         if (!isSuccessfulCrmDashboardSessionExchange(response.status)) {
@@ -69,6 +70,7 @@ export function CrmPanelEmbedClient({
           );
         }
 
+        setInitialPanel(body?.panel ?? null);
         setState("ready");
       } catch (cause) {
         exchanging.current = false;
@@ -107,6 +109,7 @@ export function CrmPanelEmbedClient({
       <CrmPanelClient
         context={EMPTY_CONTEXT}
         userName="Chatwoot"
+        initialPanel={initialPanel}
       />
     );
   }

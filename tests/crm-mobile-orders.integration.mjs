@@ -18,6 +18,16 @@ result=await call(`/api/operations/crm-panel/products?account_id=1&contact_id=77
 assert.equal(result.r.status,200);assert.equal(result.b.products[0].id,stocked.id);assert.equal(result.b.products[0].brand,"Marca Buscable");
 result=await call(`/api/operations/crm-panel/products?account_id=1&contact_id=77&q=${encodeURIComponent("60 cápsulas")}`,{headers:agent});
 assert.equal(result.r.status,200);assert.equal(result.b.products[0].id,stocked.id);
+
+await DB.prepare("UPDATE products SET purchase_price_usd_cents=NULL WHERE code=?").bind("MOB-EMPTY").run();
+result=await call(`/api/operations/crm-panel/products?account_id=1&contact_id=77&q=${encodeURIComponent("Móvil")}`,{headers:agent});
+assert.equal(result.r.status,200,JSON.stringify(result.b));
+assert.equal(result.b.products.some((item)=>item.code==="MOB-STOCK"),true);
+const unavailable=result.b.products.find((item)=>item.code==="MOB-EMPTY");
+assert.ok(unavailable);
+assert.equal(unavailable.commercialPrice,null);
+assert.equal(unavailable.availability,"PRICE_UNAVAILABLE");
+
 const quote=await call("/api/quotes",{method:"POST",headers:agent,body:JSON.stringify({name:"Encargo móvil",code:"MOB-SPECIAL",purchasePriceUsd:12,weightLb:.5})});assert.equal(quote.r.status,201,JSON.stringify(quote.b));
 async function draft(operationId,lines,extra={}){const {conversation_id,...payloadExtra}=extra;const query=new URLSearchParams({account_id:"1",contact_id:"77",...(conversation_id?{conversation_id:String(conversation_id)}:{})});return call(`/api/operations/crm-panel/orders?${query}`,{method:"POST",headers:agent,body:JSON.stringify({operationId,deliveryAddress:"Dirección prueba",expectedPaymentMethod:"SINPE",lines,...payloadExtra})});}
 let created=await draft("mobile-order-1",[{id:stocked.id,kind:"INVENTORY",quantity:1,unitPriceSold:1,total:1,discountAmount:0}],{customerId:"other"});assert.equal(created.r.status,201,JSON.stringify(created.b));assert.equal(created.b.order.customerId,customer);assert.notEqual(created.b.order.lines[0].unitPriceSold,1);

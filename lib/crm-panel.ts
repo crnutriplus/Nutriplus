@@ -58,13 +58,18 @@ const orderSelect = `SELECT o.*, ${paymentSql} AS paid_total,
   (SELECT sd.special_order_status FROM special_order_details sd WHERE sd.order_id=o.id) AS special_order_status
   FROM orders o`;
 
-export async function getCrmPanel(db: D1Database, context: CrmPanelContext, client?: ConversationClient) {
-  const customer = await validateCrmPanelContext(db, context, client);
+export async function getCrmPanelForCustomer(db: D1Database, context: CrmPanelContext, customer: Row) {
   const customerStats = await one(db, "SELECT COUNT(*) AS orders_count, MAX(created_at) AS last_order_date FROM orders WHERE customer_id=?", customer.id);
   const recent = (await rows(db, `${orderSelect} WHERE o.customer_id=? ORDER BY o.created_at DESC LIMIT 12`, customer.id)).map(orderSummary);
   const activeOrders = recent.filter((order) => !["DELIVERED", "CANCELLED", "RETURNED"].includes(String(order.status)));
   const conversationOrders = context.conversationId == null ? [] : (await rows(db, `${orderSelect} JOIN chatwoot_conversation_order_links l ON l.order_id=o.id WHERE l.chatwoot_account_id=? AND l.chatwoot_conversation_id=? AND o.customer_id=? ORDER BY CASE l.link_role WHEN 'PRIMARY' THEN 0 ELSE 1 END, o.updated_at DESC`, context.accountId, context.conversationId, customer.id)).map(orderSummary);
   return { customer: { id: customer.id, name: customer.name, phone: customer.phone_normalized || customer.phone_raw, customerStatus: customer.customer_status, province: customer.province, canton: customer.canton, district: customer.district, defaultDeliveryAddress: customer.default_delivery_address, locationUrl: customer.location_url, locationReference: customer.location_reference, latitude: customer.latitude, longitude: customer.longitude, preferredPaymentMethod: customer.preferred_payment_method, ordersCount: Number(customerStats?.orders_count || 0), lastOrderDate: customerStats?.last_order_date ?? null }, activeOrders, recentOrders: recent, conversationOrders };
+}
+
+
+export async function getCrmPanel(db: D1Database, context: CrmPanelContext, client?: ConversationClient) {
+  const customer = await validateCrmPanelContext(db, context, client);
+  return getCrmPanelForCustomer(db, context, customer);
 }
 
 export async function getCrmPanelOrder(db: D1Database, context: CrmPanelContext, orderId: string, client?: ConversationClient) {
