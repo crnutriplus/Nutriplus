@@ -40,10 +40,23 @@ function conversationContactId(conversation: Row) {
  * and contact that are canonically linked in NutriPlus.
  */
 export async function validateCrmPanelContext(db: D1Database, context: CrmPanelContext, client?: ConversationClient) {
-  const customer = await linkedCrmPanelCustomer(db, context);
-  if (context.conversationId == null) return customer;
-  if (!client) throw new CrmError("No se puede validar la conversación de Chatwoot en este momento.", 503, "CRM_PANEL_CHATWOOT_NOT_CONFIGURED");
-  const conversation = await client.getConversation(context.accountId, context.conversationId);
+  if (context.conversationId == null) return linkedCrmPanelCustomer(db, context);
+
+  if (!client) {
+    await linkedCrmPanelCustomer(db, context);
+    throw new CrmError("No se puede validar la conversación de Chatwoot en este momento.", 503, "CRM_PANEL_CHATWOOT_NOT_CONFIGURED");
+  }
+
+  const [customerResult, conversationResult] = await Promise.allSettled([
+    linkedCrmPanelCustomer(db, context),
+    client.getConversation(context.accountId, context.conversationId),
+  ]);
+
+  if (customerResult.status === "rejected") throw customerResult.reason;
+  if (conversationResult.status === "rejected") throw conversationResult.reason;
+
+  const customer = customerResult.value;
+  const conversation = conversationResult.value;
   const account = Number(conversation.account_id ?? context.accountId);
   if (!Number.isSafeInteger(account) || account !== context.accountId || conversationContactId(conversation) !== context.contactId) {
     throw new CrmError("La conversación no corresponde al contacto seleccionado.", 404, "CRM_PANEL_CONTEXT_MISMATCH");
