@@ -88,11 +88,17 @@ export async function POST(request: Request) {
       contactId: claims.contactId,
       conversationId: claims.conversationId,
     };
+    const chatwootClient = configuredClient();
     const customer = await timed("context", () =>
       validateCrmPanelContext(
         db,
         context,
-        configuredClient(),
+        {
+          getConversation: (accountId, conversationId) =>
+            timed("chatwoot", () =>
+              chatwootClient.getConversation(accountId, conversationId),
+            ),
+        },
       ),
     );
 
