@@ -54,8 +54,11 @@ class Statement {
     return this;
   }
   async run() {
-    this.db.prepare(this.sql).run(...this.args);
-    return { success: true };
+    const result = this.db.prepare(this.sql).run(...this.args);
+    return {
+      success: true,
+      meta: { changes: Number(result.changes || 0) },
+    };
   }
   async first() {
     return this.db.prepare(this.sql).get(...this.args) ?? null;

@@ -149,7 +149,7 @@ export async function createCrmDashboardSession(
   const idHash = await hashSessionId(id);
   const expiresAt = new Date(nowMs + CRM_DASHBOARD_SESSION_TTL_SECONDS * 1000).toISOString();
 
-  await db.prepare(`INSERT OR IGNORE INTO crm_dashboard_sessions (
+  const created = await db.prepare(`INSERT OR IGNORE INTO crm_dashboard_sessions (
     id,bootstrap_jti,chatwoot_account_id,chatwoot_contact_id,chatwoot_conversation_id,chatwoot_agent_id,expires_at
   ) VALUES (?,?,?,?,?,?,?)`).bind(
     idHash,
@@ -161,8 +161,9 @@ export async function createCrmDashboardSession(
     expiresAt,
   ).run();
 
-  const created = await db.prepare("SELECT id FROM crm_dashboard_sessions WHERE id=?").bind(idHash).first<{ id: string }>();
-  if (!created) throw authError("El token de Dashboard App ya fue utilizado.", "CRM_DASHBOARD_BOOTSTRAP_REPLAYED");
+  if (Number(created.meta?.changes ?? 0) === 0) {
+    throw authError("El token de Dashboard App ya fue utilizado.", "CRM_DASHBOARD_BOOTSTRAP_REPLAYED");
+  }
 
   return {
     id,

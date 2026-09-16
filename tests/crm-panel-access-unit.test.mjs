@@ -7,7 +7,13 @@ import { requireCrmPanelAccess } from "../lib/crm-panel-access.ts";
 class Statement {
   constructor(db, sql) { this.db = db; this.sql = sql; this.args = []; }
   bind(...args) { this.args = args; return this; }
-  async run() { this.db.prepare(this.sql).run(...this.args); return { success: true }; }
+  async run() {
+    const result = this.db.prepare(this.sql).run(...this.args);
+    return {
+      success: true,
+      meta: { changes: Number(result.changes || 0) },
+    };
+  }
   async first() { return this.db.prepare(this.sql).get(...this.args) ?? null; }
 }
 
