@@ -60,17 +60,6 @@ async function bootstrapToken(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const started = performance.now();
-  const timings: Record<string, number> = {};
-  const timed = async <T>(name: string, work: () => Promise<T>) => {
-    const t = performance.now();
-    try {
-      return await work();
-    } finally {
-      timings[name] = performance.now() - t;
-    }
-  };
-
   try {
     if (request.headers.get("origin") !== new URL(request.url).origin) {
       throw new CrmError(
@@ -79,9 +68,9 @@ export async function POST(request: Request) {
         "CRM_DASHBOARD_ORIGIN_INVALID",
       );
     }
-    await timed("database", () => ensureDatabase());
-    const token = await timed("request", () => bootstrapToken(request));
-    const claims = await timed("jwt", () => verifyCrmDashboardBootstrapToken(token));
+    await ensureDatabase();
+    const token = await bootstrapToken(request);
+    const claims = await verifyCrmDashboardBootstrapToken(token);
     const db = getD1();
 
     const context = {
@@ -91,9 +80,7 @@ export async function POST(request: Request) {
     };
     const chatwootClient = configuredClient();
     const recoverCustomer = async () => {
-      const contact = await timed("chatwootContact", () =>
-        chatwootClient.getContact(context.accountId, context.contactId),
-      );
+      const contact = await chatwootClient.getContact(context.accountId, context.contactId);
       if (Number(contact.id) !== context.contactId) {
         throw new CrmError(
           "La conversación no corresponde al contacto seleccionado.",
@@ -101,33 +88,23 @@ export async function POST(request: Request) {
           "CRM_PANEL_CONTEXT_MISMATCH",
         );
       }
-      await timed("syncContact", () =>
-        syncContact(db, chatwootClient, context.accountId, contact),
-      );
+      await syncContact(db, chatwootClient, context.accountId, contact);
       return linkedCrmPanelCustomer(db, context);
     };
-    const customer = await timed("context", () =>
-      validateCrmPanelContext(
+    const customer = await validateCrmPanelContext(
         db,
         context,
         {
           getConversation: (accountId, conversationId) =>
-            timed("chatwoot", () =>
-              chatwootClient.getConversation(accountId, conversationId),
-            ),
+            chatwootClient.getConversation(accountId, conversationId),
         },
         recoverCustomer,
-      ),
     );
 
     const [session, panel] = await Promise.all([
-      timed("session", () => createCrmDashboardSession(db, claims)),
-      timed("panel", () => getCrmPanelForCustomer(db, context, customer)),
+      createCrmDashboardSession(db, claims),
+      getCrmPanelForCustomer(db, context, customer),
     ]);
-    timings.total = performance.now() - started;
-    const serverTiming = Object.entries(timings)
-      .map(([name, duration]) => `${name};dur=${duration.toFixed(1)}`)
-      .join(", ");
     return Response.json(
       { ok: true, expiresAt: session.expiresAt, panel },
       {
@@ -135,7 +112,6 @@ export async function POST(request: Request) {
         headers: {
           "cache-control": "no-store",
           "set-cookie": crmDashboardSessionCookie(session.id),
-          "server-timing": serverTiming,
         },
       },
     );
