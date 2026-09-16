@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { LocalD1Database } from "./helpers/local-bindings.mjs";
+import { CRM_DATABASE_SQL } from "../lib/crm-database.ts";
+
+function initCrmRouteDb(db) { db.sqlite.exec("CREATE TABLE orders (id TEXT PRIMARY KEY, order_number TEXT, order_type TEXT, customer_id TEXT, status TEXT, total INTEGER, scheduled_delivery_date TEXT, created_at TEXT, updated_at TEXT)"); db.sqlite.exec("CREATE TABLE order_payments (id TEXT PRIMARY KEY, order_id TEXT, amount INTEGER, payment_type TEXT, status TEXT)"); db.sqlite.exec("CREATE TABLE special_order_details (order_id TEXT PRIMARY KEY, special_order_status TEXT)"); for (const sql of CRM_DATABASE_SQL) db.sqlite.exec(sql); }
 
 const secret = "dashboard-secret-for-tests-0123456789abcdef";
 const enc = new TextEncoder();
@@ -86,6 +89,85 @@ test("dashboard exchange creates secure session, blocks replay and rejects bad c
     assert.equal((await bad.json()).error.code, "CRM_DASHBOARD_SIGNATURE_INVALID");
 
     assert.equal(db.sqlite.prepare("SELECT count(*) AS total FROM crm_dashboard_sessions").get().total, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    db.close();
+  }
+});
+
+
+test("recovers a validated legacy Instagram contact but never recovers mismatched context", async () => {
+  const db = new LocalD1Database();
+  initCrmRouteDb(db);
+  globalThis.__NUTRIPLUS_DB__ = db;
+  globalThis.__NUTRIPLUS_DASHBOARD_APP_SECRET__ = secret;
+  globalThis.__NUTRIPLUS_CHATWOOT_BASE_URL__ = "https://chatwoot.test";
+  globalThis.__NUTRIPLUS_CHATWOOT_API_TOKEN__ = "test-api-token";
+  const originalFetch = globalThis.fetch;
+  let contactGets = 0;
+  let patches = 0;
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input);
+    const method = String(init.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
+
+    if (url.includes("/conversations/901")) {
+      return Response.json({ account_id: 1, meta: { sender: { id: 88 } } });
+    }
+    if (url.includes("/contacts/88") && method === "GET") {
+      contactGets++;
+      return Response.json({ payload: {
+        id: 88,
+        name: "Cliente Instagram antiguo",
+        phone_number: "",
+        identifier: "",
+        custom_attributes: {},
+        contact_inboxes: [{
+          source_id: "1626090009237784",
+          inbox: { channel_type: "Channel::Instagram" }
+        }]
+      } });
+    }
+    if (url.includes("/contacts/88") && method === "PATCH") {
+      patches++;
+      return Response.json({ ok: true });
+    }
+    if (url.includes("/contacts/89")) {
+      contactGets++;
+      return Response.json({ payload: { id: 89 } });
+    }
+    return new Response("unexpected request", { status: 500 });
+  };
+
+  try {
+    const { ensureDatabase } = await import("../db/index.ts");
+    await ensureDatabase();
+    const { POST } = await import("../app/api/operations/crm-panel/embed/session/route.ts");
+
+    const mismatch = await POST(req(await jwt(claims({
+      conversation_id: 901,
+      contact_id: 89,
+      jti: crypto.randomUUID()
+    }))));
+    assert.equal(mismatch.status, 404);
+    assert.equal((await mismatch.json()).error.code, "CRM_PANEL_CONTEXT_MISMATCH");
+    assert.equal(contactGets, 0);
+
+    const ok = await POST(req(await jwt(claims({
+      conversation_id: 901,
+      contact_id: 88,
+      jti: crypto.randomUUID()
+    }))));
+    assert.equal(ok.status, 201);
+    assert.equal(contactGets, 1);
+    assert.equal(patches, 1);
+
+    const link = db.sqlite.prepare("SELECT customer_id FROM chatwoot_contact_links WHERE chatwoot_account_id=1 AND chatwoot_contact_id=88").get();
+    assert.ok(link?.customer_id);
+
+    const identity = db.sqlite.prepare("SELECT provider,external_id FROM customer_external_identities WHERE customer_id=?").get(link.customer_id);
+    assert.equal(identity.provider, "instagram");
+    assert.equal(identity.external_id, "1626090009237784");
   } finally {
     globalThis.fetch = originalFetch;
     db.close();

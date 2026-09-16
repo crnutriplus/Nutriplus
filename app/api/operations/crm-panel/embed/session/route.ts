@@ -1,7 +1,8 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { CrmError } from "@/lib/crm";
-import { getCrmPanelForCustomer, validateCrmPanelContext } from "@/lib/crm-panel";
+import { getCrmPanelForCustomer, linkedCrmPanelCustomer, validateCrmPanelContext } from "@/lib/crm-panel";
 import { ChatwootApiError, ChatwootClient } from "@/lib/chatwoot-client";
+import { syncContact } from "@/lib/chatwoot-sync";
 import {
   createCrmDashboardSession,
   crmDashboardSessionCookie,
@@ -89,6 +90,22 @@ export async function POST(request: Request) {
       conversationId: claims.conversationId,
     };
     const chatwootClient = configuredClient();
+    const recoverCustomer = async () => {
+      const contact = await timed("chatwootContact", () =>
+        chatwootClient.getContact(context.accountId, context.contactId),
+      );
+      if (Number(contact.id) !== context.contactId) {
+        throw new CrmError(
+          "La conversación no corresponde al contacto seleccionado.",
+          404,
+          "CRM_PANEL_CONTEXT_MISMATCH",
+        );
+      }
+      await timed("syncContact", () =>
+        syncContact(db, chatwootClient, context.accountId, contact),
+      );
+      return linkedCrmPanelCustomer(db, context);
+    };
     const customer = await timed("context", () =>
       validateCrmPanelContext(
         db,
@@ -99,6 +116,7 @@ export async function POST(request: Request) {
               chatwootClient.getConversation(accountId, conversationId),
             ),
         },
+        recoverCustomer,
       ),
     );
 

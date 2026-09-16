@@ -39,7 +39,12 @@ function conversationContactId(conversation: Row) {
  * accepted only after Chatwoot confirms that it is scoped to the same account
  * and contact that are canonically linked in NutriPlus.
  */
-export async function validateCrmPanelContext(db: D1Database, context: CrmPanelContext, client?: ConversationClient) {
+export async function validateCrmPanelContext(
+  db: D1Database,
+  context: CrmPanelContext,
+  client?: ConversationClient,
+  recoverCustomer?: () => Promise<Row>,
+) {
   if (context.conversationId == null) return linkedCrmPanelCustomer(db, context);
 
   if (!client) {
@@ -52,15 +57,36 @@ export async function validateCrmPanelContext(db: D1Database, context: CrmPanelC
     client.getConversation(context.accountId, context.conversationId),
   ]);
 
-  if (customerResult.status === "rejected") throw customerResult.reason;
+  if (customerResult.status === "rejected") {
+    if (conversationResult.status === "rejected") throw customerResult.reason;
+
+    const conversation = conversationResult.value;
+    const account = Number(conversation.account_id ?? context.accountId);
+    if (!Number.isSafeInteger(account) || account !== context.accountId || conversationContactId(conversation) !== context.contactId) {
+      throw new CrmError("La conversación no corresponde al contacto seleccionado.", 404, "CRM_PANEL_CONTEXT_MISMATCH");
+    }
+
+    if (
+      recoverCustomer &&
+      customerResult.reason instanceof CrmError &&
+      customerResult.reason.code === "CRM_PANEL_CUSTOMER_NOT_LINKED"
+    ) {
+      return recoverCustomer();
+    }
+
+    throw customerResult.reason;
+  }
+
   if (conversationResult.status === "rejected") throw conversationResult.reason;
 
   const customer = customerResult.value;
   const conversation = conversationResult.value;
   const account = Number(conversation.account_id ?? context.accountId);
+
   if (!Number.isSafeInteger(account) || account !== context.accountId || conversationContactId(conversation) !== context.contactId) {
     throw new CrmError("La conversación no corresponde al contacto seleccionado.", 404, "CRM_PANEL_CONTEXT_MISMATCH");
   }
+
   return customer;
 }
 function orderSummary(row: Row) {
