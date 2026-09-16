@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   isSuccessfulCrmDashboardSessionExchange,
   isTrustedCrmDashboardMessage,
+  notifyCrmDashboardReady,
   parseCrmDashboardBootstrapMessage,
 } from "@/lib/crm-dashboard-handshake";
 import { CrmPanelClient, type Panel } from "../crm-panel-client";
@@ -84,9 +85,14 @@ export function CrmPanelEmbedClient({
     }
 
     window.addEventListener("message", handleMessage);
-    parentWindow.postMessage(
-      "nutriplus-dashboard-app:ready",
+    notifyCrmDashboardReady(
+      parentWindow,
       parentOrigin,
+      (
+        window as Window & {
+          ReactNativeWebView?: { postMessage(data: string): void };
+        }
+      ).ReactNativeWebView,
     );
 
     return () => {
@@ -98,9 +104,14 @@ export function CrmPanelEmbedClient({
     exchanging.current = false;
     setError(null);
     setState("waiting");
-    window.parent.postMessage(
-      "nutriplus-dashboard-app:ready",
+    notifyCrmDashboardReady(
+      window.parent,
       parentOrigin,
+      (
+        window as Window & {
+          ReactNativeWebView?: { postMessage(data: string): void };
+        }
+      ).ReactNativeWebView,
     );
   }
 

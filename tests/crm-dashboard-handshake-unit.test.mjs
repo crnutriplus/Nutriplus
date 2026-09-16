@@ -4,6 +4,7 @@ import {
   crmDashboardParentOrigin,
   isSuccessfulCrmDashboardSessionExchange,
   isTrustedCrmDashboardMessage,
+  notifyCrmDashboardReady,
   parseCrmDashboardBootstrapMessage,
 } from "../lib/crm-dashboard-handshake.ts";
 
@@ -84,4 +85,28 @@ test("accepts only HTTP 201 for dashboard session exchange", () => {
   assert.equal(isSuccessfulCrmDashboardSessionExchange(200), false);
   assert.equal(isSuccessfulCrmDashboardSessionExchange(204), false);
   assert.equal(isSuccessfulCrmDashboardSessionExchange(400), false);
+});
+
+test("notifies both the web parent and native bridge with ready only", () => {
+  const parentMessages = [];
+  const nativeMessages = [];
+
+  notifyCrmDashboardReady(
+    {
+      postMessage(data, origin) {
+        parentMessages.push([data, origin]);
+      },
+    },
+    "https://crm.crnutriplus.com",
+    {
+      postMessage(data) {
+        nativeMessages.push(data);
+      },
+    },
+  );
+
+  assert.deepEqual(parentMessages, [
+    ["nutriplus-dashboard-app:ready", "https://crm.crnutriplus.com"],
+  ]);
+  assert.deepEqual(nativeMessages, ["nutriplus-dashboard-app:ready"]);
 });

@@ -1,6 +1,17 @@
 const BOOTSTRAP_EVENT = "nutriplus-dashboard-bootstrap";
 const MAX_TOKEN_LENGTH = 8192;
 
+const DASHBOARD_READY_EVENT = "nutriplus-dashboard-app:ready";
+
+export function notifyCrmDashboardReady(
+  parentWindow: { postMessage(data: string, targetOrigin: string): void },
+  parentOrigin: string,
+  nativeBridge?: { postMessage(data: string): void },
+) {
+  parentWindow.postMessage(DASHBOARD_READY_EVENT, parentOrigin);
+  nativeBridge?.postMessage(DASHBOARD_READY_EVENT);
+}
+
 export function crmDashboardParentOrigin(baseUrl: string | undefined) {
   if (!baseUrl) return null;
   try {
