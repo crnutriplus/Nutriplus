@@ -950,3 +950,27 @@ export const crmOperations = sqliteTable("crm_operations", {
   operationId: text("operation_id").primaryKey(), operationType: text("operation_type").notNull(), requestHash: text("request_hash").notNull(), status: text("status").notNull().default("PENDING"), responseJson: text("response_json"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), completedAt: text("completed_at"),
 });
+
+export const crmDashboardSessions = sqliteTable("crm_dashboard_sessions", {
+  id: text("id").primaryKey(),
+  bootstrapJti: text("bootstrap_jti").notNull(),
+  chatwootAccountId: integer("chatwoot_account_id").notNull(),
+  chatwootContactId: integer("chatwoot_contact_id").notNull(),
+  chatwootConversationId: integer("chatwoot_conversation_id").notNull(),
+  chatwootAgentId: integer("chatwoot_agent_id").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  expiresAt: text("expires_at").notNull(),
+  revokedAt: text("revoked_at"),
+}, (table) => [
+  uniqueIndex("crm_dashboard_sessions_jti_unique").on(table.bootstrapJti),
+  index("crm_dashboard_sessions_expiry_idx").on(table.expiresAt, table.id),
+  index("crm_dashboard_sessions_context_idx").on(table.chatwootAccountId, table.chatwootConversationId, table.expiresAt),
+]);
+
+// Persistent marker used to avoid repeating full runtime schema reconciliation
+// on every cold start after the expected schema has been verified.
+export const runtimeSchemaState = sqliteTable("runtime_schema_state", {
+  id: integer("id").primaryKey(),
+  version: integer("version").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});

@@ -15,15 +15,15 @@ function price(row: Row, settings: Row) {
   return calculatePrices(Number(row.purchase_price_usd_cents) / 100, Number(row.weight_milli_lb) / 1000, settingsFromRow(settings)).gamPriceCrc;
 }
 function availability(row: Row) { const quantity = Number(row.quantity_available || 0); return quantity > 0 ? "AVAILABLE" : "OUT_OF_STOCK"; }
-function productResult(row: Row, settings: Row) { const commercialPrice = Math.round(price(row, settings)); return { id: Number(row.id), kind: "INVENTORY" as const, name: String(row.name), presentation: row.presentation ? String(row.presentation) : null, code: row.code ? String(row.code) : null, commercialPrice, quantityAvailable: Number(row.quantity_available || 0), availability: availability(row) }; }
-function quoteResult(row: Row, settings: Row) { const commercialPrice = Math.round(price(row, settings)); return { id: Number(row.id), kind: "SPECIAL_ORDER" as const, name: String(row.name), presentation: null, code: row.code ? String(row.code) : null, commercialPrice, quantityAvailable: null, availability: "SPECIAL_ORDER" as const }; }
+function productResult(row: Row, settings: Row) { const commercialPrice = row.purchase_price_usd_cents == null || row.weight_milli_lb == null ? null : Math.round(price(row, settings)); return { id: Number(row.id), kind: "INVENTORY" as const, name: String(row.name), brand: row.brand ? String(row.brand) : null, presentation: row.presentation ? String(row.presentation) : null, code: row.code ? String(row.code) : null, commercialPrice, quantityAvailable: Number(row.quantity_available || 0), availability: commercialPrice == null ? "PRICE_UNAVAILABLE" as const : availability(row) }; }
+function quoteResult(row: Row, settings: Row) { const commercialPrice = row.purchase_price_usd_cents == null || row.weight_milli_lb == null ? null : Math.round(price(row, settings)); return { id: Number(row.id), kind: "SPECIAL_ORDER" as const, name: String(row.name), brand: null, presentation: null, code: row.code ? String(row.code) : null, commercialPrice, quantityAvailable: null, availability: commercialPrice == null ? "PRICE_UNAVAILABLE" as const : "SPECIAL_ORDER" as const }; }
 
 export async function searchCrmMobileProducts(db: D1Database, query: string) {
   const term = text(query, 200); if (!term) throw new CrmError("Ingresá un término de búsqueda.", 400, "CRM_PANEL_PRODUCT_QUERY_REQUIRED");
   const settings = await db.prepare("SELECT * FROM settings WHERE id=1").first<Row>(); if (!settings) throw new CrmError("No hay configuración comercial disponible.", 409, "CRM_PANEL_PRICING_UNAVAILABLE");
   const pattern = `%${term.toLowerCase()}%`;
   const [products, quotes] = await Promise.all([
-    db.prepare("SELECT * FROM products WHERE lower(name) LIKE ? OR lower(COALESCE(code,'')) LIKE ? OR lower(COALESCE(normalized_name,'')) LIKE ? ORDER BY name LIMIT 20").bind(pattern, pattern, pattern).all<Row>(),
+    db.prepare("SELECT * FROM products WHERE lower(name) LIKE ? OR lower(COALESCE(code,'')) LIKE ? OR lower(COALESCE(normalized_name,'')) LIKE ? OR lower(COALESCE(brand,'')) LIKE ? OR lower(COALESCE(presentation,'')) LIKE ? ORDER BY name LIMIT 30").bind(pattern, pattern, pattern, pattern, pattern).all<Row>(),
     db.prepare("SELECT * FROM non_inventory_quotes WHERE lower(name) LIKE ? OR lower(COALESCE(code,'')) LIKE ? ORDER BY name LIMIT 20").bind(pattern, pattern).all<Row>(),
   ]);
   return [...products.results.map((row) => productResult(row, settings)), ...quotes.results.map((row) => quoteResult(row, settings))];

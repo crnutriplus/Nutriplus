@@ -59,6 +59,19 @@ test("CRM mobile panel returns order detail only for the resolved customer", asy
   db.close();
 });
 
+test("CRM context preserves customer-link error precedence when Chatwoot also fails", async () => {
+  const db = fixture();
+  await assert.rejects(
+    () => getCrmPanel(
+      db,
+      { ...context, contactId: 999 },
+      { async getConversation() { throw new Error("Chatwoot unavailable"); } },
+    ),
+    (error) => error instanceof CrmError && error.code === "CRM_PANEL_CUSTOMER_NOT_LINKED",
+  );
+  db.close();
+});
+
 test("CRM mobile panel handles customers without orders, locations, or conversation links", async () => {
   const db = fixture();
   const emptyCustomer = "customer-panel-00000000-0000-4000-8000-000000000002";
