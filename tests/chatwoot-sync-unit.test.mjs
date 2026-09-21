@@ -20,6 +20,41 @@ test("resolves and links Instagram contacts, then converges without a second PAT
   const customer=value.sqlite.prepare("SELECT * FROM customers").get(); assert.equal(customer.phone_normalized,"+50670000000"); assert.equal(value.sqlite.prepare("SELECT provider FROM customer_external_identities").get().provider,"instagram"); assert.equal(value.sqlite.prepare("SELECT count(*) n FROM chatwoot_contact_links").get().n,1);
   const desired=api.calls[0][3]; const second=await syncContact(value,api,1,contact({custom_attributes:desired})); assert.equal(second.patched,false); assert.equal(api.calls.length,1); value.close();
 });
+test("imports shared Instagram and WhatsApp locations into CRM without changing delivery address", async () => {
+  for (const source of ["instagram", "whatsapp"]) {
+    const value = db(), api = client();
+
+    await syncContact(value, api, 1, contact());
+
+    const baseline = api.calls[0][3];
+    const locationUrl = "https://maps.google.com/?q=10.06120634,-84.73206330";
+
+    const result = await syncContact(value, api, 1, contact({
+      custom_attributes: {
+        ...baseline,
+        location_url: locationUrl,
+        last_shared_latitude: 10.06120634,
+        last_shared_longitude: -84.7320633,
+        last_shared_location_at: "2026-09-20T00:10:05.581Z",
+        last_shared_location_source: source,
+      },
+    }));
+
+    const customer = value.sqlite.prepare(
+      "SELECT location_url, latitude, longitude, default_delivery_address FROM customers",
+    ).get();
+
+    assert.equal(customer.location_url, locationUrl);
+    assert.equal(customer.latitude, 10.06120634);
+    assert.equal(customer.longitude, -84.7320633);
+    assert.equal(customer.default_delivery_address, null);
+    assert.equal(result.patched, false);
+    assert.equal(api.calls.length, 1);
+
+    value.close();
+  }
+});
+
 test("supports Messenger identity and rejects contradictory customer signals", async () => {
   const value=db(), api=client(); const one=await syncContact(value,api,1,contact({channel_type:"Channel::Facebook",identifier:"messenger-1",phone_number:"7000-0001"})); assert.ok(one.customerId);
   const another=await syncContact(value,api,1,contact({id:43,channel_type:"Channel::Facebook",identifier:"messenger-2",phone_number:"7000-0002"})); await assert.rejects(()=>syncContact(value,api,1,contact({id:44,channel_type:"Channel::Facebook",identifier:"messenger-1",phone_number:"7000-0002"})),error=>error.code==="CRM_IDENTITY_CONFLICT"); assert.ok(another.customerId); value.close();
