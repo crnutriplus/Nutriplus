@@ -32,6 +32,7 @@ declare global {
       CHATWOOT_WEBHOOK_SECRET?: string;
       CHATWOOT_BASE_URL?: string;
       CHATWOOT_API_TOKEN?: string;
+      META_CAPI_ACCESS_TOKEN?: string;
     }
   }
 }

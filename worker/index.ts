@@ -6,6 +6,8 @@ import { siteAccessDecision, siteUnauthorizedResponse } from "../lib/site-access
 import { ChatwootClient } from "../lib/chatwoot-client";
 import { drainChatwootWebhookJobs, shouldRunChatwootWebhookOpportunisticDrain } from "../lib/chatwoot-webhook-outbox";
 import { processChatwootWebhookJob } from "../lib/chatwoot-sync";
+import { MetaCapiClient, processMetaCapiJob } from "../lib/meta-capi";
+import { drainMetaCapiJobs, shouldRunMetaCapiOpportunisticDrain } from "../lib/meta-capi-outbox";
 
 interface Env {
   ASSETS: Fetcher;
@@ -23,6 +25,7 @@ interface Env {
   CHATWOOT_WEBHOOK_SECRET?: string;
   CHATWOOT_BASE_URL?: string;
   CHATWOOT_API_TOKEN?: string;
+  META_CAPI_ACCESS_TOKEN?: string;
   NUTRIPLUS_APP_AUTH_MODE?: string;
   NUTRIPLUS_ALLOWED_USER_EMAILS?: string;
   IMAGES: {
@@ -43,6 +46,32 @@ async function processChatwootWebhookOutbox(env: Env) {
   if (!env.CHATWOOT_BASE_URL || !env.CHATWOOT_API_TOKEN) return;
   const client = new ChatwootClient(env.CHATWOOT_BASE_URL, env.CHATWOOT_API_TOKEN);
   await drainChatwootWebhookJobs(env.DB, async (job) => { await processChatwootWebhookJob(env.DB, client, job); }, 3);
+}
+
+async function processMetaCapiOutbox(env: Env) {
+  if (
+    !env.META_CAPI_ACCESS_TOKEN ||
+    !env.CHATWOOT_BASE_URL ||
+    !env.CHATWOOT_API_TOKEN
+  ) return;
+
+  const metaClient = new MetaCapiClient(env.META_CAPI_ACCESS_TOKEN);
+  const chatwootClient = new ChatwootClient(
+    env.CHATWOOT_BASE_URL,
+    env.CHATWOOT_API_TOKEN,
+  );
+
+  await drainMetaCapiJobs(
+    env.DB,
+    async (job) => {
+      await processMetaCapiJob(
+        metaClient,
+        chatwootClient,
+        job,
+      );
+    },
+    3,
+  );
 }
 
 // Image security config. SVG sources with .svg extension auto-skip the
@@ -96,6 +125,17 @@ const worker = {
       ctx.waitUntil(processChatwootWebhookOutbox(env).catch(() => undefined));
     }
     const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(request.method.toUpperCase());
+
+    if (isMutation) {
+      ctx.waitUntil(
+        processMetaCapiOutbox(env).catch(() => undefined),
+      );
+    } else if (shouldRunMetaCapiOpportunisticDrain()) {
+      ctx.waitUntil(
+        processMetaCapiOutbox(env).catch(() => undefined),
+      );
+    }
+
     const isNavigation = request.method === "GET" && request.headers.get("accept")?.includes("text/html");
     if ((isMutation || isNavigation) && url.pathname !== "/api/notifications/reconcile") {
       ctx.waitUntil((async () => {
@@ -107,6 +147,7 @@ const worker = {
 
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(processChatwootWebhookOutbox(env).catch(() => undefined));
+    ctx.waitUntil(processMetaCapiOutbox(env).catch(() => undefined));
   },
 };
 

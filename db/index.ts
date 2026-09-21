@@ -10,6 +10,7 @@ import {
 import { ORDER_DATABASE_SQL, ORDER_DATABASE_TRIGGER_SQL } from "../lib/orders-database";
 import { FINANCE_DATABASE_SQL } from "../lib/finance-database";
 import { CRM_DATABASE_SQL } from "../lib/crm-database";
+import { META_CAPI_DATABASE_SQL } from "../lib/meta-capi-database";
 import * as schema from "./schema";
 
 let initialization: Promise<void> | null = null;
@@ -378,6 +379,7 @@ export async function ensureDatabase() {
         ...ORDER_DATABASE_TRIGGER_SQL.map((statement) => db.prepare(statement)),
         ...FINANCE_DATABASE_SQL.map((statement) => db.prepare(statement)),
         ...CRM_DATABASE_SQL.map((statement) => db.prepare(statement)),
+        ...META_CAPI_DATABASE_SQL.map((statement) => db.prepare(statement)),
       ]);
 
       const orderColumns = await db.prepare("PRAGMA table_info(orders)").all<{ name: string }>();

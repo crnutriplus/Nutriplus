@@ -1,5 +1,6 @@
 import { calculatePrices, settingsFromRow } from "./pricing";
 import { financeSaleReversalStatements, financeSaleStatements } from "./finance";
+import { prepareMetaCapiPurchaseInsertForOrder } from "./meta-capi-outbox";
 import {
   ORDER_SOURCES,
   PAYMENT_METHODS,
@@ -977,6 +978,12 @@ export async function deliverOrder(db: D1Database, orderId: string, payload: Rec
     statusEventStatement(db, orderId, "PREPARED", "DELIVERED", operationId, null, now),
     eventStatement(db, orderId, "order.delivered", operationId, { lineCount: pendingLines.length }, now),
     ...financeSaleStatements(db, current, lines.results, operationId, now),
+    prepareMetaCapiPurchaseInsertForOrder(db, {
+      orderId,
+      orderNumber: String(current.order_number),
+      eventTime: now,
+      valueCrc: Number(current.total || 0),
+    }),
     completeOperationStatement(db, operationId, orderId, now),
   ];
   try { await db.batch(statements); }
@@ -1052,6 +1059,14 @@ export async function fulfillOrder(db: D1Database, orderId: string, payload: Rec
       removedFromRoute: removeFromRoute,
     }, now),
     ...(completed ? financeSaleStatements(db, current, lines.results, operationId, now) : []),
+    ...(completed ? [
+      prepareMetaCapiPurchaseInsertForOrder(db, {
+        orderId,
+        orderNumber: String(current.order_number),
+        eventTime: now,
+        valueCrc: Number(current.total || 0),
+      }),
+    ] : []),
     completeOperationStatement(db, operationId, orderId, now),
   ];
   try { await db.batch(statements); }

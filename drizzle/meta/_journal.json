@@ -141,6 +141,13 @@
       "when": 1788755246927,
       "tag": "0019_chatwoot_webhook_outbox",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1789862689837,
+      "tag": "0020_meta_capi_outbox",
+      "breakpoints": true
     }
   ]
 }

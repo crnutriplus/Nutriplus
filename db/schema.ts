@@ -950,3 +950,36 @@ export const crmOperations = sqliteTable("crm_operations", {
   operationId: text("operation_id").primaryKey(), operationType: text("operation_type").notNull(), requestHash: text("request_hash").notNull(), status: text("status").notNull().default("PENDING"), responseJson: text("response_json"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), completedAt: text("completed_at"),
 });
+
+
+// Meta Conversions API: durable server-side delivery outbox.
+export const metaCapiJobs = sqliteTable("meta_capi_jobs", {
+  id: text("id").primaryKey(),
+  dedupeKey: text("dedupe_key").notNull(),
+  eventId: text("event_id").notNull(),
+  eventName: text("event_name").notNull(),
+  eventTime: text("event_time").notNull(),
+  orderId: text("order_id"),
+  orderNumber: text("order_number"),
+  valueCrc: integer("value_crc"),
+  chatwootAccountId: integer("chatwoot_account_id").notNull(),
+  chatwootConversationId: integer("chatwoot_conversation_id").notNull(),
+  status: text("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  nextAttemptAt: text("next_attempt_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  leaseToken: text("lease_token"),
+  leaseExpiresAt: text("lease_expires_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  completedAt: text("completed_at"),
+}, (table) => [
+  uniqueIndex("meta_capi_jobs_dedupe_unique").on(table.dedupeKey),
+  uniqueIndex("meta_capi_jobs_event_id_unique").on(table.eventId),
+  index("meta_capi_jobs_due_idx").on(table.status, table.nextAttemptAt, table.createdAt),
+  index("meta_capi_jobs_lease_idx").on(table.status, table.leaseExpiresAt),
+  index("meta_capi_jobs_order_idx").on(table.orderId, table.eventName),
+  check("meta_capi_jobs_event_name_check", sql`${table.eventName} IN ('LeadSubmitted','Purchase')`),
+  check("meta_capi_jobs_status_check", sql`${table.status} IN ('pending','processing','completed','failed')`),
+  check("meta_capi_jobs_attempts_check", sql`${table.attempts} >= 0`),
+]);
