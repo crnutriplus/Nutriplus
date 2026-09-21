@@ -1,4 +1,4 @@
-import { addCustomerIdentity, createCustomer, CrmError, linkChatwootContact, linkChatwootConversationOrder, resolveCustomer } from "./crm";
+import { addCustomerIdentity, createCustomer, CrmError, linkChatwootContact, linkChatwootConversationOrder, resolveCustomer, updateCustomer } from "./crm";
 import { ChatwootClient } from "./chatwoot-client";
 import type { ChatwootWebhookJob } from "./chatwoot-webhook-outbox";
 
@@ -11,6 +11,33 @@ const same = (left: Data, right: Data) => Object.keys(right).every((key) => (lef
 const chatwootStatus: Record<string,string> = { PROSPECT: "Prospecto", CUSTOMER: "Cliente", RECURRING: "Cliente recurrente", INACTIVE: "Inactivo" };
 const chatwootPayment: Record<string,string> = { CASH: "Efectivo", SINPE: "SINPE", CARD: "Tarjeta", OTHER: "Otro" };
 const CRM_PANEL_ORIGIN = "https://nutriplus-precios.ever1822.chatgpt.site";
+const SHARED_LOCATION_SOURCES = new Set(["instagram", "whatsapp"]);
+
+function coordinate(value: unknown, min: number, max: number) {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : null;
+}
+
+function sharedLocationFor(custom: Data) {
+  const locationUrl = string(custom.location_url);
+  const source = string(custom.last_shared_location_source).toLowerCase();
+  const sharedAt = string(custom.last_shared_location_at);
+  const latitude = coordinate(custom.last_shared_latitude, -90, 90);
+  const longitude = coordinate(custom.last_shared_longitude, -180, 180);
+
+  if (
+    !locationUrl ||
+    !SHARED_LOCATION_SOURCES.has(source) ||
+    !sharedAt ||
+    !Number.isFinite(Date.parse(sharedAt)) ||
+    latitude == null ||
+    longitude == null
+  ) return null;
+
+  return { locationUrl, latitude, longitude };
+}
+
 
 function providerForChannel(value: unknown) {
   const raw = string(value).toLowerCase();
@@ -55,6 +82,25 @@ export async function syncContact(db: D1Database, client: ChatwootClient, accoun
     resolved = await createCustomer(db, { name: string(contact.name) || `Cliente Chatwoot ${contactId}`, phone: contact.phone_number, customerStatus: "PROSPECT" });
   }
   if (!resolved) throw new CrmError("No fue posible resolver el cliente.", 500, "CRM_CUSTOMER_RESOLUTION_FAILED");
+
+  const sharedLocation = sharedLocationFor(custom);
+  if (
+    sharedLocation &&
+    (
+      resolved.locationUrl !== sharedLocation.locationUrl ||
+      resolved.latitude !== sharedLocation.latitude ||
+      resolved.longitude !== sharedLocation.longitude
+    )
+  ) {
+    const updatedCustomer = await updateCustomer(db, String(resolved.id), {
+      version: resolved.version,
+      locationUrl: sharedLocation.locationUrl,
+      latitude: sharedLocation.latitude,
+      longitude: sharedLocation.longitude,
+    });
+    if (!updatedCustomer) throw new CrmError("No fue posible actualizar la ubicación del cliente.", 500, "CRM_CUSTOMER_LOCATION_UPDATE_FAILED");
+    resolved = updatedCustomer;
+  }
   if (provider && externalId) await addCustomerIdentity(db, { customerId: resolved.id, ...identity, phone: contact.phone_number });
   await linkChatwootContact(db, { customerId: resolved.id, accountId, contactId });
   const orders = await db.prepare("SELECT count(*) AS count, max(created_at) AS last_order_date FROM orders WHERE customer_id=?").bind(resolved.id).first<{count:number;last_order_date:string|null}>();
