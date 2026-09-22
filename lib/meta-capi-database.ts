@@ -1,0 +1,28 @@
+export const META_CAPI_DATABASE_SQL = [
+  `CREATE TABLE IF NOT EXISTS meta_capi_jobs (
+    id TEXT PRIMARY KEY NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    event_name TEXT NOT NULL CHECK (event_name IN ('LeadSubmitted','Purchase')),
+    event_time TEXT NOT NULL,
+    order_id TEXT,
+    order_number TEXT,
+    value_crc INTEGER,
+    chatwoot_account_id INTEGER NOT NULL,
+    chatwoot_conversation_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','completed','failed')),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    last_error TEXT,
+    next_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_token TEXT,
+    lease_expires_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS meta_capi_jobs_dedupe_unique ON meta_capi_jobs (dedupe_key)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS meta_capi_jobs_event_id_unique ON meta_capi_jobs (event_id)",
+  "CREATE INDEX IF NOT EXISTS meta_capi_jobs_due_idx ON meta_capi_jobs (status, next_attempt_at, created_at)",
+  "CREATE INDEX IF NOT EXISTS meta_capi_jobs_lease_idx ON meta_capi_jobs (status, lease_expires_at)",
+  "CREATE INDEX IF NOT EXISTS meta_capi_jobs_order_idx ON meta_capi_jobs (order_id, event_name)",
+] as const;

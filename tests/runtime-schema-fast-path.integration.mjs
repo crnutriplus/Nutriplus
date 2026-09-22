@@ -28,7 +28,7 @@ const state = await db
   .prepare("SELECT version FROM runtime_schema_state WHERE id = 1")
   .first();
 
-assert.equal(state?.version, 21);
+assert.equal(state?.version, 22);
 
 const batchesAfterFirstColdStart = batchCalls;
 
