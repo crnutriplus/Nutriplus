@@ -28,6 +28,7 @@ ChatGPT Sites ejecuta el Worker de `worker/index.ts`, conecta los recursos decla
 | `INVOICE_AI_ENABLED` | Variable de servidor | No | Solo `1`, `true`, `yes` u `on` (sin distinguir mayúsculas) habilitan la llamada. Si falta o es falso, no hay llamada. |
 | `INVOICE_AI_MODEL` | Variable de servidor | No | Modelo automático. Predeterminado: `gpt-5.6-terra`. |
 | `INVOICE_AI_MONTHLY_LIMIT_USD` | Variable de servidor | No | Tope mensual estimado; predeterminado `5`. Un valor inválido o negativo vuelve al predeterminado. |
+| `META_CAPI_ACCESS_TOKEN` | Secreto de servidor | Solo para Meta Conversions API | Token de acceso del dataset de Meta usado para enviar eventos server-side. Nunca debe exponerse al frontend, Git, logs ni respuestas de API. |
 | `VAPID_PUBLIC_KEY` | Valor alojado de servidor | Solo para Web Push | Clave pública P-256 codificada base64url. Es la única parte VAPID que puede entregarse al navegador. |
 | `VAPID_PRIVATE_KEY` | Secreto de servidor | Solo para Web Push | Escalar privado P-256 codificado base64url. Nunca debe llegar a frontend, Git, logs ni JSON de API. |
 | `VAPID_SUBJECT` | Valor alojado de servidor | Solo para Web Push | Contacto `mailto:` administrativo o URL HTTPS válida usado en el JWT VAPID. |
