@@ -20,8 +20,8 @@ test("resolves and links Instagram contacts, then converges without a second PAT
   const customer=value.sqlite.prepare("SELECT * FROM customers").get(); assert.equal(customer.phone_normalized,"+50670000000"); assert.equal(value.sqlite.prepare("SELECT provider FROM customer_external_identities").get().provider,"instagram"); assert.equal(value.sqlite.prepare("SELECT count(*) n FROM chatwoot_contact_links").get().n,1);
   const desired=api.calls[0][3]; const second=await syncContact(value,api,1,contact({custom_attributes:desired})); assert.equal(second.patched,false); assert.equal(api.calls.length,1); value.close();
 });
-test("imports shared Instagram and WhatsApp locations into CRM without changing delivery address", async () => {
-  for (const source of ["instagram", "whatsapp"]) {
+test("imports shared Instagram, WhatsApp and Waze locations into CRM without changing delivery address", async () => {
+  for (const source of ["instagram", "whatsapp", "waze"]) {
     const value = db(), api = client();
 
     await syncContact(value, api, 1, contact());
