@@ -11,7 +11,7 @@ const same = (left: Data, right: Data) => Object.keys(right).every((key) => (lef
 const chatwootStatus: Record<string,string> = { PROSPECT: "Prospecto", CUSTOMER: "Cliente", RECURRING: "Cliente recurrente", INACTIVE: "Inactivo" };
 const chatwootPayment: Record<string,string> = { CASH: "Efectivo", SINPE: "SINPE", CARD: "Tarjeta", OTHER: "Otro" };
 const CRM_PANEL_ORIGIN = "https://nutriplus-precios.ever1822.chatgpt.site";
-const SHARED_LOCATION_SOURCES = new Set(["instagram", "whatsapp"]);
+const SHARED_LOCATION_SOURCES = new Set(["instagram", "whatsapp", "waze"]);
 
 function coordinate(value: unknown, min: number, max: number) {
   if (value == null || value === "") return null;
