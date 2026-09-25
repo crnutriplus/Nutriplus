@@ -1,6 +1,6 @@
 import { ensureDatabase, getD1 } from "@/db";
 import { CrmError } from "@/lib/crm";
-import { getCrmPanelForCustomer, linkedCrmPanelCustomer, validateCrmPanelContext } from "@/lib/crm-panel";
+import { getCrmOriginatingAd, getCrmPanelForCustomer, linkedCrmPanelCustomer, validateCrmPanelContext } from "@/lib/crm-panel";
 import { ChatwootApiError, ChatwootClient } from "@/lib/chatwoot-client";
 import { syncContact } from "@/lib/chatwoot-sync";
 import {
@@ -101,12 +101,13 @@ export async function POST(request: Request) {
         recoverCustomer,
     );
 
-    const [session, panel] = await Promise.all([
+    const [session, panel, originatingAd] = await Promise.all([
       createCrmDashboardSession(db, claims),
       getCrmPanelForCustomer(db, context, customer),
+      getCrmOriginatingAd(chatwootClient, context),
     ]);
     return Response.json(
-      { ok: true, expiresAt: session.expiresAt, panel },
+      { ok: true, expiresAt: session.expiresAt, panel: { ...panel, originatingAd } },
       {
         status: 201,
         headers: {
