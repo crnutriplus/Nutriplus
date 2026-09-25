@@ -3,6 +3,7 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { reconcileNotifications } from "../lib/notifications";
 import { siteAccessDecision, siteUnauthorizedResponse } from "../lib/site-access";
+import { withCrmDashboardFramePolicy } from "../lib/crm-dashboard-frame-policy";
 import { ChatwootClient } from "../lib/chatwoot-client";
 import { drainChatwootWebhookJobs, shouldRunChatwootWebhookOpportunisticDrain } from "../lib/chatwoot-webhook-outbox";
 import { processChatwootWebhookJob } from "../lib/chatwoot-sync";
@@ -23,6 +24,7 @@ interface Env {
   CHATWOOT_WEBHOOK_SECRET?: string;
   CHATWOOT_BASE_URL?: string;
   CHATWOOT_API_TOKEN?: string;
+  NUTRIPLUS_DASHBOARD_APP_SECRET?: string;
   NUTRIPLUS_APP_AUTH_MODE?: string;
   NUTRIPLUS_ALLOWED_USER_EMAILS?: string;
   IMAGES: {
@@ -67,6 +69,7 @@ const worker = {
     globalThis.__NUTRIPLUS_CHATWOOT_WEBHOOK_SECRET__ = env.CHATWOOT_WEBHOOK_SECRET;
     globalThis.__NUTRIPLUS_CHATWOOT_BASE_URL__ = env.CHATWOOT_BASE_URL;
     globalThis.__NUTRIPLUS_CHATWOOT_API_TOKEN__ = env.CHATWOOT_API_TOKEN;
+    globalThis.__NUTRIPLUS_DASHBOARD_APP_SECRET__ = env.NUTRIPLUS_DASHBOARD_APP_SECRET;
     const url = new URL(request.url);
 
     const access = siteAccessDecision(request, {
@@ -101,6 +104,9 @@ const worker = {
       ctx.waitUntil((async () => {
         await reconcileNotifications(env.DB, { evaluateScheduled: isNavigation });
       })().catch(() => undefined));
+    }
+    if (url.pathname === "/operations/crm-panel/embed" && request.method === "GET") {
+      return withCrmDashboardFramePolicy(response, env.CHATWOOT_BASE_URL);
     }
     return response;
   },

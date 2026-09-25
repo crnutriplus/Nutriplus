@@ -12,6 +12,8 @@ import { FINANCE_DATABASE_SQL } from "../lib/finance-database";
 import { CRM_DATABASE_SQL } from "../lib/crm-database";
 import * as schema from "./schema";
 
+const RUNTIME_SCHEMA_VERSION = 21;
+
 let initialization: Promise<void> | null = null;
 
 export function getD1() {
@@ -27,7 +29,22 @@ export async function ensureDatabase() {
   if (!initialization) {
     initialization = (async () => {
       const db = getD1();
+
+      try {
+        const state = await db
+          .prepare("SELECT version FROM runtime_schema_state WHERE id = 1")
+          .first<{ version: number }>();
+        if (Number(state?.version) === RUNTIME_SCHEMA_VERSION) return;
+      } catch {
+        // No marker yet: run the full schema reconciliation.
+      }
+
       await db.batch([
+        db.prepare(`CREATE TABLE IF NOT EXISTS runtime_schema_state (
+          id INTEGER PRIMARY KEY NOT NULL,
+          version INTEGER NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`),
         db.prepare(`CREATE TABLE IF NOT EXISTS settings (
           id INTEGER PRIMARY KEY NOT NULL,
           exchange_rate_crc INTEGER NOT NULL DEFAULT 520,
@@ -458,6 +475,15 @@ export async function ensureDatabase() {
         db.prepare("CREATE INDEX IF NOT EXISTS import_job_rows_claim_idx ON import_job_rows (import_id, processed, claimed_at, id)"),
         db.prepare("CREATE INDEX IF NOT EXISTS product_deletion_rows_claim_idx ON product_deletion_rows (deletion_id, processed, claimed_at, id)"),
       ]);
+
+      await db
+        .prepare(`INSERT INTO runtime_schema_state (id, version, updated_at)
+          VALUES (1, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(id) DO UPDATE SET
+            version = excluded.version,
+            updated_at = CURRENT_TIMESTAMP`)
+        .bind(RUNTIME_SCHEMA_VERSION)
+        .run();
     })().catch((error) => { initialization = null; throw error; });
   }
   await initialization;
