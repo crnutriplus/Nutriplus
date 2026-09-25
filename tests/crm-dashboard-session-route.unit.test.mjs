@@ -36,7 +36,12 @@ test("dashboard exchange creates secure session, blocks replay and rejects bad c
   globalThis.__NUTRIPLUS_CHATWOOT_API_TOKEN__ = "test-api-token";
   const originalFetch = globalThis.fetch;
   let contactId = 77;
-  globalThis.fetch = async () => Response.json({ account_id:1, meta:{ sender:{ id:contactId } } });
+  let conversationGets = 0;
+  globalThis.fetch = async (input) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.includes("/conversations/900")) conversationGets++;
+    return Response.json({ account_id:1, meta:{ sender:{ id:contactId } } });
+  };
 
   try {
     const { ensureDatabase } = await import("../db/index.ts");
@@ -62,6 +67,7 @@ test("dashboard exchange creates secure session, blocks replay and rejects bad c
     const body = await ok.json();
     assert.equal(body.ok, true);
     assert.equal(JSON.stringify(body).includes("crm-session-"), false);
+    assert.equal(conversationGets, 1);
 
     const cookie = ok.headers.get("set-cookie") ?? "";
     assert.match(cookie, /^nutriplus_crm_session=crm-session-/);

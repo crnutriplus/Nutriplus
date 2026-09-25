@@ -77,13 +77,16 @@ export function originatingAdFromChatwoot(
 export async function getCrmOriginatingAd(
   client: OriginatingAdClient,
   context: CrmPanelContext,
+  conversationSnapshot?: Row,
 ) {
   if (context.conversationId == null) return null;
 
-  const conversation = await client.getConversation(
-    context.accountId,
-    context.conversationId,
-  );
+  const conversation =
+    conversationSnapshot ??
+    (await client.getConversation(
+      context.accountId,
+      context.conversationId,
+    ));
 
   const snapshot = originatingAdFromChatwoot(conversation);
   if (!snapshot) return null;
