@@ -25,6 +25,79 @@ export async function linkedCrmPanelCustomer(db: D1Database, context: CrmPanelCo
   return customer;
 }
 type ConversationClient = Pick<ChatwootClient, "getConversation">;
+type OriginatingAdClient = Pick<ChatwootClient, "getConversation" | "getContact">;
+
+export type CrmOriginatingAd = {
+  adId: string;
+  adName: string | null;
+  adsetId: string | null;
+  adsetName: string | null;
+  campaignId: string | null;
+  campaignName: string | null;
+  creativeId: string | null;
+  creativeName: string | null;
+  thumbnailUrl: string | null;
+  referralSource: string | null;
+  firstTouchAdId: string | null;
+};
+
+function customAttributes(value: Row) {
+  const item = value.custom_attributes;
+  return item && typeof item === "object" && !Array.isArray(item) ? item as Row : {};
+}
+
+function optionalText(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function originatingAdFromChatwoot(
+  conversation: Row,
+  contact: Row | null = null,
+): CrmOriginatingAd | null {
+  const c = customAttributes(conversation);
+  const customer = contact ? customAttributes(contact) : {};
+  const adId = optionalText(c.meta_ad_id);
+  if (!adId) return null;
+
+  return {
+    adId,
+    adName: optionalText(c.meta_ad_name),
+    adsetId: optionalText(c.meta_adset_id),
+    adsetName: optionalText(c.meta_adset_name),
+    campaignId: optionalText(c.meta_campaign_id),
+    campaignName: optionalText(c.meta_campaign_name),
+    creativeId: optionalText(c.meta_creative_id),
+    creativeName: optionalText(c.meta_creative_name),
+    thumbnailUrl: optionalText(c.meta_ad_thumbnail_url),
+    referralSource: optionalText(c.meta_referral_source),
+    firstTouchAdId: optionalText(customer.first_touch_ad_id),
+  };
+}
+
+export async function getCrmOriginatingAd(
+  client: OriginatingAdClient,
+  context: CrmPanelContext,
+) {
+  if (context.conversationId == null) return null;
+
+  const conversation = await client.getConversation(
+    context.accountId,
+    context.conversationId,
+  );
+
+  const snapshot = originatingAdFromChatwoot(conversation);
+  if (!snapshot) return null;
+
+  try {
+    const contact = await client.getContact(
+      context.accountId,
+      context.contactId,
+    );
+    return originatingAdFromChatwoot(conversation, contact);
+  } catch {
+    return snapshot;
+  }
+}
 
 function conversationContactId(conversation: Row) {
   const meta = conversation.meta && typeof conversation.meta === "object" ? conversation.meta as Row : {};
@@ -112,9 +185,11 @@ export async function getCrmPanelForCustomer(db: D1Database, context: CrmPanelCo
 }
 
 
-export async function getCrmPanel(db: D1Database, context: CrmPanelContext, client?: ConversationClient) {
+export async function getCrmPanel(db: D1Database, context: CrmPanelContext, client?: OriginatingAdClient) {
   const customer = await validateCrmPanelContext(db, context, client);
-  return getCrmPanelForCustomer(db, context, customer);
+  const panel = await getCrmPanelForCustomer(db, context, customer);
+  const originatingAd = client ? await getCrmOriginatingAd(client, context) : null;
+  return { ...panel, originatingAd };
 }
 
 export async function getCrmPanelOrder(db: D1Database, context: CrmPanelContext, orderId: string, client?: ConversationClient) {

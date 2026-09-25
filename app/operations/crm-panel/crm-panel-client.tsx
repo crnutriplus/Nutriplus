@@ -1,12 +1,25 @@
 "use client";
 
-import { AlertCircle, CalendarDays, ChevronLeft, ExternalLink, Loader2, MapPin, Minus, Package, Plus, ReceiptText, RefreshCw, Search, ShieldCheck, ShoppingCart, Trash2, UserRound, WalletCards } from "lucide-react";
+import { AlertCircle, CalendarDays, ChevronLeft, ExternalLink, Loader2, MapPin, Megaphone, Minus, Package, Plus, ReceiptText, RefreshCw, Search, ShieldCheck, ShoppingCart, Trash2, UserRound, WalletCards } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 type Context = { accountId: string; contactId: string; conversationId: string };
 type Order = { id: string; orderNumber: string; orderType: string; status: string; total: number; paidTotal: number; balance: number; paymentStatus: string; deliveryMethod: string | null; deliveryDate: string | null; createdAt: string };
 type Customer = { id: string; name: string; phone: string | null; customerStatus: string; province: string | null; canton: string | null; district: string | null; defaultDeliveryAddress: string | null; locationUrl: string | null; locationReference: string | null; latitude: number | null; longitude: number | null; preferredPaymentMethod: string | null; ordersCount: number; lastOrderDate: string | null };
-export type Panel = { customer: Customer; activeOrders: Order[]; recentOrders: Order[]; conversationOrders: Order[] };
+type OriginatingAd = {
+  adId: string;
+  adName: string | null;
+  adsetId: string | null;
+  adsetName: string | null;
+  campaignId: string | null;
+  campaignName: string | null;
+  creativeId: string | null;
+  creativeName: string | null;
+  thumbnailUrl: string | null;
+  referralSource: string | null;
+  firstTouchAdId: string | null;
+};
+export type Panel = { customer: Customer; activeOrders: Order[]; recentOrders: Order[]; conversationOrders: Order[]; originatingAd?: OriginatingAd | null };
 type Detail = { order: Order & { deliveryAddress: string | null; deliveryInstructions: string | null; province: string | null; canton: string | null; district: string | null; locationUrl: string | null; latitude: number | null; longitude: number | null; expectedPaymentMethod: string | null; deliveryNotes: string | null; specialOrderStatus: string | null; lines: Array<{ product_name_snapshot: string; presentation_snapshot: string | null; quantity: number; unit_price_original: number | null; unit_price_sold: number; discount_amount: number; line_total: number }>; payments: Array<{ amount: number; method: string; payment_type: string; reference: string | null; created_at: string }> } };
 type SearchProduct = { id: number; kind: "INVENTORY" | "SPECIAL_ORDER"; name: string; brand: string | null; presentation: string | null; code: string | null; commercialPrice: number | null; quantityAvailable: number | null; availability: "AVAILABLE" | "OUT_OF_STOCK" | "SPECIAL_ORDER" | "PRICE_UNAVAILABLE" };
 type CartLine = Omit<SearchProduct, "commercialPrice" | "availability"> & { commercialPrice: number; availability: "AVAILABLE" | "SPECIAL_ORDER"; quantity: number; discountAmount: number };
@@ -39,8 +52,51 @@ export function CrmPanelClient({ context, userName, initialPanel = null }: { con
   const { customer } = panel, location = customer.locationUrl || mapUrl(customer.latitude, customer.longitude);
   return <main className="crm-panel-shell"><header className="crm-panel-header"><div><p className="crm-panel-eyebrow"><ShieldCheck /> Contexto validado</p><h1>Consulta CRM</h1><p>Conversación de Chatwoot · Sesión: {userName}</p></div><button className="crm-panel-icon" type="button" aria-label="Actualizar consulta" onClick={() => void load()}><RefreshCw /></button></header>
     <section className="crm-panel-card crm-panel-customer"><div className="crm-panel-title"><UserRound /><div><h2>{customer.name}</h2><p>{customer.phone || "Sin teléfono"} · {customerStatusLabel(customer.customerStatus)}</p></div></div><div className="crm-panel-stats"><span><strong>{customer.ordersCount}</strong> pedidos</span><span><strong>{date(customer.lastOrderDate)}</strong> última compra</span></div><details open><summary>Dirección y ubicación</summary><p>{[customer.defaultDeliveryAddress, customer.district, customer.canton, customer.province].filter(Boolean).join(", ") || "Sin dirección registrada"}</p>{customer.locationReference && <p className="crm-panel-muted">{customer.locationReference}</p>}{location && <a className="crm-panel-link" href={location} target="_blank" rel="noreferrer"><MapPin /> Abrir ubicación <ExternalLink /></a>}</details><p className="crm-panel-muted">Pago preferido: {customer.preferredPaymentMethod || "No definido"}</p></section>
+    {panel.originatingAd && <OriginatingAdCard ad={panel.originatingAd} />}
     {detail ? <OrderDetail detail={detail} onBack={() => setDetail(null)} /> : <><OrderComposer context={context} customer={customer} onCreated={load} /><OrderList title="Pedidos activos" icon={<Package />} orders={panel.activeOrders} onOpen={openOrder} loading={loadingDetail} empty="No hay pedidos activos." />{panel.conversationOrders.length > 0 && <OrderList title="Pedidos vinculados a esta conversación" icon={<ReceiptText />} orders={panel.conversationOrders} onOpen={openOrder} loading={loadingDetail} empty="" />}{panel.recentOrders.length > 0 && <OrderList title="Historial reciente" icon={<CalendarDays />} orders={panel.recentOrders} onOpen={openOrder} loading={loadingDetail} empty="" />}{panel.recentOrders.length === 0 && <section className="crm-panel-card crm-panel-empty"><Package /><p>Este cliente todavía no tiene pedidos.</p></section>}</>}
   </main>;
+}
+
+
+function OriginatingAdCard({ ad }: { ad: OriginatingAd }) {
+  const sameFirstTouch = Boolean(
+    ad.firstTouchAdId && ad.firstTouchAdId === ad.adId,
+  );
+
+  return <section className="crm-panel-card crm-panel-ad-card">
+    <div className="crm-panel-ad-head">
+      {ad.thumbnailUrl
+        ? <div
+            className="crm-panel-ad-thumb"
+            style={{ backgroundImage: `url(${ad.thumbnailUrl})` }}
+            role="img"
+            aria-label={ad.adName || "Anuncio de origen"}
+          />
+        : <div className="crm-panel-ad-thumb crm-panel-ad-placeholder">
+            <Megaphone />
+          </div>}
+      <div>
+        <p className="crm-panel-ad-eyebrow">
+          <Megaphone /> Anuncio de origen
+        </p>
+        <h2>{ad.adName || `Anuncio ${ad.adId}`}</h2>
+        <p>{ad.referralSource ? `Origen: ${ad.referralSource}` : "Meta Ads"}</p>
+      </div>
+    </div>
+
+    <div className="crm-panel-ad-grid">
+      <span>Anuncio<strong>{ad.adName || "Sin nombre"}</strong><small>ID {ad.adId}</small></span>
+      <span>Conjunto<strong>{ad.adsetName || "Sin nombre"}</strong><small>{ad.adsetId ? `ID ${ad.adsetId}` : "Sin ID"}</small></span>
+      <span>Campaña<strong>{ad.campaignName || "Sin nombre"}</strong><small>{ad.campaignId ? `ID ${ad.campaignId}` : "Sin ID"}</small></span>
+      <span>Creativo<strong>{ad.creativeName || "Sin nombre"}</strong><small>{ad.creativeId ? `ID ${ad.creativeId}` : "Sin ID"}</small></span>
+    </div>
+
+    {ad.firstTouchAdId && <p className={`crm-panel-ad-first ${sameFirstTouch ? "same" : ""}`}>
+      {sameFirstTouch
+        ? "También fue el primer anuncio atribuido al cliente."
+        : `Primer anuncio atribuido: ${ad.firstTouchAdId}`}
+    </p>}
+  </section>;
 }
 
 function OrderList({ title, icon, orders, onOpen, loading, empty }: { title: string; icon: ReactNode; orders: Order[]; onOpen: (id: string) => void; loading: boolean; empty: string }) { return <section className="crm-panel-card"><h2 className="crm-panel-section-title">{icon}{title}</h2>{orders.length === 0 ? <p className="crm-panel-muted">{empty}</p> : <div className="crm-panel-orders">{orders.map((order) => <article className="crm-panel-order" key={order.id}><div><strong>{order.orderNumber}</strong><p>{date(order.createdAt)} · {orderStatusLabel(order.status)}</p><p>{order.orderType === "SPECIAL_ORDER" ? "Encargo" : "Pedido"} · {order.paymentStatus}</p></div><div className="crm-panel-order-side"><strong>{money.format(order.total)}</strong><span>Saldo {money.format(order.balance)}</span><button type="button" onClick={() => void onOpen(order.id)} disabled={loading}>Ver pedido</button></div></article>)}</div>}</section>; }
