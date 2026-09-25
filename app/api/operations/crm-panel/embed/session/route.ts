@@ -79,6 +79,14 @@ export async function POST(request: Request) {
       conversationId: claims.conversationId,
     };
     const chatwootClient = configuredClient();
+    const conversationPromise =
+      context.conversationId == null
+        ? null
+        : chatwootClient.getConversation(
+            context.accountId,
+            context.conversationId,
+          );
+
     const recoverCustomer = async () => {
       const contact = await chatwootClient.getContact(context.accountId, context.contactId);
       if (Number(contact.id) !== context.contactId) {
@@ -95,16 +103,19 @@ export async function POST(request: Request) {
         db,
         context,
         {
-          getConversation: (accountId, conversationId) =>
-            chatwootClient.getConversation(accountId, conversationId),
+          getConversation: () => conversationPromise!,
         },
         recoverCustomer,
     );
 
+    const conversation = conversationPromise
+      ? await conversationPromise
+      : undefined;
+
     const [session, panel, originatingAd] = await Promise.all([
       createCrmDashboardSession(db, claims),
       getCrmPanelForCustomer(db, context, customer),
-      getCrmOriginatingAd(chatwootClient, context),
+      getCrmOriginatingAd(chatwootClient, context, conversation),
     ]);
     return Response.json(
       { ok: true, expiresAt: session.expiresAt, panel: { ...panel, originatingAd } },
